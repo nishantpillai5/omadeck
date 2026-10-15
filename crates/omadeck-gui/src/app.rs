@@ -492,6 +492,7 @@ impl App {
     }
 
     /// Redraw the strip picture: one panel per dial, the same picture the daemon paints.
+    /// Volume dials show their device's current level, read once per refresh.
     pub fn refresh_strip(&self) {
         let Some((w, h)) = self.deck.borrow().strip else { return };
         let width = self.strip_width();
@@ -499,7 +500,16 @@ impl App {
             return;
         }
         let cfg = self.config.borrow();
-        let status = vec![DialStatus::default(); self.deck.borrow().dials as usize];
+        let n = self.deck.borrow().dials as usize;
+        let status: Vec<DialStatus> = (0..n)
+            .map(|i| {
+                let level = cfg
+                    .dial(i as u8)
+                    .and_then(|d| d.volume_device())
+                    .and_then(|dev| omadeck_core::audio::volume(dev).map(|lv| lv.to_panel()));
+                DialStatus { pressed: false, level }
+            })
+            .collect();
         let img = self.renderer.borrow_mut().render_strip(&cfg, &status, (width as u32, width as u32 * h / w));
         self.strip.set_paintable(Some(&media::texture(img)));
     }

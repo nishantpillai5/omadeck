@@ -13,6 +13,13 @@ All notable changes to omadeck are documented here. The format follows
   folder with a Back key in place. The deck follows the page you're editing, and the app
   follows page changes made on the deck.
 - `omadeckd press KEY [PAGE]` and `omadeckd snapshot FILE [PAGE]` take an optional page.
+- A `volume` action: change the output or input (microphone) volume, or toggle mute.
+  It runs through Omarchy's own volume commands when they're installed (so its on-screen
+  pop-up shows, just like the volume keys) and falls back to `wpctl` otherwise. A fast
+  dial spin folds into a single command.
+- Stream Deck +: a volume dial shows its level and a groove bar on the touch strip in
+  Elgato's `Indicator` layout, kept in sync when the volume changes elsewhere; the
+  configurator has a one-click **Volume dial** preset.
 - Stream Deck +: the daemon reads dial turns and presses and touch-strip taps and
   swipes, and reports them on its event socket.
 - Dials on the Stream Deck + can run any action on turn left, turn right and press,
