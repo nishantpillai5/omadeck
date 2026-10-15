@@ -45,7 +45,15 @@ fn main() {
                 println!("No Stream Deck found.");
             }
             for d in decks {
-                println!("{}  serial={}  {}x{} keys  {}px", d.model, d.serial, d.cols, d.rows, d.key_size);
+                let mut line =
+                    format!("{}  serial={}  {}x{} keys  {}px", d.model, d.serial, d.cols, d.rows, d.key_size);
+                if d.dials > 0 {
+                    line.push_str(&format!("  · {} dials", d.dials));
+                }
+                if let Some((w, h)) = d.strip {
+                    line.push_str(&format!("  · {w}x{h} strip"));
+                }
+                println!("{line}");
             }
             return;
         }
@@ -263,6 +271,31 @@ fn run() -> Result<()> {
                             paint(d, &cfg, nav.current(), &mut renderer, i, false);
                             hub.publish(Event::KeyUp { index: i });
                         }
+                        DeviceStateUpdate::EncoderTwist(i, delta) => {
+                            log::debug!("dial {i} turned {delta}");
+                            hub.publish(Event::DialTurn { index: i, delta });
+                        }
+                        DeviceStateUpdate::EncoderDown(i) => {
+                            log::info!("dial {i} pressed");
+                            hub.publish(Event::DialDown { index: i });
+                        }
+                        DeviceStateUpdate::EncoderUp(i) => {
+                            log::info!("dial {i} released");
+                            hub.publish(Event::DialUp { index: i });
+                        }
+                        DeviceStateUpdate::TouchScreenPress(x, y) => {
+                            log::info!("strip tap at ({x}, {y})");
+                            hub.publish(Event::StripTap { x, y });
+                        }
+                        DeviceStateUpdate::TouchScreenLongPress(x, y) => {
+                            log::info!("strip long press at ({x}, {y})");
+                            hub.publish(Event::StripLongPress { x, y });
+                        }
+                        DeviceStateUpdate::TouchScreenSwipe(from, to) => {
+                            log::info!("strip swipe {from:?} to {to:?}");
+                            hub.publish(Event::StripSwipe { from, to });
+                        }
+                        // Neo touch points; nothing reacts to them yet.
                         _ => {}
                     }
                 }
