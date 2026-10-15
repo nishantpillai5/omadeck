@@ -111,8 +111,17 @@ fn omarchy4(device: AudioDevice, change: i8, mute: bool) -> Vec<Vec<String>> {
     } else if mute {
         vec![vec!["omarchy-audio-input-mute".into()]]
     } else {
-        // No Omarchy command for mic volume; `wpctl` (the pop-up is added by run_volume).
-        vec![vec!["wpctl".into(), "set-volume".into(), "@DEFAULT_AUDIO_SOURCE@".into(), wpctl_rel(change)]]
+        // No Omarchy command for mic volume; `wpctl`, capped at 100% (the output command
+        // clamps itself, but a bare `wpctl set-volume` would let a source go over 100% on
+        // a fast spin). The pop-up is added by run_volume.
+        vec![vec![
+            "wpctl".into(),
+            "set-volume".into(),
+            "-l".into(),
+            "1.0".into(),
+            "@DEFAULT_AUDIO_SOURCE@".into(),
+            wpctl_rel(change),
+        ]]
     }
 }
 
@@ -419,10 +428,11 @@ mod tests {
             one(volume_command(Backend::Omarchy4, AudioDevice::Input, 0, true, None)),
             vec!["omarchy-audio-input-mute"]
         );
-        // Mic volume has no Omarchy command: wpctl (the pop-up is added by run_volume).
+        // Mic volume has no Omarchy command: wpctl, capped at 100% (the pop-up is added
+        // by run_volume).
         assert_eq!(
             one(volume_command(Backend::Omarchy4, AudioDevice::Input, 5, false, None)),
-            vec!["wpctl", "set-volume", "@DEFAULT_AUDIO_SOURCE@", "5%+"]
+            vec!["wpctl", "set-volume", "-l", "1.0", "@DEFAULT_AUDIO_SOURCE@", "5%+"]
         );
     }
 
