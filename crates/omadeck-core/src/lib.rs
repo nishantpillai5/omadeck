@@ -11,5 +11,5 @@ pub mod theme;
 
 pub use config::{Action, Config, DialConfig, HOME, KeyConfig, Keys, Page, Style};
 pub use device::DeckInfo;
-pub use render::Renderer;
+pub use render::{Align, DialStatus, Face, Level, PANEL_W, Renderer, tap_to_dial};
 pub use theme::{Rgb, Theme};

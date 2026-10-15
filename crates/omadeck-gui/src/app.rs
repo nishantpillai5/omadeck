@@ -10,7 +10,9 @@ use gtk::{gdk, gio, glib};
 use omadeck_core::config::{self, RemovedPage};
 use omadeck_core::ipc::{self, Command as DaemonCommand, Event};
 use omadeck_core::paths::FileStamp;
-use omadeck_core::{Action, Config, DeckInfo, DialConfig, HOME, KeyConfig, Keys, Page, Renderer, device, paths};
+use omadeck_core::{
+    Action, Config, DeckInfo, DialConfig, DialStatus, HOME, KeyConfig, Keys, Page, Renderer, device, paths, tap_to_dial,
+};
 
 use crate::{editor, media};
 
@@ -29,6 +31,13 @@ fn back_key() -> KeyConfig {
 pub struct KeyRef {
     page: Option<String>,
     index: u8,
+}
+
+impl KeyRef {
+    /// The page the key is on (`None` is Home).
+    pub fn page(&self) -> Option<&str> {
+        self.page.as_deref()
+    }
 }
 
 /// What an editor row is editing: a key on a page, or a dial. Work that finishes later
@@ -62,6 +71,8 @@ pub struct App {
     body: gtk::Box,
     settings_btn: gtk::MenuButton,
     grid: gtk::Grid,
+    strip: gtk::Picture,
+    dials_grid: gtk::Grid,
     model_label: gtk::Label,
     page_list: gtk::StringList,
     page_dropdown: gtk::DropDown,
@@ -144,10 +155,15 @@ impl App {
 
         // --- deck ------------------------------------------------------------------------
         let grid = gtk::Grid::builder().row_spacing(14).column_spacing(14).build();
+        // The touch strip (Stream Deck +), between the keys and the dials, as on the hardware.
+        let strip = gtk::Picture::builder().css_classes(["deck-strip"]).visible(false).build();
+        let dials_grid = gtk::Grid::builder().row_spacing(14).column_spacing(14).build();
         let model_label = gtk::Label::builder().halign(gtk::Align::End).css_classes(["deck-model"]).build();
         let frame = gtk::Box::new(gtk::Orientation::Vertical, 12);
         frame.add_css_class("deck-frame");
         frame.append(&grid);
+        frame.append(&strip);
+        frame.append(&dials_grid);
         frame.append(&model_label);
         let page_list = gtk::StringList::new(&[HOME]);
         let page_dropdown = gtk::DropDown::builder().model(&page_list).tooltip_text("The page you're editing").build();
@@ -249,6 +265,8 @@ impl App {
             body,
             settings_btn,
             grid,
+            strip,
+            dials_grid,
             model_label,
             page_list,
             page_dropdown,
@@ -311,6 +329,18 @@ impl App {
                 app.ask_delete_page();
             }
         });
+        // Clicking a strip panel selects its dial, like clicking a dial knob.
+        let strip_click = gtk::GestureClick::new();
+        let weak = Rc::downgrade(&app);
+        strip_click.connect_pressed(move |_, _, x, _| {
+            let Some(app) = weak.upgrade() else { return };
+            let d = app.deck.borrow();
+            let width = app.strip_width() as u32;
+            if let Some(i) = tap_to_dial(x as u32, width, d.dials as usize) {
+                app.select(Some(Selection::Dial(i as u8)));
+            }
+        });
+        app.strip.add_controller(strip_click);
         let weak = Rc::downgrade(&app);
         app.banner.connect_button_clicked(move |_| {
             if let Some(app) = weak.upgrade() {
@@ -358,9 +388,19 @@ impl App {
         }
     }
 
+    /// The width the key grid (and, under it, the strip) is drawn at.
+    fn strip_width(&self) -> i32 {
+        let d = self.deck.borrow();
+        let px = self.key_display_px();
+        d.cols as i32 * px + d.cols.saturating_sub(1) as i32 * 14
+    }
+
     fn rebuild_grid(self: &Rc<Self>) {
         while let Some(child) = self.grid.first_child() {
             self.grid.remove(&child);
+        }
+        while let Some(child) = self.dials_grid.first_child() {
+            self.dials_grid.remove(&child);
         }
         self.keys.borrow_mut().clear();
         let deck = self.deck.borrow().clone();
@@ -379,7 +419,7 @@ impl App {
             self.grid.attach(&button, (i % deck.cols) as i32, (i / deck.cols) as i32, 1, 1);
             self.keys.borrow_mut().push((button, image));
         }
-        // Dials (Stream Deck +): round buttons under the key columns, as on the hardware.
+        // Dials (Stream Deck +): round buttons under the strip, as on the hardware.
         self.dials.borrow_mut().clear();
         for i in 0..deck.dials {
             let label = gtk::Label::builder()
@@ -395,9 +435,15 @@ impl App {
                     app.select(Some(Selection::Dial(i)));
                 }
             });
-            self.grid.attach(&button, (i % deck.cols) as i32, (deck.rows + i / deck.cols) as i32, 1, 1);
+            self.dials_grid.attach(&button, (i % deck.cols) as i32, (i / deck.cols) as i32, 1, 1);
             self.dials.borrow_mut().push((button, label));
         }
+        // The strip picture, scaled to the grid's width like the hardware's 800×100.
+        if let Some((w, h)) = deck.strip {
+            let width = self.strip_width();
+            self.strip.set_size_request(width, width * h as i32 / w as i32);
+        }
+        self.strip.set_visible(deck.strip.is_some());
         self.model_label.set_label(&deck.model.to_uppercase());
         if let Some(Selection::Key(i)) = self.selected.get()
             && i >= deck.key_count()
@@ -487,6 +533,20 @@ impl App {
         for i in 0..n {
             self.refresh_dial(i);
         }
+        self.refresh_strip();
+    }
+
+    /// Redraw the strip picture: one panel per dial, the same picture the daemon paints.
+    pub fn refresh_strip(&self) {
+        let Some((w, h)) = self.deck.borrow().strip else { return };
+        let width = self.strip_width();
+        if width <= 0 {
+            return;
+        }
+        let cfg = self.config.borrow();
+        let status = vec![DialStatus::default(); self.deck.borrow().dials as usize];
+        let img = self.renderer.borrow_mut().render_strip(&cfg, &status, (width as u32, width as u32 * h / w));
+        self.strip.set_paintable(Some(&media::texture(img)));
     }
 
     pub fn refresh_dial(&self, i: u8) {
@@ -619,16 +679,22 @@ impl App {
         });
     }
 
-    /// Mutate a dial, refresh its preview and queue a save.
+    /// Mutate a dial, refresh its preview and queue a save. Like [`App::edit_ref`], a
+    /// late result (a picker) is dropped while config.toml can't be parsed.
     pub fn edit_dial(self: &Rc<Self>, i: u8, f: impl FnOnce(&mut DialConfig)) {
+        if self.locked.borrow().is_some() {
+            return;
+        }
         f(self.config.borrow_mut().dial_mut(i));
         self.refresh_dial(i);
+        self.refresh_strip();
         self.schedule_save();
     }
 
     pub fn clear_dial(self: &Rc<Self>, i: u8) {
         self.config.borrow_mut().clear_dial(i);
         self.refresh_dial(i);
+        self.refresh_strip();
         self.schedule_save();
         self.rebuild_editor();
     }
@@ -768,7 +834,10 @@ impl App {
         *self.page.borrow_mut() = page.clone();
         if changed {
             self.sync_page_list();
-            self.select(None);
+            // Keys are per page, so a key's editor closes; dials aren't, so theirs stays.
+            if matches!(self.selected.get(), Some(Selection::Key(_))) {
+                self.select(None);
+            }
             self.refresh_all();
         }
         if tell_daemon {
@@ -874,8 +943,12 @@ impl App {
         let links = self.config.borrow().links_to(&name);
         let body = match links {
             0 => "Its keys will be deleted too.".to_string(),
-            1 => "Its keys will be deleted too, and the key that opens it will stop doing anything.".to_string(),
-            n => format!("Its keys will be deleted too, and the {n} keys that open it will stop doing anything."),
+            1 => {
+                "Its keys will be deleted too, and the key or dial that opens it will stop doing anything.".to_string()
+            }
+            n => format!(
+                "Its keys will be deleted too, and the {n} keys or dials that open it will stop doing anything."
+            ),
         };
         let dialog = adw::AlertDialog::new(Some(&format!("Delete “{name}”?")), Some(&body));
         dialog.add_responses(&[("cancel", "Cancel"), ("delete", "Delete")]);
@@ -1139,9 +1212,19 @@ impl App {
                     let cur = self.deck.borrow();
                     cur.rows != deck.rows || cur.cols != deck.cols || cur.model != deck.model || cur.dials != deck.dials
                 };
+                // A replugged deck may be smaller: a selection past its keys or dials
+                // would edit a slot the hardware doesn't have.
+                let stale = match self.selected.get() {
+                    Some(Selection::Key(i)) => i as usize >= deck.key_count() as usize,
+                    Some(Selection::Dial(i)) => i as usize >= deck.dials as usize,
+                    None => false,
+                };
                 *self.deck.borrow_mut() = deck;
                 if relayout {
                     self.rebuild_grid();
+                }
+                if stale {
+                    self.select(None);
                 }
             }
             Msg::Event(Event::Disconnected) => self.connected.set(false),
