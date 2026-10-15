@@ -267,6 +267,18 @@ pub struct DialConfig {
     pub index: u8,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub label: String,
+    #[serde(default = "yes", skip_serializing_if = "is_true")]
+    pub show_label: bool,
+    /// PNG/JPEG/SVG/… path. Relative paths resolve against the config dir.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub icon: Option<String>,
+    /// A Nerd Font symbol drawn as the icon in the theme accent colour (used when `icon` is unset).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub glyph: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub background: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label_color: Option<String>,
     /// Runs once per detent when the dial is turned left.
     #[serde(default, skip_serializing_if = "Action::is_none")]
     pub turn_left: Action,
@@ -280,12 +292,57 @@ pub struct DialConfig {
 
 impl DialConfig {
     pub fn new(index: u8) -> Self {
-        Self { index, label: String::new(), turn_left: Action::None, turn_right: Action::None, press: Action::None }
+        Self {
+            index,
+            label: String::new(),
+            show_label: true,
+            icon: None,
+            glyph: None,
+            background: None,
+            label_color: None,
+            turn_left: Action::None,
+            turn_right: Action::None,
+            press: Action::None,
+        }
     }
 
     /// True when the dial carries nothing worth saving.
     pub fn is_blank(&self) -> bool {
-        self.label.is_empty() && self.turn_left.is_none() && self.turn_right.is_none() && self.press.is_none()
+        self.label.is_empty()
+            && self.show_label
+            && self.icon.is_none()
+            && self.glyph.is_none()
+            && self.background.is_none()
+            && self.label_color.is_none()
+            && self.turn_left.is_none()
+            && self.turn_right.is_none()
+            && self.press.is_none()
+    }
+
+    /// The look fields, shared with the key face renderer.
+    pub fn face(&self) -> crate::render::Face<'_> {
+        crate::render::Face {
+            label: self.label.trim(),
+            show_label: self.show_label,
+            icon: self.icon.as_deref(),
+            glyph: self.glyph.as_deref(),
+            background: self.background.as_deref(),
+            label_color: self.label_color.as_deref(),
+        }
+    }
+}
+
+impl KeyConfig {
+    /// The look fields, shared with the dial strip renderer.
+    pub fn face(&self) -> crate::render::Face<'_> {
+        crate::render::Face {
+            label: self.label.trim(),
+            show_label: self.show_label,
+            icon: self.icon.as_deref(),
+            glyph: self.glyph.as_deref(),
+            background: self.background.as_deref(),
+            label_color: self.label_color.as_deref(),
+        }
     }
 }
 
@@ -393,20 +450,24 @@ impl Config {
             .unwrap()
     }
 
-    fn all_keys_mut(&mut self) -> impl Iterator<Item = &mut KeyConfig> {
-        self.keys.0.iter_mut().chain(self.pages.iter_mut().flat_map(|p| p.keys.0.iter_mut()))
+    /// Every action in the config: each key's, on every page, and each dial's three.
+    fn all_actions(&self) -> impl Iterator<Item = &Action> {
+        let keys = self.keys.iter().chain(self.pages.iter().flat_map(|p| p.keys.iter())).map(|k| &k.action);
+        keys.chain(self.dials.iter().flat_map(|d| [&d.turn_left, &d.turn_right, &d.press]))
     }
 
-    /// How many keys open the page `name`.
+    fn all_actions_mut(&mut self) -> impl Iterator<Item = &mut Action> {
+        let keys = self.keys.0.iter_mut().chain(self.pages.iter_mut().flat_map(|p| p.keys.0.iter_mut()));
+        keys.map(|k| &mut k.action)
+            .chain(self.dials.iter_mut().flat_map(|d| [&mut d.turn_left, &mut d.turn_right, &mut d.press]))
+    }
+
+    /// How many actions (keys, and dial turns and presses) open the page `name`.
     pub fn links_to(&self, name: &str) -> usize {
-        self.keys
-            .iter()
-            .chain(self.pages.iter().flat_map(|p| p.keys.iter()))
-            .filter(|k| matches!(&k.action, Action::Page { page } if page == name))
-            .count()
+        self.all_actions().filter(|a| matches!(a, Action::Page { page } if page == name)).count()
     }
 
-    /// Rename a page and every key that opens it.
+    /// Rename a page and every action (key or dial) that opens it.
     pub fn rename_page(&mut self, old: &str, new: &str) {
         let new = new.trim();
         for p in &mut self.pages {
@@ -414,8 +475,8 @@ impl Config {
                 p.name = new.to_string();
             }
         }
-        for k in self.all_keys_mut() {
-            if let Action::Page { page } = &mut k.action
+        for a in self.all_actions_mut() {
+            if let Action::Page { page } = a
                 && page == old
             {
                 *page = new.to_string();
@@ -423,8 +484,8 @@ impl Config {
         }
     }
 
-    /// Delete a page. Keys that opened it keep their look but no longer do anything.
-    /// Returns what [`Config::restore_page`] needs to undo it.
+    /// Delete a page. Keys and dials that opened it keep their look but no longer do
+    /// anything. Returns what [`Config::restore_page`] needs to undo it.
     pub fn remove_page(&mut self, name: &str) -> Option<RemovedPage> {
         let pos = self.pages.iter().position(|p| p.name == name)?;
         let page = self.pages.remove(pos);
@@ -432,16 +493,19 @@ impl Config {
         let home = self.keys.0.iter_mut().map(|k| (None, k));
         let others = self.pages.iter_mut().flat_map(|p| p.keys.0.iter_mut().map(|k| (Some(p.name.clone()), k)));
         for (on, k) in home.chain(others) {
-            if matches!(&k.action, Action::Page { page } if page == name) {
-                k.action = Action::None;
-                links.push((on, k.index));
+            unlink(&mut k.action, name, Link::Key { page: on, index: k.index }, &mut links);
+        }
+        for d in &mut self.dials {
+            let index = d.index;
+            for (slot, a) in [&mut d.turn_left, &mut d.turn_right, &mut d.press].into_iter().enumerate() {
+                unlink(a, name, Link::Dial { index, slot: slot as u8 }, &mut links);
             }
         }
         Some(RemovedPage { pos, page, links })
     }
 
-    /// Undo [`Config::remove_page`]: put the page back where it was and re-link the keys
-    /// that opened it, unless they've been given another job since.
+    /// Undo [`Config::remove_page`]: put the page back where it was and re-link what
+    /// opened it, unless it has been given another job since.
     pub fn restore_page(&mut self, removed: RemovedPage) -> bool {
         let RemovedPage { pos, page, links } = removed;
         if self.has_page(&page.name) {
@@ -449,14 +513,32 @@ impl Config {
         }
         let name = page.name.clone();
         self.pages.insert(pos.min(self.pages.len()), page);
-        for (on, index) in links {
-            if let Some(k) = self.page_mut(on.as_deref()).and_then(|keys| keys.0.iter_mut().find(|k| k.index == index))
-                && k.action == Action::None
+        for link in &links {
+            if let Some(a) = self.linked(link)
+                && *a == Action::None
             {
-                k.action = Action::Page { page: name.clone() };
+                *a = Action::Page { page: name.clone() };
             }
         }
         true
+    }
+
+    /// The action a [`Link`] points at, if it's still there.
+    fn linked(&mut self, link: &Link) -> Option<&mut Action> {
+        match link {
+            Link::Key { page, index } => {
+                self.page_mut(page.as_deref())?.0.iter_mut().find(|k| k.index == *index).map(|k| &mut k.action)
+            }
+            Link::Dial { index, slot } => {
+                let d = self.dials.iter_mut().find(|d| d.index == *index)?;
+                match slot {
+                    0 => Some(&mut d.turn_left),
+                    1 => Some(&mut d.turn_right),
+                    2 => Some(&mut d.press),
+                    _ => None,
+                }
+            }
+        }
     }
 
     /// Whether the deck can leave `page`: it needs a Back key or a key that opens a page.
@@ -492,8 +574,25 @@ impl Config {
 pub struct RemovedPage {
     pos: usize,
     pub page: Page,
-    /// Keys (page, index) that opened it.
-    links: Vec<(Option<String>, u8)>,
+    /// Where the actions that opened it were.
+    links: Vec<Link>,
+}
+
+/// Where an action that opened a deleted page was, so undo can find it again.
+#[derive(Debug, Clone, PartialEq)]
+enum Link {
+    /// A key's action, on `page` (`None`: Home).
+    Key { page: Option<String>, index: u8 },
+    /// A dial's turn left (0), turn right (1) or press (2).
+    Dial { index: u8, slot: u8 },
+}
+
+/// Clear `a` if it opens the page `name`, noting where it was in `links`.
+fn unlink(a: &mut Action, name: &str, at: Link, links: &mut Vec<Link>) {
+    if matches!(a, Action::Page { page } if page == name) {
+        *a = Action::None;
+        links.push(at);
+    }
 }
 
 /// How many backups of config.toml to keep.
@@ -587,6 +686,21 @@ mod tests {
     }
 
     #[test]
+    fn page_links_include_dials() {
+        let mut c = Config::default();
+        c.pages.push(Page { name: "Media".into(), keys: Keys::default() });
+        c.dials.push(DialConfig { press: Action::Page { page: "Media".into() }, ..DialConfig::new(0) });
+        c.dials.push(DialConfig { turn_left: Action::Page { page: "Media".into() }, ..DialConfig::new(1) });
+        assert_eq!(c.links_to("Media"), 2);
+        c.rename_page("Media", "Music");
+        assert_eq!(c.dial(0).unwrap().press, Action::Page { page: "Music".into() });
+        assert_eq!(c.dial(1).unwrap().turn_left, Action::Page { page: "Music".into() });
+        c.remove_page("Music");
+        assert_eq!(c.dial(0).unwrap().press, Action::None);
+        assert_eq!(c.links_to("Music"), 0);
+    }
+
+    #[test]
     fn save_tidies_every_page() {
         let dir = std::env::temp_dir().join(format!("omadeck-test-{}", std::process::id()));
         let path = dir.join("config.toml");
@@ -626,6 +740,19 @@ mod tests {
         assert_eq!(c.keys.get(0).unwrap().action, Action::Back);
         assert_eq!(c.links_to("B"), 1);
         assert!(c.remove_page("nope").is_none());
+    }
+
+    #[test]
+    fn undo_page_delete_relinks_dials() {
+        let mut c = Config::parse("[[page]]\nname = \"B\"\n").unwrap();
+        c.dial_mut(1).press = Action::Page { page: "B".into() };
+        c.dial_mut(2).turn_right = Action::Page { page: "B".into() };
+        let removed = c.remove_page("B").unwrap();
+        assert_eq!(c.links_to("B"), 0);
+        c.dial_mut(2).turn_right = Action::Back;
+        assert!(c.restore_page(removed));
+        assert_eq!(c.dial(1).unwrap().press, Action::Page { page: "B".into() }, "re-linked");
+        assert_eq!(c.dial(2).unwrap().turn_right, Action::Back, "given another job since: left alone");
     }
 
     #[test]

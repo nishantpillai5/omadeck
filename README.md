@@ -42,6 +42,7 @@ Written in Rust: a tiny background daemon drives the hardware, and a GTK4/libadw
   - **Nerd Font glyphs**, drawn in your theme's accent colour.
   - Labels are rendered in your Omarchy font.
 - **Stream Deck + dials.** Each dial runs any of the action types on turn left, turn right and press — a workspace dial, a volume dial, a launch-on-press dial.
+- **Stream Deck + touch strip.** The strip shows each dial's label and icon in its own panel, in the theme's colours, following the same panel layouts as Elgato's own app. Tapping a panel presses its dial; the pressed panel highlights briefly.
 - **Theme aware.** Key backgrounds, labels, glyphs and the press highlight come from the active Omarchy theme. Run `omarchy theme set …` and the deck re-renders instantly.
 - **Live editing.** Changes land on the hardware as you type, and the deck shows whichever page you're editing. Drag keys to rearrange them. Press a physical key to jump to it in the editor.
 - **Robust.** Reconnects after unplug/replug, and a typo in a hand-edited config keeps the last good layout on the deck. Apps opened from the deck keep running when the daemon restarts or upgrades. Uses about 9 MB of RAM and 0% CPU at idle.
@@ -100,7 +101,7 @@ omadeck speaks to decks through the [`elgato-streamdeck`](https://crates.io/crat
 | Stream Deck Mini / Mini MK.2, 6 keys | Expected to work |
 | Stream Deck XL / XL V2, 32 keys | Expected to work |
 | Stream Deck Neo, 8 keys | Keys expected to work; info screen and touch keys unsupported |
-| Stream Deck +, 8 keys | Keys and dials (turn left/right, press); touch strip unsupported |
+| Stream Deck +, 8 keys | Keys, dials (turn left/right, press) and the touch strip (one panel per dial; tap = press); swipe is reported but not used yet |
 | Stream Deck Pedal | Not supported (no display) |
 
 Got one of the untested models? Please [file a hardware report](https://github.com/thewizster/omadeck/issues/new?template=hardware_report.yml), whether it works or not.
@@ -193,7 +194,7 @@ Action types:
 | `page` | `page` (a page `name`) |
 | `back` | |
 
-Per-key look overrides are `background`, `label_color` and `show_label`.
+Per-key look overrides are `background`, `label_color` and `show_label`. Dials take the same fields (`icon`, `glyph`, `background`, `label_color`, `show_label`) for their panel on the touch strip.
 
 On the Stream Deck +, dials are numbered left to right from 0. Each dial takes up to
 three actions; turns run once per detent:
@@ -244,7 +245,7 @@ Ideas, roughly in order; [docs/ROADMAP.md](docs/ROADMAP.md) has the details. Wan
 - [ ] **Templates**: ready-made pages to add in one click, starting with Omarchy Basics (your AI agent, dictation and everyday Omarchy keys); save any page as a template and share it
 - [ ] **Toggle keys** with on/off faces (mute, night light, …) that reflect real state
 - [ ] **Multi-actions**: run several actions from one key, with optional delays
-- [ ] **Stream Deck +**: dials and touch strip (volume, brightness, scrubbing)
+- [ ] **Stream Deck +**: a value layout on the strip (volume, brightness) and page switching on swipe
 - [ ] **OBS** scene and recording keys via obs-websocket
 - [ ] **Live keys** that show a clock, CPU usage or the active workspace
 - [ ] **Multiple decks** with a layout per serial number

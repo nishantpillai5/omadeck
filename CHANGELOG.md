@@ -11,6 +11,10 @@ All notable changes to omadeck are documented here. The format follows
   swipes, and reports them on its event socket.
 - Dials on the Stream Deck + can run any action on turn left, turn right and press,
   configured with `[[dial]]` tables or in the configurator.
+- The Stream Deck + touch strip is drawn: one panel per dial (label and icon, in the
+  theme's colours, using Elgato's panel layouts). Tapping a panel runs that dial's press
+  action and highlights the panel; the configurator previews the strip and edits each
+  panel's look.
 
 ## [0.2.0] - 2026-10-18
 

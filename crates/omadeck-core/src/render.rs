@@ -14,9 +14,76 @@ use image::Rgba;
 pub use image::RgbaImage;
 use image::imageops::{self, FilterType};
 
-use crate::config::{KeyConfig, Style};
+use crate::config::{Config, DialConfig, KeyConfig, Style};
 use crate::paths::{self, FileStamp};
 use crate::theme::{Rgb, Theme};
+
+/// The look fields a face (key or dial panel) is drawn from, so the drawing code is
+/// written once. Built with `KeyConfig::face()` / `DialConfig::face()`.
+pub struct Face<'a> {
+    pub label: &'a str,
+    pub show_label: bool,
+    pub icon: Option<&'a str>,
+    pub glyph: Option<&'a str>,
+    pub background: Option<&'a str>,
+    pub label_color: Option<&'a str>,
+}
+
+/// Live state of one dial for its strip panel.
+#[derive(Debug, Clone, Default)]
+pub struct DialStatus {
+    /// The dial is pressed (or a tap is still flashing).
+    pub pressed: bool,
+    /// A value to show in the `$B1` panel layout.
+    pub level: Option<Level>,
+}
+
+/// A value for the `$B1` layout: a bar position plus the text next to it (e.g. `40%`).
+#[derive(Debug, Clone)]
+pub struct Level {
+    /// 0.0..=1.0, for the bar.
+    pub value: f32,
+    pub text: String,
+}
+
+/// One dial panel of the Stream Deck + touch strip, in native 200×100 units.
+///
+/// The rectangles are Elgato's built-in panel layouts, `$X1` "Icon" and `$B1` "Indicator":
+/// <https://docs.elgato.com/streamdeck/sdk/references/touch-strip-layout>
+pub const PANEL_W: u32 = 200;
+pub const PANEL_H: u32 = 100;
+/// `$X1`/`$B1` title: 16 px, weight 600; left-aligned in `$X1`, right in `$B1`.
+const X1_TITLE: (u32, u32, u32, u32) = (16, 10, 136, 24);
+/// `$X1` icon: centred in the panel.
+const X1_ICON: (u32, u32, u32, u32) = (76, 40, 48, 48);
+// The `$B1` "Indicator" layout, drawn by the volume dial.
+/// Icon: on the left, room for the value and bar to its right.
+#[allow(dead_code)]
+const B1_ICON: (u32, u32, u32, u32) = (16, 40, 48, 48);
+/// Value text: 24 px, weight 600, right-aligned (e.g. `40%`).
+#[allow(dead_code)]
+const B1_VALUE: (u32, u32, u32, u32) = (76, 40, 108, 32);
+/// Indicator: groove bar, rounded ends, range 0–100.
+#[allow(dead_code)]
+const B1_BAR: (u32, u32, u32, u32) = (76, 74, 108, 12);
+/// The panel icon box, in native pixels.
+const STRIP_ICON_PX: u32 = 48;
+/// The panel title size, in native pixels.
+const STRIP_TITLE_PX: f32 = 16.0;
+
+/// Which dial panel a touch at `x` falls in, for a strip `width` pixels wide with
+/// `dials` panels. Out of range (or no dials) is `None`.
+pub fn tap_to_dial(x: u32, width: u32, dials: usize) -> Option<usize> {
+    (dials > 0 && width > 0 && x < width).then(|| (x * dials as u32 / width) as usize)
+}
+
+/// Horizontal alignment inside a text rectangle.
+#[derive(Debug, Clone, Copy)]
+pub enum Align {
+    Left,
+    Center,
+    Right,
+}
 
 pub struct Renderer {
     font: Option<FontVec>,
@@ -79,15 +146,15 @@ impl Renderer {
         self.icons.clear();
     }
 
-    pub fn background(&self, key: Option<&KeyConfig>, style: &Style) -> Rgb {
-        key.and_then(|k| k.background.as_deref())
+    pub fn background(&self, face: Option<&Face>, style: &Style) -> Rgb {
+        face.and_then(|f| f.background)
             .and_then(Rgb::parse)
             .or_else(|| style.background.as_deref().and_then(Rgb::parse))
             .unwrap_or(if style.follow_theme { self.theme.background } else { Rgb(0, 0, 0) })
     }
 
-    pub fn label_color(&self, key: Option<&KeyConfig>, style: &Style, bg: Rgb) -> Rgb {
-        if let Some(c) = key.and_then(|k| k.label_color.as_deref()).and_then(Rgb::parse) {
+    pub fn label_color(&self, face: Option<&Face>, style: &Style, bg: Rgb) -> Rgb {
+        if let Some(c) = face.and_then(|f| f.label_color).and_then(Rgb::parse) {
             return c;
         }
         if let Some(c) = style.label_color.as_deref().and_then(Rgb::parse) {
@@ -105,26 +172,26 @@ impl Renderer {
     /// Render one key face at `size`×`size`.
     pub fn render(&mut self, key: Option<&KeyConfig>, style: &Style, size: u32, pressed: bool) -> RgbaImage {
         let key = key.filter(|k| !k.is_blank());
-        let bg = self.background(key, style);
-        let face = match key {
+        let face = key.as_ref().map(|k| k.face());
+        let bg = self.background(face.as_ref(), style);
+        let out = match key {
             None => solid(size, bg.mix(Rgb(0, 0, 0), 0.55)),
-            Some(k) => self.render_face(k, style, size, bg),
+            Some(k) => self.render_face(&k.face(), style, size, bg),
         };
-        if pressed { self.pressed(face, bg, size) } else { face }
+        if pressed { self.pressed(out, bg, size) } else { out }
     }
 
-    fn render_face(&mut self, key: &KeyConfig, style: &Style, size: u32, bg: Rgb) -> RgbaImage {
+    fn render_face(&mut self, face: &Face, style: &Style, size: u32, bg: Rgb) -> RgbaImage {
         let mut img = solid(size, bg);
         let s = size as f32;
-        let label = key.label.trim();
-        let want_label = key.show_label && !label.is_empty();
-        let fg = self.label_color(Some(key), style, bg);
+        let want_label = face.show_label && !face.label.is_empty();
+        let fg = self.label_color(Some(face), style, bg);
 
         let box_px = if want_label { (s * 0.62) as u32 } else { (s * 0.80) as u32 };
-        let icon = match (key.icon.as_deref(), key.glyph.as_deref().filter(|g| !g.trim().is_empty())) {
+        let icon = match (face.icon, face.glyph.filter(|g| !g.trim().is_empty())) {
             (Some(p), _) => self.icon(&paths::resolve(p), box_px),
             (None, Some(g)) => {
-                let color = key.label_color.as_deref().and_then(Rgb::parse).unwrap_or(if style.follow_theme {
+                let color = face.label_color.and_then(Rgb::parse).unwrap_or(if style.follow_theme {
                     self.theme.accent
                 } else {
                     fg
@@ -140,15 +207,75 @@ impl Renderer {
                 let area = s * 0.70;
                 let y = ((area - icon.height() as f32) / 2.0 + s * 0.04).max(0.0) as u32;
                 imageops::overlay(&mut img, icon, x as i64, y as i64);
-                self.draw_line(&mut img, label, s * 0.17, s * 0.86, fg, true);
+                self.draw_line(&mut img, face.label, s * 0.17, s * 0.86, fg, true);
             }
             (Some(icon), false) => {
                 let x = (size - icon.width()) / 2;
                 let y = (size - icon.height()) / 2;
                 imageops::overlay(&mut img, icon, x as i64, y as i64);
             }
-            (None, true) => self.draw_block(&mut img, label, fg),
+            (None, true) => self.draw_block(&mut img, face.label, fg),
             (None, false) => {}
+        }
+        img
+    }
+
+    // --- touch strip ----------------------------------------------------------------------
+
+    /// Render the whole touch strip (Stream Deck +: 800×100, four 200×100 dial panels),
+    /// scaled to `size`. `status` has one entry per physical dial; unconfigured dials
+    /// draw as empty slots. A tall `size` (the Plus XL) is not supported yet: a plain
+    /// background is returned and the limitation logged once.
+    pub fn render_strip(&mut self, cfg: &Config, status: &[DialStatus], size: (u32, u32)) -> RgbaImage {
+        if size.1 > size.0 {
+            static TALL: std::sync::Once = std::sync::Once::new();
+            TALL.call_once(|| log::warn!("tall touch strips (Stream Deck + XL) are not drawn yet"));
+            return solid_rect(size.0, size.1, self.theme.background);
+        }
+        let panels = status.len().max(1);
+        let native = (PANEL_W * panels as u32, PANEL_H);
+        let mut img = RgbaImage::new(native.0, native.1);
+        for i in 0..panels {
+            let panel =
+                self.render_strip_panel(cfg.dial(i as u8), &cfg.style, status.get(i).cloned().unwrap_or_default());
+            imageops::overlay(&mut img, &panel, (i as u32 * PANEL_W) as i64, 0);
+        }
+        if size == native { img } else { imageops::resize(&img, size.0, size.1, FilterType::Triangle) }
+    }
+
+    /// Render one 200×100 dial panel at native size.
+    pub fn render_strip_panel(&mut self, dial: Option<&DialConfig>, style: &Style, st: DialStatus) -> RgbaImage {
+        let dial = dial.filter(|d| !d.is_blank());
+        let face = dial.map(|d| d.face());
+        let bg = self.background(face.as_ref(), style);
+        let mut img = solid_rect(PANEL_W, PANEL_H, if face.is_none() { bg.mix(Rgb(0, 0, 0), 0.55) } else { bg });
+        let Some(face) = face else { return img };
+
+        let want_label = face.show_label && !face.label.is_empty();
+        // A pressed dial (or a tap, for a moment) turns the title into the accent colour,
+        // as the only feedback: the layout stays the same as the Elgato app's.
+        let fg = if st.pressed { self.theme.accent } else { self.label_color(Some(&face), style, bg) };
+
+        let icon = match (face.icon, face.glyph.filter(|g| !g.trim().is_empty())) {
+            (Some(p), _) => self.icon(&paths::resolve(p), STRIP_ICON_PX),
+            (None, Some(g)) => {
+                let color = face.label_color.and_then(Rgb::parse).unwrap_or(if style.follow_theme {
+                    self.theme.accent
+                } else {
+                    fg
+                });
+                self.glyph(g, (STRIP_ICON_PX as f32 * 0.86) as u32, color)
+            }
+            _ => None,
+        };
+        if let Some(icon) = icon {
+            let (x0, y0, w, h) = X1_ICON;
+            let x = x0 + (w - icon.width()) / 2;
+            let y = y0 + (h - icon.height()) / 2;
+            imageops::overlay(&mut img, &icon, x as i64, y as i64);
+        }
+        if want_label {
+            self.draw_text_in(&mut img, X1_TITLE, STRIP_TITLE_PX, Align::Left, face.label, fg, true);
         }
         img
     }
@@ -237,17 +364,7 @@ impl Renderer {
         while px > min_px && Self::text_width(font, px, text) > max_w {
             px -= 0.5;
         }
-        let mut text = text.to_string();
-        if Self::text_width(font, px, &text) > max_w {
-            let chars: Vec<char> = text.chars().collect();
-            for n in (1..chars.len()).rev() {
-                let cand = format!("{}…", chars[..n].iter().collect::<String>().trim_end());
-                if Self::text_width(font, px, &cand) <= max_w || n == 1 {
-                    text = cand;
-                    break;
-                }
-            }
-        }
+        let text = Self::ellipsize(font, px, text, max_w);
         let w = Self::text_width(font, px, &text);
         let sf = font.as_scaled(PxScale::from(px));
         let baseline = cy + (sf.ascent() + sf.descent()) / 2.0;
@@ -256,6 +373,51 @@ impl Renderer {
             draw_text(img, font, px, x + 1.0, baseline + 1.0, &text, Rgb(0, 0, 0), 0.6);
         }
         draw_text(img, font, px, x, baseline, &text, color, 1.0);
+    }
+
+    /// Draw one line inside a fixed `[x, y, w, h]` rectangle, aligned and ellipsized to
+    /// the width (the text never shrinks; Elgato clips, we end with `…`).
+    #[allow(clippy::too_many_arguments)]
+    fn draw_text_in(
+        &self,
+        img: &mut RgbaImage,
+        rect: (u32, u32, u32, u32),
+        px: f32,
+        align: Align,
+        text: &str,
+        color: Rgb,
+        shadow: bool,
+    ) {
+        let Some(font) = &self.font else { return };
+        let (x0, y0, w, h) = rect;
+        let text = Self::ellipsize(font, px, text, w as f32);
+        let sf = font.as_scaled(PxScale::from(px));
+        let baseline = y0 as f32 + h as f32 / 2.0 + (sf.ascent() + sf.descent()) / 2.0;
+        let tw = Self::text_width(font, px, &text);
+        let x = match align {
+            Align::Left => x0 as f32,
+            Align::Center => x0 as f32 + (w as f32 - tw) / 2.0,
+            Align::Right => x0 as f32 + w as f32 - tw,
+        };
+        if shadow {
+            draw_text(img, font, px, x + 1.0, baseline + 1.0, &text, Rgb(0, 0, 0), 0.6);
+        }
+        draw_text(img, font, px, x, baseline, &text, color, 1.0);
+    }
+
+    /// Shorten `text` with a trailing ellipsis so it fits `max_w` at `px`.
+    fn ellipsize(font: &FontVec, px: f32, text: &str, max_w: f32) -> String {
+        if Self::text_width(font, px, text) <= max_w {
+            return text.to_string();
+        }
+        let chars: Vec<char> = text.chars().collect();
+        for n in (1..chars.len()).rev() {
+            let cand = format!("{}…", chars[..n].iter().collect::<String>().trim_end());
+            if Self::text_width(font, px, &cand) <= max_w || n == 1 {
+                return cand;
+            }
+        }
+        text.to_string()
     }
 
     /// Label without an icon: large, centred, wrapped onto up to three lines.
@@ -357,6 +519,10 @@ fn solid(size: u32, c: Rgb) -> RgbaImage {
     RgbaImage::from_pixel(size, size, Rgba([c.0, c.1, c.2, 255]))
 }
 
+fn solid_rect(w: u32, h: u32, c: Rgb) -> RgbaImage {
+    RgbaImage::from_pixel(w, h, Rgba([c.0, c.1, c.2, 255]))
+}
+
 /// Load a raster or SVG icon and fit it inside a `box_px` square, preserving aspect ratio.
 pub fn load_icon(path: &Path, box_px: u32) -> Option<RgbaImage> {
     let is_svg = path
@@ -430,7 +596,9 @@ fn load_font_with(c: char) -> Option<FontVec> {
 
 #[cfg(test)]
 mod tests {
-    use super::glyph_char;
+    use super::{DialStatus, Renderer, X1_ICON, X1_TITLE, glyph_char, tap_to_dial};
+    use crate::config::{Config, DialConfig, KeyConfig, Style};
+    use crate::theme::Rgb;
 
     #[test]
     fn glyph_forms() {
@@ -440,5 +608,135 @@ mod tests {
         assert_eq!(glyph_char("\\u{f075f}"), Some('\u{f075f}'));
         assert_eq!(glyph_char("A"), Some('A'));
         assert_eq!(glyph_char(""), None);
+    }
+
+    /// Deterministic style: no theme, a fixed background, black-on-`#334455`.
+    fn test_style() -> Style {
+        Style { follow_theme: false, background: Some("#334455".into()), ..Default::default() }
+    }
+
+    /// The renderer needs a font to draw ink; skip the pixel assertions without one.
+    fn renderer_with_font() -> Option<Renderer> {
+        let r = Renderer::new(&test_style());
+        r.font.is_some().then_some(r)
+    }
+
+    fn in_rect(x: u32, y: u32, rect: (u32, u32, u32, u32)) -> bool {
+        let (x0, y0, w, h) = rect;
+        x >= x0 && x < x0 + w && y >= y0 && y < y0 + h
+    }
+
+    #[test]
+    fn key_glyph_stays_in_its_box() {
+        let Some(mut r) = renderer_with_font() else { return };
+        let style = test_style();
+        let key = KeyConfig { label: String::new(), glyph: Some("A".into()), ..KeyConfig::new(0) };
+        let img = r.render(Some(&key), &style, 72, false);
+        let box_px = (72.0 * 0.80) as u32;
+        let off = (72 - box_px) / 2;
+        for y in 0..72 {
+            for x in 0..72 {
+                if img.get_pixel(x, y)[0] > 120 {
+                    assert!(x >= off && x < off + box_px && y >= off && y < off + box_px, "ink at ({x},{y})");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn strip_is_800x100_for_a_plus() {
+        let mut r = Renderer::new(&test_style());
+        let cfg = Config::default();
+        let status = vec![DialStatus::default(); 4];
+        let img = r.render_strip(&cfg, &status, (800, 100));
+        assert_eq!(img.dimensions(), (800, 100));
+    }
+
+    #[test]
+    fn strip_scaled() {
+        let mut r = Renderer::new(&test_style());
+        let cfg = Config::default();
+        let status = vec![DialStatus::default(); 4];
+        assert_eq!(r.render_strip(&cfg, &status, (400, 50)).dimensions(), (400, 50));
+    }
+
+    #[test]
+    fn strip_panel_layout() {
+        let Some(mut r) = renderer_with_font() else { return };
+        let mut cfg = Config { style: test_style(), ..Default::default() };
+        cfg.dials.push(DialConfig { label: "Workspace".into(), glyph: Some("A".into()), ..DialConfig::new(0) });
+        let status = vec![DialStatus::default(); 4];
+        let img = r.render_strip(&cfg, &status, (800, 100));
+        let (title, icon) = (X1_TITLE, X1_ICON);
+        let mut title_ink = 0;
+        for y in 0..100 {
+            for x in 0..800 {
+                if img.get_pixel(x, y)[0] <= 120 {
+                    continue;
+                }
+                let lx = x % 200;
+                if x < 200 {
+                    // Panel 0's ink sits in the title or icon rect, never elsewhere.
+                    assert!(in_rect(lx, y, title) || in_rect(lx, y, icon), "ink at ({x},{y})");
+                    if in_rect(lx, y, title) {
+                        title_ink += 1;
+                    }
+                } else {
+                    // The other three panels are empty slots: no ink at all.
+                    panic!("ink in empty panel at ({x},{y})");
+                }
+            }
+        }
+        // The title is left-aligned: its ink starts near x = 16.
+        assert!(title_ink > 0, "no title ink");
+        let leftmost =
+            (0..200u32).find(|x| (0..100).any(|y| img.get_pixel(*x, y)[0] > 120 && in_rect(*x, y, title))).unwrap();
+        assert!((14..20).contains(&leftmost), "title starts at x = {leftmost}");
+    }
+
+    #[test]
+    fn strip_empty_slot_matches_empty_key() {
+        let mut r = Renderer::new(&test_style());
+        let style = test_style();
+        let panel = r.render_strip_panel(None, &style, DialStatus::default());
+        let key = r.render(None, &style, 100, false);
+        assert_eq!(*panel.get_pixel(100, 50), *key.get_pixel(50, 50));
+    }
+
+    #[test]
+    fn strip_panel_isolation() {
+        let mut r = Renderer::new(&test_style());
+        let mut cfg = Config { style: test_style(), ..Default::default() };
+        cfg.dials.push(DialConfig { label: "One".into(), glyph: Some("A".into()), ..DialConfig::new(0) });
+        cfg.dials.push(DialConfig { label: "Two".into(), glyph: Some("B".into()), ..DialConfig::new(2) });
+        let status = vec![DialStatus::default(); 4];
+        let before = r.render_strip(&cfg, &status, (800, 100));
+        cfg.dials[1].label = "Changed".into();
+        let after = r.render_strip(&cfg, &status, (800, 100));
+        for (x0, changed) in [(0u32, false), (200, false), (400, true), (600, false)] {
+            let same = (0..200).all(|dx| (0..100).all(|y| before.get_pixel(x0 + dx, y) == after.get_pixel(x0 + dx, y)));
+            assert_eq!(same, !changed, "panel at x = {x0} should {changed}have changed");
+        }
+    }
+
+    #[test]
+    fn tap_edges() {
+        assert_eq!(tap_to_dial(0, 800, 4), Some(0));
+        assert_eq!(tap_to_dial(199, 800, 4), Some(0));
+        assert_eq!(tap_to_dial(200, 800, 4), Some(1));
+        assert_eq!(tap_to_dial(599, 800, 4), Some(2));
+        assert_eq!(tap_to_dial(600, 800, 4), Some(3));
+        assert_eq!(tap_to_dial(799, 800, 4), Some(3));
+        assert_eq!(tap_to_dial(800, 800, 4), None);
+        assert_eq!(tap_to_dial(10, 0, 4), None);
+        assert_eq!(tap_to_dial(10, 800, 0), None);
+    }
+
+    #[test]
+    fn label_color_contrast_kept() {
+        let r = Renderer::new(&Style { follow_theme: false, ..Default::default() });
+        // White label on a white background flips dark; on black it keeps its contrast.
+        assert_eq!(r.label_color(None, &test_style(), Rgb(255, 255, 255)), Rgb(16, 16, 16));
+        assert_eq!(r.label_color(None, &test_style(), Rgb(0, 0, 0)), Rgb(255, 255, 255));
     }
 }

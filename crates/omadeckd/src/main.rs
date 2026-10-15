@@ -12,10 +12,10 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use notify::{RecursiveMode, Watcher};
-use omadeck_core::device::{self, DeviceStateReader, DeviceStateUpdate, HidApi, Kind, StreamDeck};
+use omadeck_core::device::{self, DeviceStateReader, DeviceStateUpdate, HidApi, ImageRect, Kind, StreamDeck};
 use omadeck_core::ipc::{Command, Event};
 use omadeck_core::paths::FileStamp;
-use omadeck_core::{Action, Config, DeckInfo, Renderer, action, paths};
+use omadeck_core::{Action, Config, DeckInfo, DialStatus, PANEL_W, Renderer, action, paths, tap_to_dial};
 
 use hub::Hub;
 use nav::Nav;
@@ -25,12 +25,27 @@ const READ_TIMEOUT: Duration = Duration::from_millis(100);
 const RELOAD_DEBOUNCE: Duration = Duration::from_millis(150);
 /// How often to double-check the config by stat, for changes inotify can't see.
 const STAMP_INTERVAL: Duration = Duration::from_secs(1);
+/// How long a panel stays highlighted after a tap on the strip.
+const DIAL_FLASH: Duration = Duration::from_millis(150);
+/// The Plus's LCD can ignore the first writes right after connect; repaint once after this.
+const POST_CONNECT_REPAINT: Duration = Duration::from_secs(1);
 
 struct Deck {
     dev: Arc<StreamDeck>,
     reader: Arc<DeviceStateReader>,
     kind: Kind,
     info: DeckInfo,
+    /// Whether each dial is physically pressed down.
+    dial_pressed: Vec<bool>,
+    /// Until when each dial's panel stays highlighted after a tap on the strip.
+    flash_until: Vec<Option<Instant>>,
+}
+
+/// The live state of dial `i` for the strip renderer.
+fn dial_status(d: &Deck, i: u8, now: Instant) -> DialStatus {
+    let n = i as usize;
+    let flashed = d.flash_until.get(n).and_then(|t| *t).is_some_and(|t| now.duration_since(t) < DIAL_FLASH);
+    DialStatus { pressed: d.dial_pressed.get(n).copied().unwrap_or(false) || flashed, level: None }
 }
 
 fn main() {
@@ -179,6 +194,7 @@ fn run() -> Result<()> {
     let mut deck: Option<Deck> = None;
     let mut last_scan: Option<Instant> = None;
     let mut reload_at: Option<Instant> = None;
+    let mut repaint_at: Option<Instant> = None;
 
     log::info!("omadeckd {} ready; config {}", env!("CARGO_PKG_VERSION"), paths::config_file().display());
 
@@ -260,7 +276,7 @@ fn run() -> Result<()> {
             }
         }
 
-        let Some(d) = &deck else {
+        let Some(d) = &mut deck else {
             if last_scan.is_none_or(|t| t.elapsed() >= SCAN_INTERVAL) {
                 last_scan = Some(Instant::now());
                 deck = connect(&mut hid, &cfg, nav.current(), &mut renderer);
@@ -268,11 +284,39 @@ fn run() -> Result<()> {
                     Some(d) => Event::Connected { deck: d.info.clone() },
                     None => Event::Disconnected,
                 });
+                if deck.is_some() {
+                    repaint_at = Some(Instant::now() + POST_CONNECT_REPAINT);
+                }
             } else {
                 std::thread::sleep(READ_TIMEOUT);
             }
             continue;
         };
+
+        let now = Instant::now();
+
+        // The Plus's LCD can ignore the first writes right after connect; repaint once.
+        if repaint_at.is_some_and(|t| now >= t) {
+            repaint_at = None;
+            if let Err(e) = paint_all(d, &cfg, nav.current(), &mut renderer) {
+                log::warn!("post-connect repaint failed: {e}");
+            }
+        }
+
+        // Expire tap flashes so a panel only stays highlighted for a moment.
+        let expired: Vec<u8> = d
+            .flash_until
+            .iter_mut()
+            .enumerate()
+            .filter(|(_, t)| t.is_some_and(|t| now.duration_since(t) >= DIAL_FLASH))
+            .map(|(i, t)| {
+                *t = None;
+                i as u8
+            })
+            .collect();
+        for i in expired {
+            paint_dial(d, &cfg, &mut renderer, i);
+        }
 
         match d.reader.read(Some(READ_TIMEOUT)) {
             Ok(updates) => {
@@ -328,6 +372,10 @@ fn run() -> Result<()> {
                         DeviceStateUpdate::EncoderDown(i) => {
                             log::info!("dial {i} pressed");
                             hub.publish(Event::DialDown { index: i });
+                            if let Some(p) = d.dial_pressed.get_mut(i as usize) {
+                                *p = true;
+                            }
+                            paint_dial(d, &cfg, &mut renderer, i);
                             if let Some(dc) = cfg.dial(i)
                                 && !dc.press.is_none()
                             {
@@ -345,10 +393,43 @@ fn run() -> Result<()> {
                         DeviceStateUpdate::EncoderUp(i) => {
                             log::info!("dial {i} released");
                             hub.publish(Event::DialUp { index: i });
+                            if let Some(p) = d.dial_pressed.get_mut(i as usize) {
+                                *p = false;
+                            }
+                            paint_dial(d, &cfg, &mut renderer, i);
                         }
                         DeviceStateUpdate::TouchScreenPress(x, y) => {
                             log::info!("strip tap at ({x}, {y})");
                             hub.publish(Event::StripTap { x, y });
+                            // A tap on a panel does the same as pressing its dial, as in
+                            // the Elgato app: run the dial's press and flash the title.
+                            if let Some((w, _)) = d.info.strip
+                                && let Some(i) = tap_to_dial(x as u32, w, d.info.dials as usize)
+                            {
+                                log::info!("strip tap on dial {i}");
+                                if let Some(t) = d.flash_until.get_mut(i) {
+                                    // The tap time, not a deadline: `dial_status` and the
+                                    // expiry sweep both measure elapsed time since it.
+                                    *t = Some(Instant::now());
+                                }
+                                paint_dial(d, &cfg, &mut renderer, i as u8);
+                                if let Some(dc) = cfg.dial(i as u8)
+                                    && !dc.press.is_none()
+                                {
+                                    log::info!("dial {i}: {}", dc.press.summary());
+                                    match run_dial_action(&cfg, &mut nav, &dc.press, 1) {
+                                        Ok(true) => show_page(Some(d), &cfg, &nav, &mut renderer, &hub),
+                                        Ok(false) => {}
+                                        Err(e) => {
+                                            log::warn!("dial {i}: {e:#}");
+                                            hub.publish(Event::DialActionFailed {
+                                                index: i as u8,
+                                                message: format!("{e:#}"),
+                                            });
+                                        }
+                                    }
+                                }
+                            }
                         }
                         DeviceStateUpdate::TouchScreenLongPress(x, y) => {
                             log::info!("strip long press at ({x}, {y})");
@@ -416,7 +497,9 @@ fn connect(hid: &mut HidApi, cfg: &Config, page: Option<&str>, renderer: &mut Re
         }
     };
     let reader = dev.get_reader();
-    let deck = Deck { dev, reader, kind, info: DeckInfo::new(kind, &serial) };
+    let info = DeckInfo::new(kind, &serial);
+    let n_dials = info.dials as usize;
+    let deck = Deck { dev, reader, kind, info, dial_pressed: vec![false; n_dials], flash_until: vec![None; n_dials] };
     log::info!(
         "connected {} (serial {}, firmware {})",
         deck.info.model,
@@ -455,6 +538,15 @@ fn paint_all(d: &Deck, cfg: &Config, page: Option<&str>, renderer: &mut Renderer
     for i in 0..d.kind.key_count() {
         write_key(d, cfg, page, renderer, i, false)?;
     }
+    // The touch strip, panel by panel (the same 200×100 writes a single-panel update
+    // uses); it repaints on connect, reload and theme change, so follow_theme and hot
+    // reload come for free. The first writes right after connect can be dropped by the
+    // Plus's LCD, so `run` repaints once more a moment later (POST_CONNECT_REPAINT).
+    if d.info.strip.is_some() {
+        for i in 0..d.info.dials {
+            write_panel(d, cfg, renderer, i)?;
+        }
+    }
     d.dev.flush()?;
     Ok(())
 }
@@ -462,6 +554,24 @@ fn paint_all(d: &Deck, cfg: &Config, page: Option<&str>, renderer: &mut Renderer
 fn paint(d: &Deck, cfg: &Config, page: Option<&str>, renderer: &mut Renderer, i: u8, pressed: bool) {
     if let Err(e) = write_key(d, cfg, page, renderer, i, pressed).and_then(|_| Ok(d.dev.flush()?)) {
         log::warn!("paint key {i}: {e}");
+    }
+}
+
+/// Queue one 200×100 dial panel for the next `flush`.
+fn write_panel(d: &Deck, cfg: &Config, renderer: &mut Renderer, i: u8) -> Result<()> {
+    let panel = renderer.render_strip_panel(cfg.dial(i), &cfg.style, dial_status(d, i, Instant::now()));
+    let rect = ImageRect::from_image(image::DynamicImage::ImageRgba8(panel))?;
+    d.dev.write_lcd(i as u16 * PANEL_W as u16, 0, &rect)?;
+    Ok(())
+}
+
+/// Redraw one 200×100 dial panel.
+fn paint_dial(d: &Deck, cfg: &Config, renderer: &mut Renderer, i: u8) {
+    if d.info.strip.is_none() || i >= d.info.dials {
+        return;
+    }
+    if let Err(e) = write_panel(d, cfg, renderer, i).and_then(|_| Ok(d.dev.flush()?)) {
+        log::warn!("paint dial {i}: {e}");
     }
 }
 
@@ -479,13 +589,48 @@ fn snapshot(out: &Path, page: Option<&str>) -> Result<()> {
     let mut renderer = Renderer::new(&cfg.style);
     let size = 144u32;
     let gap = 18u32;
-    let (w, h) = (info.cols as u32 * (size + gap) + gap, info.rows as u32 * (size + gap) + gap);
+    let w = info.cols as u32 * (size + gap) + gap;
+    let grid_h = info.rows as u32 * (size + gap) + gap;
+    // Decks with a touch strip show it under the key grid, scaled to the grid's width,
+    // then a row of dial circles, so bug reports show the whole deck.
+    let strip_h = info.strip.map(|(sw, sh)| w * sh / sw).unwrap_or(0);
+    let dial_r = if info.dials > 0 { size / 4 } else { 0 };
+    let h = grid_h + if strip_h > 0 { gap + strip_h } else { 0 } + if dial_r > 0 { gap + dial_r * 2 } else { 0 };
     let mut canvas = image::RgbaImage::from_pixel(w, h, image::Rgba([10, 10, 12, 255]));
     for i in 0..info.key_count() {
         let face = renderer.render(keys.get(i), &cfg.style, size, false);
         let (r, c) = (i as u32 / info.cols as u32, i as u32 % info.cols as u32);
         image::imageops::overlay(&mut canvas, &face, (gap + c * (size + gap)) as i64, (gap + r * (size + gap)) as i64);
     }
+    let mut y = grid_h + gap;
+    if let Some((sw, sh)) = info.strip {
+        let status = vec![DialStatus::default(); info.dials as usize];
+        let strip = renderer.render_strip(&cfg, &status, (w, w * sh / sw));
+        image::imageops::overlay(&mut canvas, &strip, 0, y as i64);
+        y += strip_h;
+    }
+    if dial_r > 0 {
+        for i in 0..info.dials {
+            // The panel's background colour, sampled from a corner (never icon or text).
+            let panel = renderer.render_strip_panel(cfg.dial(i), &cfg.style, DialStatus::default());
+            let col = *panel.get_pixel(2, 2);
+            let cx = gap + (i as u32) * (size + gap) + size / 2;
+            draw_circle(&mut canvas, cx, y + dial_r, dial_r, col);
+        }
+    }
     canvas.save(out)?;
     Ok(())
+}
+
+/// A filled circle, good enough for the snapshot's dial knobs.
+fn draw_circle(img: &mut image::RgbaImage, cx: u32, cy: u32, r: u32, c: image::Rgba<u8>) {
+    let r2 = r as i32 * r as i32;
+    for y in cy.saturating_sub(r)..(cy + r + 1).min(img.height()) {
+        for x in cx.saturating_sub(r)..(cx + r + 1).min(img.width()) {
+            let (dx, dy) = (x as i32 - cx as i32, y as i32 - cy as i32);
+            if dx * dx + dy * dy <= r2 {
+                img.put_pixel(x, y, c);
+            }
+        }
+    }
 }
