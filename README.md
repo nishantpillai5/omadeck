@@ -29,7 +29,7 @@ Written in Rust: a tiny background daemon drives the hardware, and a GTK4/libadw
 
 ## Features
 
-- **Six action types**
+- **Nine action types**
   - **Launch app:** pick from your installed apps; the app's icon and name come along. Apps launch through `uwsm-app`, the same way Omarchy launches them.
   - **Run script:** optionally in a terminal so you can watch the output.
   - **Play sound:** through PipeWire (`pw-play`), with per-key volume.
@@ -38,13 +38,14 @@ Written in Rust: a tiny background daemon drives the hardware, and a GTK4/libadw
   - **Open page:** pages and folders, for more keys than your deck has. A new page starts with a Back key, so a key that opens it works like a folder.
   - **Next/previous page:** the next or previous page — for a key, a dial turn, or a flick of the Stream Deck +'s touch strip (left is next, right is previous, wrapping). Folders are skipped.
   - **Volume:** change the output or input (microphone) volume, or toggle mute. It goes through Omarchy's own volume commands when they're installed, so the same on-screen pop-up shows as your volume keys — otherwise it falls back to `wpctl`.
+  - **Brightness:** change the panel brightness by ±%, or set it to an exact value. The value is remembered across restarts (in the state file, not your config), as in the Elgato app.
 - **Icons your way**
   - PNG, JPEG, SVG, WebP or GIF images.
   - App icons from your icon theme.
   - **Nerd Font glyphs**, drawn in your theme's accent colour.
   - Labels are rendered in your Omarchy font.
 - **Stream Deck + dials.** Each dial runs any of the action types on turn left, turn right and press — a workspace dial, a volume dial, a launch-on-press dial.
-- **Stream Deck + touch strip.** The strip shows each dial's label and icon in its own panel, in the theme's colours, following the same panel layouts as Elgato's own app. A volume dial shows its level and a groove bar in Elgato's `Indicator` layout, kept in sync when the volume changes elsewhere. Tapping a panel presses its dial; the pressed panel highlights briefly.
+- **Stream Deck + touch strip.** The strip shows each dial's label and icon in its own panel, in the theme's colours, following the same panel layouts as Elgato's own app. A volume dial shows its level and a groove bar in Elgato's `Indicator` layout, kept in sync when the volume changes elsewhere, and a brightness dial shows the panel's brightness. Tapping a panel presses its dial; the pressed panel highlights briefly. A flick pages through, like the Elgato app.
 - **Theme aware.** Key backgrounds, labels, glyphs and the press highlight come from the active Omarchy theme. Run `omarchy theme set …` and the deck re-renders instantly.
 - **Live editing.** Changes land on the hardware as you type, and the deck shows whichever page you're editing. Drag keys to rearrange them. Press a physical key to jump to it in the editor.
 - **Robust.** Reconnects after unplug/replug, and a typo in a hand-edited config keeps the last good layout on the deck. Apps opened from the deck keep running when the daemon restarts or upgrades. Uses about 9 MB of RAM and 0% CPU at idle.
@@ -145,7 +146,7 @@ The config file is `~/.config/omadeck/config.toml`. The app edits it for you, bu
 Each time the app opens, and before it deletes a page, it keeps a copy of `config.toml` in `~/.local/state/omadeck/backups` (the newest 20). Deleting a page or clearing a key can also be undone from the notice that pops up.
 
 ```toml
-brightness = 70
+brightness = 70               # start value; the deck remembers its last brightness, and an edit here sets it
 
 [style]
 follow_theme = true            # colours from the active Omarchy theme
@@ -198,6 +199,7 @@ Action types:
 | `back` | |
 | `volume` | `device` (`output`/`input`), `change` (±%), `mute` |
 | `page_step` | `change` (± pages, default 1) |
+| `brightness` | `change` (±%) and/or `set` (absolute 0–100) |
 
 Per-key look overrides are `background`, `label_color` and `show_label`. Dials take the same fields (`icon`, `glyph`, `background`, `label_color`, `show_label`) for their panel on the touch strip.
 
@@ -271,7 +273,7 @@ Ideas, roughly in order; [docs/ROADMAP.md](docs/ROADMAP.md) has the details. Wan
 - [ ] **Templates**: ready-made pages to add in one click, starting with Omarchy Basics (your AI agent, dictation and everyday Omarchy keys); save any page as a template and share it
 - [ ] **Toggle keys** with on/off faces (mute, night light, …) that reflect real state
 - [ ] **Multi-actions**: run several actions from one key, with optional delays
-- [~] **Stream Deck +**: a value layout on the strip — volume (done), then brightness — and page switching on swipe
+- [x] **Stream Deck +**: value layouts on the strip — volume and brightness — and page switching on swipe
 - [ ] **OBS** scene and recording keys via obs-websocket
 - [ ] **Live keys** that show a clock, CPU usage or the active workspace
 - [ ] **Multiple decks** with a layout per serial number

@@ -5,7 +5,7 @@
 # Home page; more pages are [[page]] tables with their own [[page.key]]s.
 # Icon paths may be absolute, start with ~/, or be relative to ~/.config/omadeck/.
 
-brightness = 70
+brightness = 70                # start value; the deck remembers its last brightness, and an edit here sets it
 
 [style]
 follow_theme = true          # use the active Omarchy theme's colours
@@ -119,3 +119,16 @@ command = "playerctl play-pause"
 # [dial.press]
 # type = "volume"
 # mute = true                # toggle mute instead of changing the level
+#
+# A brightness dial: turn to change the panel brightness. Its panel on the strip
+# shows the current value, and the brightness is remembered across restarts.
+# [[dial]]
+# index = 3
+# label = "Brightness"
+# glyph = "f00de"            # a sun
+# [dial.turn_left]
+# type = "brightness"
+# change = -5
+# [dial.turn_right]
+# type = "brightness"
+# change = 5

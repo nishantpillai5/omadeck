@@ -32,11 +32,12 @@ pub fn build_key(app: &Rc<App>, i: u8) -> gtk::Widget {
         .tooltip_text(match &key.action {
             Action::Back => "Back only works on the deck",
             Action::PageStep { .. } => "Page steps only work on the deck",
+            Action::Brightness { .. } => "Brightness only works on the deck",
             _ => "Try it now",
         })
         .valign(gtk::Align::Center)
         .sensitive(match &key.action {
-            Action::None | Action::Back | Action::PageStep { .. } => false,
+            Action::None | Action::Back | Action::PageStep { .. } | Action::Brightness { .. } => false,
             Action::Page { page } => app.config.borrow().has_page(page),
             _ => true,
         })
@@ -169,6 +170,7 @@ pub fn build_dial(app: &Rc<App>, i: u8) -> gtk::Widget {
         .description("Dials are numbered left to right, from 0")
         .build();
 
+    let presets = gtk::Box::new(gtk::Orientation::Horizontal, 6);
     let preset = gtk::Button::builder()
         .label("Volume dial")
         .tooltip_text("Set this dial to the output volume: turn to change it, press to mute")
@@ -186,6 +188,27 @@ pub fn build_dial(app: &Rc<App>, i: u8) -> gtk::Widget {
         });
         a.rebuild_editor();
     });
+    presets.append(&preset);
+    let preset = gtk::Button::builder()
+        .label("Brightness dial")
+        .tooltip_text("Set this dial to the panel brightness: turn to change it")
+        .valign(gtk::Align::Center)
+        .css_classes(["flat"])
+        .build();
+    let a = app.clone();
+    preset.connect_clicked(move |_| {
+        a.edit_dial(i, |d| {
+            d.label = "Brightness".into();
+            d.glyph = Some("f00de".into());
+            d.turn_left = Action::Brightness { change: -5, set: None };
+            d.turn_right = Action::Brightness { change: 5, set: None };
+            // A preset sets every slot: a Volume press left over from the Volume preset
+            // would make the panel show the volume.
+            d.press = Action::None;
+        });
+        a.rebuild_editor();
+    });
+    presets.append(&preset);
     let clear = gtk::Button::builder()
         .icon_name("user-trash-symbolic")
         .tooltip_text("Clear this dial")
@@ -196,7 +219,7 @@ pub fn build_dial(app: &Rc<App>, i: u8) -> gtk::Widget {
     let a = app.clone();
     clear.connect_clicked(move |_| a.clear_dial(i));
     let header_buttons = gtk::Box::new(gtk::Orientation::Horizontal, 6);
-    header_buttons.append(&preset);
+    header_buttons.append(&presets);
     header_buttons.append(&clear);
     group.set_header_suffix(Some(&header_buttons));
 
@@ -285,11 +308,12 @@ fn dial_action_group(
         .tooltip_text(match &act {
             Action::Back => "Back only works on the deck",
             Action::PageStep { .. } => "Page steps only work on the deck",
+            Action::Brightness { .. } => "Brightness only works on the deck",
             _ => "Try it now",
         })
         .valign(gtk::Align::Center)
         .sensitive(match &act {
-            Action::None | Action::Back | Action::PageStep { .. } => false,
+            Action::None | Action::Back | Action::PageStep { .. } | Action::Brightness { .. } => false,
             Action::Page { page } => app.config.borrow().has_page(page),
             _ => true,
         })
@@ -390,7 +414,7 @@ fn action_editor(
         }
     });
     group.add(&kind_row);
-    action_rows(app, group, target, get, edit, edit_at, on_app_picked, on_new_page, on_favicon);
+    action_rows(app, group, target, get, edit, default_for, edit_at, on_app_picked, on_new_page, on_favicon);
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -400,6 +424,7 @@ fn action_rows(
     target: impl Fn(&Rc<App>) -> Target + Clone + 'static,
     get: impl Fn(&Rc<App>) -> Action + Clone + 'static,
     edit: impl Fn(&Rc<App>, Action) + Clone + 'static,
+    default_for: impl Fn(usize) -> Action + Clone + 'static,
     edit_at: impl Fn(&Rc<App>, Target, Action) + Clone + 'static,
     on_app_picked: impl Fn(&Rc<App>, &Target, String, String, Option<String>) + Clone + 'static,
     on_new_page: impl Fn(&Rc<App>) -> String + Clone + 'static,
@@ -749,6 +774,67 @@ fn action_rows(
                             *c = change;
                         }
                         edit(&a, act);
+                    }
+                });
+                group.add(&spin);
+            }
+        }
+
+        Action::Brightness { change, set } => {
+            group.set_description(Some(
+                "Changes the panel brightness (0–100). The value is remembered in the \
+                 state file, so it survives a restart. On a dial it is drawn on the touch \
+                 strip.",
+            ));
+
+            let mode_of = |a: &Action| match a {
+                Action::Brightness { set: Some(..), .. } => 1,
+                _ => 0,
+            };
+            let modes = gtk::StringList::new(&["Change per turn", "Set to a value"]);
+            let mode_row = adw::ComboRow::builder().title("Mode").model(&modes).build();
+            mode_row.set_selected(mode_of(&action) as u32);
+            mode_row.connect_selected_notify({
+                let a = app.clone();
+                let get = get.clone();
+                let edit = edit.clone();
+                let default_for = default_for.clone();
+                move |row| {
+                    let sel = row.selected() as usize;
+                    if sel != mode_of(&get(&a)) {
+                        // Back to "change": the slot's default, so Turn left lowers again.
+                        let act = match sel {
+                            1 => Action::Brightness { change: 0, set: Some(50) },
+                            _ => default_for(Action::Brightness { change: 0, set: None }.kind_index()),
+                        };
+                        edit(&a, act);
+                        a.rebuild_editor();
+                    }
+                }
+            });
+            group.add(&mode_row);
+
+            if let Some(v) = set {
+                let spin = adw::SpinRow::with_range(0.0, 100.0, 5.0);
+                spin.set_title("Brightness (%)");
+                spin.set_value(*v as f64);
+                spin.connect_value_notify({
+                    let a = app.clone();
+                    let edit = edit.clone();
+                    move |r| {
+                        edit(&a, Action::Brightness { change: 0, set: Some(r.value().round() as u8) });
+                    }
+                });
+                group.add(&spin);
+            } else {
+                let spin = adw::SpinRow::with_range(-50.0, 50.0, 1.0);
+                spin.set_title("Change per turn (%)");
+                spin.set_value(*change as f64);
+                spin.connect_value_notify({
+                    let a = app.clone();
+                    let edit = edit.clone();
+                    move |r| {
+                        edit(&a, Action::Brightness { change: r.value().round() as i8, set: None });
                     }
                 });
                 group.add(&spin);
