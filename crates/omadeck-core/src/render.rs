@@ -14,7 +14,7 @@ use image::Rgba;
 pub use image::RgbaImage;
 use image::imageops::{self, FilterType};
 
-use crate::config::{Config, DialConfig, KeyConfig, Style};
+use crate::config::{AudioDevice, Config, DialConfig, KeyConfig, Style};
 use crate::paths::{self, FileStamp};
 use crate::theme::{Rgb, Theme};
 
@@ -39,11 +39,13 @@ pub struct DialStatus {
 }
 
 /// A value for the `$B1` layout: a bar position plus the text next to it (e.g. `40%`).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Level {
     /// 0.0..=1.0, for the bar.
     pub value: f32,
     pub text: String,
+    /// Mute: the text reads `Muted` and the bar is left empty.
+    pub muted: bool,
 }
 
 /// One dial panel of the Stream Deck + touch strip, in native 200×100 units.
@@ -52,24 +54,27 @@ pub struct Level {
 /// <https://docs.elgato.com/streamdeck/sdk/references/touch-strip-layout>
 pub const PANEL_W: u32 = 200;
 pub const PANEL_H: u32 = 100;
-/// `$X1`/`$B1` title: 16 px, weight 600; left-aligned in `$X1`, right in `$B1`.
+/// `$X1`/`$B1` title: 16 px, weight 600, left-aligned in both (per the Elgato SDK).
 const X1_TITLE: (u32, u32, u32, u32) = (16, 10, 136, 24);
 /// `$X1` icon: centred in the panel.
 const X1_ICON: (u32, u32, u32, u32) = (76, 40, 48, 48);
-// The `$B1` "Indicator" layout, drawn by the volume dial.
+// The `$B1` "Indicator" layout, drawn by a volume dial.
 /// Icon: on the left, room for the value and bar to its right.
-#[allow(dead_code)]
 const B1_ICON: (u32, u32, u32, u32) = (16, 40, 48, 48);
 /// Value text: 24 px, weight 600, right-aligned (e.g. `40%`).
-#[allow(dead_code)]
 const B1_VALUE: (u32, u32, u32, u32) = (76, 40, 108, 32);
 /// Indicator: groove bar, rounded ends, range 0–100.
-#[allow(dead_code)]
 const B1_BAR: (u32, u32, u32, u32) = (76, 74, 108, 12);
 /// The panel icon box, in native pixels.
 const STRIP_ICON_PX: u32 = 48;
 /// The panel title size, in native pixels.
 const STRIP_TITLE_PX: f32 = 16.0;
+/// The `$B1` value text size, in native pixels.
+const B1_VALUE_PX: f32 = 24.0;
+/// Default panel glyphs for a volume dial with no icon or glyph of its own.
+const OUTPUT_GLYPH: &str = "f057e"; // 󰕾 speaker
+const INPUT_GLYPH: &str = "f036c"; // 󰎬 microphone
+const MUTE_GLYPH: &str = "f075f"; // 󰝟 muted
 
 /// Which dial panel a touch at `x` falls in, for a strip `width` pixels wide with
 /// `dials` panels. Out of range (or no dials) is `None`.
@@ -243,7 +248,9 @@ impl Renderer {
         if size == native { img } else { imageops::resize(&img, size.0, size.1, FilterType::Triangle) }
     }
 
-    /// Render one 200×100 dial panel at native size.
+    /// Render one 200×100 dial panel at native size. A volume dial uses Elgato's `$B1`
+    /// "Indicator" layout (icon left, value and groove bar right); everything else uses
+    /// `$X1` "Icon" (title left, icon centred).
     pub fn render_strip_panel(&mut self, dial: Option<&DialConfig>, style: &Style, st: DialStatus) -> RgbaImage {
         let dial = dial.filter(|d| !d.is_blank());
         let face = dial.map(|d| d.face());
@@ -255,17 +262,20 @@ impl Renderer {
         // A pressed dial (or a tap, for a moment) turns the title into the accent colour,
         // as the only feedback: the layout stays the same as the Elgato app's.
         let fg = if st.pressed { self.theme.accent } else { self.label_color(Some(&face), style, bg) };
+        let glyph_color =
+            face.label_color.and_then(Rgb::parse).unwrap_or(if style.follow_theme { self.theme.accent } else { fg });
+
+        // A volume dial shows its level in the $B1 layout.
+        if let Some(device) = dial.and_then(|d| d.volume_device()) {
+            let muted = st.level.as_ref().is_some_and(|l| l.muted);
+            let icon = self.volume_icon(&face, device, muted, glyph_color);
+            self.draw_b1(&mut img, &face, bg, fg, want_label, icon, st.level);
+            return img;
+        }
 
         let icon = match (face.icon, face.glyph.filter(|g| !g.trim().is_empty())) {
             (Some(p), _) => self.icon(&paths::resolve(p), STRIP_ICON_PX),
-            (None, Some(g)) => {
-                let color = face.label_color.and_then(Rgb::parse).unwrap_or(if style.follow_theme {
-                    self.theme.accent
-                } else {
-                    fg
-                });
-                self.glyph(g, (STRIP_ICON_PX as f32 * 0.86) as u32, color)
-            }
+            (None, Some(g)) => self.glyph(g, (STRIP_ICON_PX as f32 * 0.86) as u32, glyph_color),
             _ => None,
         };
         if let Some(icon) = icon {
@@ -278,6 +288,61 @@ impl Renderer {
             self.draw_text_in(&mut img, X1_TITLE, STRIP_TITLE_PX, Align::Left, face.label, fg, true);
         }
         img
+    }
+
+    /// The icon for a volume dial's `$B1` panel: the user's icon if set, else the mute
+    /// glyph when muted, else their glyph, else a default speaker (output) or mic (input).
+    fn volume_icon(&mut self, face: &Face, device: AudioDevice, muted: bool, color: Rgb) -> Option<RgbaImage> {
+        if let Some(p) = face.icon {
+            return self.icon(&paths::resolve(p), STRIP_ICON_PX);
+        }
+        let glyph = if muted {
+            MUTE_GLYPH
+        } else if let Some(g) = face.glyph.filter(|g| !g.trim().is_empty()) {
+            g
+        } else if device.is_output() {
+            OUTPUT_GLYPH
+        } else {
+            INPUT_GLYPH
+        };
+        self.glyph(glyph, (STRIP_ICON_PX as f32 * 0.86) as u32, color)
+    }
+
+    /// Draw the `$B1` "Indicator" layout: title (right), icon (left), value and groove bar.
+    #[allow(clippy::too_many_arguments)]
+    fn draw_b1(
+        &self,
+        img: &mut RgbaImage,
+        face: &Face,
+        bg: Rgb,
+        fg: Rgb,
+        want_label: bool,
+        icon: Option<RgbaImage>,
+        level: Option<Level>,
+    ) {
+        if want_label {
+            self.draw_text_in(img, X1_TITLE, STRIP_TITLE_PX, Align::Left, face.label, fg, true);
+        }
+        if let Some(icon) = icon {
+            let (x0, y0, w, h) = B1_ICON;
+            let x = x0 + (w - icon.width()) / 2;
+            let y = y0 + (h - icon.height()) / 2;
+            imageops::overlay(img, &icon, x as i64, y as i64);
+        }
+        // Value text, right-aligned; a dash until the first level is known, so the panel
+        // doesn't jump between layouts. Mute reads "Muted" and leaves the bar empty.
+        let (text, fill) = match &level {
+            Some(l) => (l.text.as_str(), if l.muted { 0.0 } else { l.value }),
+            None => ("–", 0.0),
+        };
+        self.draw_text_in(img, B1_VALUE, B1_VALUE_PX, Align::Right, text, fg, true);
+        let (bx, by, bw, bh) = B1_BAR;
+        let track = bg.mix(fg, 0.22);
+        fill_pill(img, bx as i64, by as i64, bw as i64, bh as i64, track);
+        if fill > 0.0 {
+            let fw = ((bw as f32 * fill).round() as i64).max(bh as i64);
+            fill_pill(img, bx as i64, by as i64, fw, bh as i64, fg);
+        }
     }
 
     /// Pressed state: face shrinks inside an accent ring for tactile feedback.
@@ -523,6 +588,36 @@ fn solid_rect(w: u32, h: u32, c: Rgb) -> RgbaImage {
     RgbaImage::from_pixel(w, h, Rgba([c.0, c.1, c.2, 255]))
 }
 
+/// Fill a horizontal pill (a rect with fully rounded ends) with `color`. Used for the
+/// `$B1` groove bar and its fill; `w` must be at least `h`.
+fn fill_pill(img: &mut RgbaImage, x: i64, y: i64, w: i64, h: i64, color: Rgb) {
+    let (img_w, img_h) = img.dimensions();
+    let r = h as f32 / 2.0;
+    let cy = y as f32 + r;
+    let y0 = y.max(0).min(img_h as i64);
+    let y1 = (y + h).max(0).min(img_h as i64);
+    let x0 = x.max(0).min(img_w as i64);
+    let x1 = (x + w).max(0).min(img_w as i64);
+    for py in y0..y1 {
+        for px in x0..x1 {
+            let fx = px as f32 + 0.5;
+            let fy = py as f32 + 0.5;
+            let inside = if fx < x as f32 + r {
+                let dx = fx - (x as f32 + r);
+                dx * dx + (fy - cy) * (fy - cy) <= r * r
+            } else if fx >= x as f32 + w as f32 - r {
+                let dx = fx - (x as f32 + w as f32 - r);
+                dx * dx + (fy - cy) * (fy - cy) <= r * r
+            } else {
+                true
+            };
+            if inside {
+                img.put_pixel(px as u32, py as u32, Rgba([color.0, color.1, color.2, 255]));
+            }
+        }
+    }
+}
+
 /// Load a raster or SVG icon and fit it inside a `box_px` square, preserving aspect ratio.
 pub fn load_icon(path: &Path, box_px: u32) -> Option<RgbaImage> {
     let is_svg = path
@@ -596,8 +691,8 @@ fn load_font_with(c: char) -> Option<FontVec> {
 
 #[cfg(test)]
 mod tests {
-    use super::{DialStatus, Renderer, X1_ICON, X1_TITLE, glyph_char, tap_to_dial};
-    use crate::config::{Config, DialConfig, KeyConfig, Style};
+    use super::{B1_BAR, DialStatus, Level, Renderer, X1_ICON, X1_TITLE, glyph_char, tap_to_dial};
+    use crate::config::{Action, AudioDevice, Config, DialConfig, KeyConfig, Style};
     use crate::theme::Rgb;
 
     #[test]
@@ -730,6 +825,65 @@ mod tests {
         assert_eq!(tap_to_dial(800, 800, 4), None);
         assert_eq!(tap_to_dial(10, 0, 4), None);
         assert_eq!(tap_to_dial(10, 800, 0), None);
+    }
+
+    /// A dial whose turn action is `Volume`.
+    fn volume_dial() -> DialConfig {
+        DialConfig {
+            label: "Volume".into(),
+            turn_right: Action::Volume { device: AudioDevice::Output, change: 5, mute: false },
+            ..DialConfig::new(0)
+        }
+    }
+
+    fn level(v: f32, muted: bool) -> DialStatus {
+        DialStatus {
+            pressed: false,
+            level: Some(Level { value: v, text: if muted { "Muted".into() } else { "50%".into() }, muted }),
+        }
+    }
+
+    #[test]
+    fn strip_volume_bar_fills_to_level() {
+        let Some(mut r) = renderer_with_font() else { return };
+        let style = test_style();
+        let dial = volume_dial();
+        let (bx, by, _bw, bh) = B1_BAR;
+        let mid_y = by + bh / 2;
+        let x = bx + 90; // the right part of the bar
+        let full = r.render_strip_panel(Some(&dial), &style, level(1.0, false));
+        let empty = r.render_strip_panel(Some(&dial), &style, level(0.0, false));
+        assert_ne!(full.get_pixel(x, mid_y), empty.get_pixel(x, mid_y), "the bar fill should change with the level");
+    }
+
+    #[test]
+    fn strip_volume_muted_leaves_bar_empty() {
+        let Some(mut r) = renderer_with_font() else { return };
+        let style = test_style();
+        let dial = volume_dial();
+        let (bx, by, _bw, bh) = B1_BAR;
+        let mid_y = by + bh / 2;
+        let muted = r.render_strip_panel(Some(&dial), &style, level(0.8, true));
+        let empty = r.render_strip_panel(Some(&dial), &style, level(0.0, false));
+        // Muted: the bar is the empty track, the same as level 0.
+        for x in bx..bx + 108 {
+            assert_eq!(*muted.get_pixel(x, mid_y), *empty.get_pixel(x, mid_y), "muted bar should be empty at x = {x}");
+        }
+    }
+
+    #[test]
+    fn strip_volume_without_level_stays_b1() {
+        // Before the first poll (level None) the panel is still $B1, not $X1: it draws its
+        // groove bar and does not draw the centred $X1 icon.
+        let Some(mut r) = renderer_with_font() else { return };
+        let style = test_style();
+        let dial = volume_dial();
+        let panel = r.render_strip_panel(Some(&dial), &style, DialStatus::default());
+        // No centred $X1 icon (x 76..124) in the icon's vertical band.
+        let x1_icon_ink = (76..124).any(|x| (40..72).any(|y| panel.get_pixel(x, y)[0] > 120));
+        assert!(!x1_icon_ink, "a $B1 panel should not draw the centred $X1 icon");
+        // The $B1 groove bar is visible on the background.
+        assert_ne!(*panel.get_pixel(5, 5), *panel.get_pixel(100, 80), "the $B1 groove bar should be visible");
     }
 
     #[test]

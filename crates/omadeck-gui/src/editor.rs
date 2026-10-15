@@ -4,7 +4,7 @@ use std::rc::Rc;
 
 use adw::prelude::*;
 use gtk::{gdk, gio, glib};
-use omadeck_core::{Action, DialConfig, HOME, KeyConfig, Rgb, action, paths};
+use omadeck_core::{Action, AudioDevice, DialConfig, Direction, HOME, KeyConfig, Rgb, action, paths};
 
 use crate::app::{App, Target};
 use crate::{apps, media};
@@ -77,6 +77,7 @@ pub fn build_key(app: &Rc<App>, i: u8) -> gtk::Widget {
             }
             a.edit(i, |k| k.action = action);
         },
+        Action::empty_of_kind,
         move |a, t, act| {
             if let Target::Key(k) = t {
                 a.edit_ref(&k, |k| k.action = act);
@@ -164,6 +165,23 @@ pub fn build_dial(app: &Rc<App>, i: u8) -> gtk::Widget {
         .description("Dials are numbered left to right, from 0")
         .build();
 
+    let preset = gtk::Button::builder()
+        .label("Volume dial")
+        .tooltip_text("Set this dial to the output volume: turn to change it, press to mute")
+        .valign(gtk::Align::Center)
+        .css_classes(["flat"])
+        .build();
+    let a = app.clone();
+    preset.connect_clicked(move |_| {
+        a.edit_dial(i, |d| {
+            d.label = "Volume".into();
+            d.glyph = Some("f057e".into());
+            d.turn_left = Action::Volume { device: AudioDevice::Output, change: -5, mute: false };
+            d.turn_right = Action::Volume { device: AudioDevice::Output, change: 5, mute: false };
+            d.press = Action::Volume { device: AudioDevice::Output, change: 0, mute: true };
+        });
+        a.rebuild_editor();
+    });
     let clear = gtk::Button::builder()
         .icon_name("user-trash-symbolic")
         .tooltip_text("Clear this dial")
@@ -173,7 +191,10 @@ pub fn build_dial(app: &Rc<App>, i: u8) -> gtk::Widget {
         .build();
     let a = app.clone();
     clear.connect_clicked(move |_| a.clear_dial(i));
-    group.set_header_suffix(Some(&clear));
+    let header_buttons = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+    header_buttons.append(&preset);
+    header_buttons.append(&clear);
+    group.set_header_suffix(Some(&header_buttons));
 
     let label = adw::EntryRow::builder().title("Label").text(&dial.label).build();
     let a = app.clone();
@@ -184,9 +205,20 @@ pub fn build_dial(app: &Rc<App>, i: u8) -> gtk::Widget {
     group.add(&label);
     page.add(&group);
 
-    page.add(&dial_action_group(app, i, "Turn left", |d| d.turn_left.clone(), |d, a| d.turn_left = a));
-    page.add(&dial_action_group(app, i, "Turn right", |d| d.turn_right.clone(), |d, a| d.turn_right = a));
-    page.add(&dial_action_group(app, i, "Press", |d| d.press.clone(), |d, a| d.press = a));
+    // A new volume action starts with the sign the direction implies, not `+5` for all
+    // three slots (turning left used to raise the volume).
+    // A kind pick starts from what the slot implies (`Action::default_for`): turning left
+    // lowers or goes back, a Volume press mutes.
+    page.add(&dial_action_group(app, i, "Turn left", |d| d.turn_left.clone(), |d, a| d.turn_left = a, Direction::Left));
+    page.add(&dial_action_group(
+        app,
+        i,
+        "Turn right",
+        |d| d.turn_right.clone(),
+        |d, a| d.turn_right = a,
+        Direction::Right,
+    ));
+    page.add(&dial_action_group(app, i, "Press", |d| d.press.clone(), |d, a| d.press = a, Direction::Press));
 
     // --- appearance (the strip panel) -----------------------------------------------------
     let look = adw::PreferencesGroup::builder()
@@ -239,6 +271,7 @@ fn dial_action_group(
     title: &str,
     get: impl Fn(&DialConfig) -> Action + Clone + 'static,
     set: impl Fn(&mut DialConfig, Action) + Clone + 'static,
+    dir: Direction,
 ) -> adw::PreferencesGroup {
     let group = adw::PreferencesGroup::builder().title(title).build();
 
@@ -276,6 +309,7 @@ fn dial_action_group(
         move |_| Target::Dial(i),
         move |a| a.config.borrow().dial(i).map(&get).unwrap_or_default(),
         move |a, act| a.edit_dial(i, |d| set1(d, act)),
+        move |kind| Action::default_for(kind, dir),
         move |a, t, act| {
             if let Target::Dial(j) = t {
                 a.edit_dial(j, |d| set2(d, act));
@@ -315,6 +349,9 @@ fn action_editor(
     target: impl Fn(&Rc<App>) -> Target + Clone + 'static,
     get: impl Fn(&Rc<App>) -> Action + Clone + 'static,
     edit: impl Fn(&Rc<App>, Action) + Clone + 'static,
+    // The action a kind pick starts from (usually `Action::empty_of_kind`; a dial
+    // direction adjusts the volume's sign).
+    default_for: impl Fn(usize) -> Action + Clone + 'static,
     edit_at: impl Fn(&Rc<App>, Target, Action) + Clone + 'static,
     on_app_picked: impl Fn(&Rc<App>, &Target, String, String, Option<String>) + Clone + 'static,
     on_new_page: impl Fn(&Rc<App>) -> String + Clone + 'static,
@@ -333,11 +370,12 @@ fn action_editor(
     kind_row.connect_selected_notify({
         let get = get.clone();
         let edit = edit.clone();
+        let default_for = default_for.clone();
         move |row| {
             let sel = row.selected() as usize;
             let cur = get(&a).kind_index();
             if sel != cur {
-                edit(&a, Action::empty_of_kind(sel));
+                edit(&a, default_for(sel));
                 a.rebuild_editor();
             }
         }
@@ -610,6 +648,84 @@ fn action_rows(
             buttons.add_suffix(&open);
             buttons.set_activatable_widget(Some(&open));
             group.add(&buttons);
+        }
+
+        Action::Volume { device, change, mute } => {
+            group.set_description(Some(
+                "Changes the system volume through Omarchy's own commands, so its pop-up shows. On a dial, the \
+                 level is drawn on the touch strip.",
+            ));
+
+            let mute_row = adw::SwitchRow::builder()
+                .title("Toggle mute")
+                .subtitle("Press toggles mute instead of changing the level")
+                .active(*mute)
+                .build();
+            mute_row.connect_active_notify({
+                let a = app.clone();
+                let get = get.clone();
+                let edit = edit.clone();
+                move |r| {
+                    let on = r.is_active();
+                    // Read the action out of the borrow before editing (a `Ref` held
+                    // across the edit would panic in `borrow_mut`).
+                    let mut act = get(&a);
+                    if let Action::Volume { mute, .. } = &mut act {
+                        *mute = on;
+                    }
+                    edit(&a, act);
+                    a.rebuild_editor();
+                }
+            });
+            group.add(&mute_row);
+
+            // A mute action has a device too (a mic-mute key), so the row shows either
+            // way; only the level change is irrelevant while muting.
+            let dev_kinds = gtk::StringList::new(&["Output", "Input"]);
+            let dev_row = adw::ComboRow::builder().title("Device").model(&dev_kinds).build();
+            dev_row.set_selected(if device.is_output() { 0 } else { 1 });
+            dev_row.connect_selected_notify({
+                let a = app.clone();
+                let get = get.clone();
+                let edit = edit.clone();
+                move |row| {
+                    let sel = row.selected() as usize;
+                    let cur = match get(&a) {
+                        Action::Volume { device, .. } => usize::from(!device.is_output()),
+                        _ => 0,
+                    };
+                    if sel != cur {
+                        let device = if sel == 1 { AudioDevice::Input } else { AudioDevice::Output };
+                        let mut act = get(&a);
+                        if let Action::Volume { device: d, .. } = &mut act {
+                            *d = device;
+                        }
+                        edit(&a, act);
+                        a.rebuild_editor();
+                    }
+                }
+            });
+            group.add(&dev_row);
+
+            if !*mute {
+                let spin = adw::SpinRow::with_range(-25.0, 25.0, 1.0);
+                spin.set_title("Change per turn (%)");
+                spin.set_value(*change as f64);
+                spin.connect_value_notify({
+                    let a = app.clone();
+                    let get = get.clone();
+                    let edit = edit.clone();
+                    move |r| {
+                        let change = r.value().round() as i8;
+                        let mut act = get(&a);
+                        if let Action::Volume { change: c, .. } = &mut act {
+                            *c = change;
+                        }
+                        edit(&a, act);
+                    }
+                });
+                group.add(&spin);
+            }
         }
 
         Action::Back => {}

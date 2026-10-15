@@ -11,10 +11,14 @@ use omadeck_core::config::{self, RemovedPage};
 use omadeck_core::ipc::{self, Command as DaemonCommand, Event};
 use omadeck_core::paths::FileStamp;
 use omadeck_core::{
-    Action, Config, DeckInfo, DialConfig, DialStatus, HOME, KeyConfig, Keys, Page, Renderer, device, paths, tap_to_dial,
+    Action, AudioDevice, Config, DeckInfo, DialConfig, DialStatus, HOME, KeyConfig, Keys, Level, Page, Renderer,
+    device, paths, tap_to_dial,
 };
 
 use crate::{editor, media};
+
+/// Whether the strip preview shows a volume level, so the level poller has work.
+static LEVELS_WANTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// Previews are rendered larger than displayed so they stay crisp on HiDPI screens.
 const PREVIEW_PX: u32 = 192;
@@ -102,6 +106,9 @@ pub struct App {
     stamp: Cell<Option<FileStamp>>,
     /// Why config.toml couldn't be parsed. Saving is off until it's fixed.
     locked: RefCell<Option<String>>,
+    /// The strip's volume levels, read off the UI thread by the level poller, so the
+    /// strip preview never spawns `pactl`/`wpctl` while editing.
+    strip_levels: RefCell<std::collections::HashMap<AudioDevice, Option<Level>>>,
 }
 
 impl App {
@@ -281,6 +288,7 @@ impl App {
             config: RefCell::new(config),
             renderer: RefCell::new(renderer),
             deck: RefCell::new(deck),
+            strip_levels: RefCell::new(std::collections::HashMap::new()),
             connected: Cell::new(false),
             daemon_up: Cell::new(false),
             selected: Cell::new(None),
@@ -371,6 +379,7 @@ impl App {
         app.select(std::env::var("OMADECK_SELECT").ok().and_then(|v| v.parse().ok()).map(Selection::Key));
         app.update_title();
         app.listen();
+        app.listen_levels();
         app.watch_config();
         app.show_lock();
         app.window.present();
@@ -537,6 +546,7 @@ impl App {
     }
 
     /// Redraw the strip picture: one panel per dial, the same picture the daemon paints.
+    /// Volume dials show their device's current level, read once per refresh.
     pub fn refresh_strip(&self) {
         let Some((w, h)) = self.deck.borrow().strip else { return };
         let width = self.strip_width();
@@ -544,7 +554,20 @@ impl App {
             return;
         }
         let cfg = self.config.borrow();
-        let status = vec![DialStatus::default(); self.deck.borrow().dials as usize];
+        let n = self.deck.borrow().dials as usize;
+        let shows_volume = (0..n).any(|i| cfg.dial(i as u8).and_then(|d| d.volume_device()).is_some());
+        LEVELS_WANTED.store(shows_volume, std::sync::atomic::Ordering::Relaxed);
+        let levels = self.strip_levels.borrow();
+        let status: Vec<DialStatus> = (0..n)
+            .map(|i| {
+                // Volume shows the level the poller last read off the UI thread.
+                let level = cfg
+                    .dial(i as u8)
+                    .and_then(|d| d.volume_device())
+                    .and_then(|dev| levels.get(&dev).cloned().flatten());
+                DialStatus { pressed: false, level }
+            })
+            .collect();
         let img = self.renderer.borrow_mut().render_strip(&cfg, &status, (width as u32, width as u32 * h / w));
         self.strip.set_paintable(Some(&media::texture(img)));
     }
@@ -1158,6 +1181,46 @@ impl App {
             Ok(_) => self.toast("Started omadeckd (run scripts/install.sh to start it automatically at login)"),
             Err(e) => self.toast(&format!("Couldn't start omadeckd: {e}")),
         }
+    }
+
+    /// Keep the strip's volume levels fresh on a worker thread. The preview used to read
+    /// them itself, which spawned `pactl`/`wpctl` on the UI thread on every edit; now a
+    /// poller reads once a second and the preview just uses what it last sent.
+    fn listen_levels(self: &Rc<Self>) {
+        let (tx, rx) = async_channel::unbounded::<Vec<(AudioDevice, Option<Level>)>>();
+        std::thread::Builder::new()
+            .name("strip-levels".into())
+            .spawn(move || {
+                let mut last: Vec<(AudioDevice, Option<Level>)> = Vec::new();
+                loop {
+                    if !LEVELS_WANTED.load(std::sync::atomic::Ordering::Relaxed) {
+                        std::thread::sleep(Duration::from_secs(1));
+                        continue;
+                    }
+                    let mut cur = Vec::new();
+                    for dev in [AudioDevice::Output, AudioDevice::Input] {
+                        cur.push((dev, omadeck_core::audio::volume(dev).map(|lv| lv.to_panel())));
+                    }
+                    if cur != last || last.is_empty() {
+                        if tx.send_blocking(cur.clone()).is_err() {
+                            return;
+                        }
+                        last = cur;
+                    }
+                    std::thread::sleep(Duration::from_secs(1));
+                }
+            })
+            .expect("spawn strip-levels thread");
+        let weak = Rc::downgrade(self);
+        glib::spawn_future_local(async move {
+            while let Ok(levels) = rx.recv().await {
+                let Some(app) = weak.upgrade() else {
+                    break;
+                };
+                *app.strip_levels.borrow_mut() = levels.into_iter().collect();
+                app.refresh_strip();
+            }
+        });
     }
 
     /// Follow the daemon's event feed on a worker thread.
