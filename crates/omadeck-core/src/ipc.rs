@@ -80,6 +80,8 @@ pub enum Event {
 pub enum Command {
     /// Show a page on the deck (`None` is home), e.g. the one being edited.
     ShowPage { page: Option<String> },
+    /// Set the panel brightness, e.g. from the configurator's settings.
+    SetBrightness { value: u8 },
 }
 
 fn line<T: Serialize>(v: &T) -> String {

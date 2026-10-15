@@ -60,6 +60,12 @@ fn utc_stamp(secs: u64) -> String {
     format!("{y:04}-{m:02}-{d:02}T{:02}{:02}{:02}Z", rem / 3600, rem % 3600 / 60, rem % 60)
 }
 
+/// `~/.local/state/omadeck/state.toml` — values the daemon owns at runtime (the live
+/// brightness), kept out of the hand-edited config.
+pub fn state_file() -> PathBuf {
+    xdg("XDG_STATE_HOME", ".local/state").join("omadeck").join("state.toml")
+}
+
 /// Unix socket the daemon publishes events on: `$XDG_RUNTIME_DIR/omadeck.sock`.
 ///
 /// There is deliberately no fallback: the runtime dir is private to the user (0700), while a

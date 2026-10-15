@@ -14,7 +14,7 @@ use image::Rgba;
 pub use image::RgbaImage;
 use image::imageops::{self, FilterType};
 
-use crate::config::{AudioDevice, Config, DialConfig, KeyConfig, Style};
+use crate::config::{AudioDevice, Config, DialConfig, KeyConfig, LevelSource, Style};
 use crate::paths::{self, FileStamp};
 use crate::theme::{Rgb, Theme};
 
@@ -34,7 +34,7 @@ pub struct Face<'a> {
 pub struct DialStatus {
     /// The dial is pressed (or a tap is still flashing).
     pub pressed: bool,
-    /// A value to show in the `$B1` panel layout.
+    /// A value to show in the `$B1` panel layout (volume or brightness).
     pub level: Option<Level>,
 }
 
@@ -71,10 +71,11 @@ const STRIP_ICON_PX: u32 = 48;
 const STRIP_TITLE_PX: f32 = 16.0;
 /// The `$B1` value text size, in native pixels.
 const B1_VALUE_PX: f32 = 24.0;
-/// Default panel glyphs for a volume dial with no icon or glyph of its own.
+/// Default panel glyphs for a volume or brightness dial with no icon or glyph of its own.
 const OUTPUT_GLYPH: &str = "f057e"; // 󰕾 speaker
 const INPUT_GLYPH: &str = "f036c"; // 󰎬 microphone
 const MUTE_GLYPH: &str = "f075f"; // 󰝟 muted
+const BRIGHTNESS_GLYPH: &str = "f00de"; // 󀟎 brightness
 
 /// Which dial panel a touch at `x` falls in, for a strip `width` pixels wide with
 /// `dials` panels. Out of range (or no dials) is `None`.
@@ -265,10 +266,15 @@ impl Renderer {
         let glyph_color =
             face.label_color.and_then(Rgb::parse).unwrap_or(if style.follow_theme { self.theme.accent } else { fg });
 
-        // A volume dial shows its level in the $B1 layout.
-        if let Some(device) = dial.and_then(|d| d.volume_device()) {
-            let muted = st.level.as_ref().is_some_and(|l| l.muted);
-            let icon = self.volume_icon(&face, device, muted, glyph_color);
+        // A volume or brightness dial shows its value in the $B1 layout.
+        if let Some(src) = dial.and_then(|d| d.level_source()) {
+            let icon = match src {
+                LevelSource::Volume(device) => {
+                    let muted = st.level.as_ref().is_some_and(|l| l.muted);
+                    self.volume_icon(&face, device, muted, glyph_color)
+                }
+                LevelSource::Brightness => self.brightness_icon(&face, glyph_color),
+            };
             self.draw_b1(&mut img, &face, bg, fg, want_label, icon, st.level);
             return img;
         }
@@ -305,6 +311,16 @@ impl Renderer {
         } else {
             INPUT_GLYPH
         };
+        self.glyph(glyph, (STRIP_ICON_PX as f32 * 0.86) as u32, color)
+    }
+
+    /// The icon for a brightness dial's `$B1` panel: the user's icon if set, else their
+    /// glyph, else a default sun.
+    fn brightness_icon(&mut self, face: &Face, color: Rgb) -> Option<RgbaImage> {
+        if let Some(p) = face.icon {
+            return self.icon(&paths::resolve(p), STRIP_ICON_PX);
+        }
+        let glyph = face.glyph.filter(|g| !g.trim().is_empty()).unwrap_or(BRIGHTNESS_GLYPH);
         self.glyph(glyph, (STRIP_ICON_PX as f32 * 0.86) as u32, color)
     }
 
