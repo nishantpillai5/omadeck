@@ -3,18 +3,19 @@
 Personal working notes; not meant for upstream. Keep this file out of every PR
 (see Setup).
 
-## Status (as of the volume PR)
+## Status (as of the pages PR)
 
 **Do NOT open any PRs right now. This is private work.** The feature branches
-(`feat/plus-input`, `feat/dial-actions`, `feat/touch-strip`, `feat/dial-volume`) are
-pushed only to my own fork and are *not* opened as pull requests against upstream.
-Everything runs from my `daily` branch. Opening PRs is a later decision I make
-explicitly; don't open or prepare them unless I say so.
+(`feat/plus-input`, `feat/dial-actions`, `feat/touch-strip`, `feat/dial-volume`,
+`feat/pages`) are pushed only to my own fork and are *not* opened as pull requests
+against upstream. Everything runs from my `daily` branch. Opening PRs is a later
+decision I make explicitly; don't open or prepare them unless I say so.
 
-PRs 1–4 are done and on `daily`: the Plus's dials and strip are read, dials run
-actions, the strip is drawn, and dial 1 is a volume dial (turn ±5, press mutes) with
-a live $B1 panel on the strip. PR 5 (pages) is in progress: designed in
-[pr5-pages.md](pr5-pages.md).
+PRs 1–5 are done and on `daily`: the Plus's dials and strip are read, dials run
+actions, the strip is drawn, dial 1 is a volume dial (turn ±5, press mutes) with a
+live $B1 panel on the strip, and the deck has pages (a `page` action, per-page keys,
+and a strip flick to page through). Next: only the "later, only if wanted" items —
+folders, brightness, scrubbing.
 
 ## Goal
 
@@ -140,6 +141,12 @@ PR 5 is in [pr5-pages.md](pr5-pages.md). What PRs 1–4 share (crate facts, PR o
 decisions to explain) is in [dials-and-strip.md](dials-and-strip.md). That plan swaps
 PR 3 and PR 4: the strip comes before volume, so volume can show its level on the
 strip.
+
+### PR 5: `feat/pages`: pages
+- Done: `b809d0f`, on `daily`.
+- Per-page keys, a `page` action (next/previous/go-to), and a strip flick that pages
+  through on the Plus. Dials and the strip are page-independent, as in the Elgato app.
+- Folders are deliberately a later PR (they need a page *stack*).
 
 ### PR 1: `feat/plus-input`: read dials and the touch strip
 - Done: `ffc6c54`, on `daily`.
