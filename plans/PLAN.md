@@ -3,12 +3,21 @@
 Personal working notes; not meant for upstream. Keep this file out of every PR
 (see Setup).
 
+## Status (as of the touch-strip PR)
+
+**Do NOT open any PRs right now. This is private work.** The feature branches
+(`feat/plus-input`, `feat/dial-actions`, `feat/touch-strip`) are pushed only to my own
+fork and are *not* opened as pull requests against upstream. Everything runs from my
+`daily` branch. Opening PRs is a later decision I make explicitly; don't open or
+prepare them unless I say so.
+
 ## Goal
 
 Add the roadmap items "Stream Deck +: dials and touch strip (volume, brightness,
-scrubbing)" and "Pages" to omadeck, as a series of small PRs that upstream can merge
-one at a time. Meanwhile run everything from my own `daily` branch, so I never wait
-on review.
+scrubbing)" and "Pages" to omadeck, structured as a series of small, independently
+mergeable PRs that upstream *could* merge one at a time. Meanwhile run everything from
+my own `daily` branch, so I never wait on review. (See Status above: no PRs are opened
+yet.)
 
 ## Principle: build it the omadeck way
 
