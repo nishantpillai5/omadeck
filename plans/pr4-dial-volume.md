@@ -56,7 +56,7 @@ already uses `uwsm-app` when it's installed. Pick the backend once and cache it 
 
 | Backend | Detected by | Output ±N | Output mute | Input mute | Input ±N |
 |---|---|---|---|---|---|
-| **Omarchy 4** | `omarchy-audio-output-volume` on PATH | `omarchy-audio-output-volume +N` / `-N` | `omarchy-audio-output-volume mute-toggle` | `omarchy-audio-input-mute` | `wpctl`, then `omarchy-osd -i microphone -p <percent>` |
+| **Omarchy 4** | `omarchy-audio-output-volume` on PATH | `omarchy-audio-output-volume +N` / `-N` | `omarchy-audio-output-volume mute-toggle` | `omarchy-audio-input-mute` | `wpctl set-volume -l 1.0 …`, then `omarchy-osd -i microphone -p <percent>` |
 | **Omarchy 3** | `swayosd-client` on PATH | `swayosd-client --monitor <focused> --output-volume +N` | `… --output-volume mute-toggle` | `… --input-volume mute-toggle` | `… --input-volume +N` (unconfirmed: check it works) |
 | **Plain** | neither | `wpctl set-volume -l 1.0 @DEFAULT_AUDIO_SINK@ N%+` | `wpctl set-mute @DEFAULT_AUDIO_SINK@ toggle` | same with `@DEFAULT_AUDIO_SOURCE@` | same |
 
@@ -83,8 +83,11 @@ Details:
 - `run_steps` for `Volume { change, .. }`: one command with `change × steps` (e.g.
   `+15` for three ticks), not `steps` separate processes. For mute, toggle once. This
   matters more now: Omarchy 4's script ignores a second mute within 250 ms.
-- Caps: the Omarchy 4 script caps at 100% itself, plain uses `-l 1.0`, and swayosd uses
-  its own maximum (check whether it allows more than 100%; if so, add `--max-volume 100`).
+- Caps: the Omarchy 4 *output* script caps at 100% itself, but the *mic* path is a bare
+  `wpctl set-volume` (there's no Omarchy mic command) and must carry `-l 1.0` — without
+  it a fast spin, folded into one big change, pushes the source past 100%. Plain uses
+  `-l 1.0` for both; swayosd uses its own maximum (check whether it allows more than
+  100%; if so, add `--max-volume 100`).
 - Missing tools fail with a clear message ("wpctl not found (install wireplumber)"), which
   shows up as a toast.
 - `pub fn volume_command(backend, device, change, mute, steps) -> Vec<Vec<String>>` is
@@ -182,12 +185,24 @@ Checked on the Stream Deck + (serial A00WA5081LZEYC) with Omarchy 4.0.4-1, on 20
 - [ ] Changing volume with keyboard keys or `pavucontrol` updates the panel within ~1 s.
       (Pipeline is the same poll-and-repaint path as the verified dial turns; needs a
       visual check on the LCD, which the snapshot can't show.)
-- [ ] Input (mic) dial works the same way. (Not tested; shares the code path.)
+- [x] Input (mic) dial works the same way. (Tested on dial 2, a mic: turn ±5%, press
+      mutes. Found and fixed a bug — a fast spin pushed the source past 100% because the
+      bare `wpctl` had no cap; it now carries `-l 1.0`, clamped like the output.)
 - [ ] Switching the default sink (e.g. to headphones) follows the new default. (Not
       testable: the machine has a single sink.)
 - [x] No `wpctl` processes pile up (`pgrep -c wpctl` while spinning). (None; volume goes
       through the Omarchy scripts anyway, and a spin is one command.)
 - [x] CPU of `omadeckd` at idle with a volume dial is the same as before. (~0%; the
       worker sleeps between polls and only sends on change.)
+
+## Fixes that came out of running it
+
+- **Mic volume capped at 100% (`da2b426`).** The mic has no Omarchy command, so it falls
+  back to a bare `wpctl set-volume` with no limit — unlike the output, which goes through
+  `omarchy-audio-output-volume` and clamps itself. A fast dial spin folds into one large
+  change (e.g. `+15`), which pushed the source past 100% (verified: `95% + 10%+` → 105%).
+  Added `-l 1.0`, as the Plain backend already used, so the mic clamps at 100% like the
+  output. The read-back (`wpctl get-volume`) reports the real number above 100%, so the
+  strip would have shown it.
 
 **Size:** about 400 lines.
