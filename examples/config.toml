@@ -83,6 +83,8 @@ command = "playerctl play-pause"
 # [[dial]]
 # index = 0
 # label = "Workspace"
+# glyph = "\\u{e265}"
+# # icon = "icons/…"   (or a Nerd Font glyph, as with keys)
 # [dial.turn_left]
 # type = "hyprland"
 # dispatch = "workspace e-1"
