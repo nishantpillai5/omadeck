@@ -13,7 +13,8 @@ explicitly; don't open or prepare them unless I say so.
 
 PRs 1–4 are done and on `daily`: the Plus's dials and strip are read, dials run
 actions, the strip is drawn, and dial 1 is a volume dial (turn ±5, press mutes) with
-a live $B1 panel on the strip. Next: PR 5, pages.
+a live $B1 panel on the strip. PR 5 (pages) is in progress: designed in
+[pr5-pages.md](pr5-pages.md).
 
 ## Goal
 
@@ -135,9 +136,10 @@ Elgato SDK for anything user-facing (see "Reference" above).
 PRs 1–4 are planned in detail, one file per PR:
 [pr1-plus-input.md](pr1-plus-input.md), [pr2-dial-actions.md](pr2-dial-actions.md),
 [pr3-touch-strip.md](pr3-touch-strip.md), [pr4-dial-volume.md](pr4-dial-volume.md).
-What they share (crate facts, PR order, decisions to explain) is in
-[dials-and-strip.md](dials-and-strip.md). That plan swaps PR 3 and PR 4: the strip comes
-before volume, so volume can show its level on the strip.
+PR 5 is in [pr5-pages.md](pr5-pages.md). What PRs 1–4 share (crate facts, PR order,
+decisions to explain) is in [dials-and-strip.md](dials-and-strip.md). That plan swaps
+PR 3 and PR 4: the strip comes before volume, so volume can show its level on the
+strip.
 
 ### PR 1: `feat/plus-input`: read dials and the touch strip
 - Done: `ffc6c54`, on `daily`.
