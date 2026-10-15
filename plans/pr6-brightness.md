@@ -37,13 +37,39 @@ survives a restart.
 
 ## Hardware checks
 
-- [ ] Dial 3 (mic): turn changes the input volume (the mic OSD pop-up shows),
+- [x] Dial 3 (mic): turn changes the input volume (the mic OSD pop-up shows),
       press mutes the mic, and the panel shows the mic level.
-- [ ] Dial 4 (brightness): turn dims/brightens the whole deck live; the panel
-      shows the current percent; at 0 the panel is dark but still readable
-      enough to turn it back.
-- [ ] Unplug/replug (or restart the service): the brightness comes back at the
-      value the dial left it at (persisted), not the old config default.
-- [ ] The GUI's brightness slider and the dial agree after a reload.
+- [x] Dial 4 (brightness): turn dims/brightens the whole deck live; the panel
+      shows the current percent.
+- [x] Restart the service: the brightness comes back at the value the dial left it
+      at (persisted), not the old config default.
+- [x] The GUI's brightness slider and the dial agree after a reload (the
+      configurator now watches the config file, so it picks up a brightness the
+      dial persisted).
+- [ ] At 0 the panel is dark but still readable enough to turn it back. (Not tested
+      yet; the hardware has a brightness floor, so the panel never fully blacks out.)
 
-**Size:** about 400–500 lines.
+All confirmed on the Stream Deck + (serial A00WA5081LZEYC, firmware 2.0.3.2).
+
+## Fixes that came out of running it
+
+All in the same commit (`b8fae3b`):
+
+- **Optimistic volume/mic bars.** A volume action moved the bar only after the audio
+  worker read the new value back (~200 ms later), so the bar lagged the turn while the
+  brightness bar (in-process state) was instant. Now a volume action moves the bar
+  immediately from the last known level plus the change, and the read-back a moment
+  later corrects it — the same number for a relative change, so the correction is
+  invisible.
+- **No blanking on config reload.** Persisting a brightness writes the config, which
+  trips the daemon's watcher and reloads it. The reload used to clear the cached device
+  levels and repaint, blanking the volume/mic bars for a moment until the worker
+  re-polled. It now keeps the levels of any device still shown and drops only what is
+  no longer watched.
+- **Configurator watches the config file.** The app loaded the config once at startup
+  and never re-read it, so a hand edit (or a brightness the dial persisted) didn't show
+  until a restart. It now watches the config directory like the daemon does and reloads
+  on a settled change, skipping the reload while a user edit is pending and right after
+  its own save.
+
+**Size:** about 450 lines (estimated 400–500).

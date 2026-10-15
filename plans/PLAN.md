@@ -3,19 +3,23 @@
 Personal working notes; not meant for upstream. Keep this file out of every PR
 (see Setup).
 
-## Status (as of the pages PR)
+## Status (as of the brightness PR)
 
 **Do NOT open any PRs right now. This is private work.** The feature branches
 (`feat/plus-input`, `feat/dial-actions`, `feat/touch-strip`, `feat/dial-volume`,
-`feat/pages`) are pushed only to my own fork and are *not* opened as pull requests
-against upstream. Everything runs from my `daily` branch. Opening PRs is a later
-decision I make explicitly; don't open or prepare them unless I say so.
+`feat/pages`, `feat/brightness`) are pushed only to my own fork and are *not* opened
+as pull requests against upstream. Everything runs from my `daily` branch. Opening
+PRs is a later decision I make explicitly; don't open or prepare them unless I say so.
 
-PRs 1–5 are done and on `daily`: the Plus's dials and strip are read, dials run
-actions, the strip is drawn, dial 1 is a volume dial (turn ±5, press mutes) with a
-live $B1 panel on the strip, and the deck has pages (a `page` action, per-page keys,
-and a strip flick to page through). PR 6 (brightness, in [pr6-brightness.md](pr6-brightness.md))
-is in progress. After it: only the "later, only if wanted" items — folders, scrubbing.
+**These plan files live on the `plans` branch**, not on `master` or `daily`: check
+`git checkout plans` to read or update them. `master` is a pure mirror of
+`upstream/master`.
+
+PRs 1–6 are done and on `daily`: the Plus's dials and strip are read, dials run
+actions, the strip is drawn, dials 1–3 are volume/mic dials (turn ±5, press mutes)
+with a live $B1 panel on the strip, the deck has pages (a `page` action, per-page
+keys, and a strip flick to page through), and dial 4 sets the deck's brightness
+(persisted). After it: only the "later, only if wanted" items — folders, scrubbing.
 
 ## Goal
 
@@ -83,7 +87,9 @@ Useful pages (check they're still current when you use them):
 - [ ] Push access to `nishantpillai5/omadeck` with my personal account (SSH host alias or a
       fine-grained token). HTTPS uses the work account's GitHub login.
 - [ ] `git remote add upstream https://github.com/thewizster/omadeck.git && git fetch upstream`
-- [ ] `echo PLAN.md >> .git/info/exclude`, so this file never lands in a commit.
+- [x] Keep these notes on the `plans` branch (see Branches), so they never land in a
+      PR or on `daily`. (Originally tried `.git/info/exclude`; a dedicated branch is
+      cleaner and keeps the history of the notes.)
 - [ ] `git config rerere.enabled true`, which helps when rebuilding `daily`.
 - [ ] Build on the Omarchy machine (the deck is plugged in there):
       `sudo pacman -S --needed gtk4 libadwaita systemd-libs`, then `cargo build`.
@@ -96,6 +102,7 @@ Useful pages (check they're still current when you use them):
 | `master` | `upstream/master` | Pure mirror. Never commit here. |
 | `feat/*` | `upstream/master`, or the feature it depends on | One branch per PR. Small and self-contained. |
 | `daily` | `upstream/master` + every `feat/*` merged in | What I build and run. Rebuild it after any upstream or feature change. |
+| `plans` | `upstream/master` | These working notes only. Never merged into `daily` or `master`. |
 
 Rebuilding `daily`:
 
@@ -149,9 +156,13 @@ before volume, so volume can show its level on the strip.
 - Folders are deliberately a later PR (they need a page *stack*).
 
 ### PR 6: `feat/brightness`: the deck's brightness
-- In progress: a `brightness` action (change ±, or set absolute) for keys and dials,
-  a $B1 panel on the strip for a brightness dial, and the value persisted to the
-  config so it survives a restart.
+- Done: `b8fae3b`, on `daily`.
+- A `brightness` action (change ±, or set absolute) for keys and dials, a $B1 panel
+  on the strip for a brightness dial, and the value persisted to the config so it
+  survives a restart. Running it surfaced three fixes, all in the same commit: the
+  volume/mic bars now update optimistically (no read-back lag), a config reload no
+  longer blanks the strip's level bars, and the configurator watches the config file
+  so it stays in sync with a hand edit or a brightness the dial persisted.
 
 ### PR 1: `feat/plus-input`: read dials and the touch strip
 - Done: `ffc6c54`, on `daily`.
