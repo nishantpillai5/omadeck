@@ -41,6 +41,7 @@ Written in Rust: a tiny background daemon drives the hardware, and a GTK4/libadw
   - App icons from your icon theme.
   - **Nerd Font glyphs**, drawn in your theme's accent colour.
   - Labels are rendered in your Omarchy font.
+- **Stream Deck + dials.** Each dial runs any of the action types on turn left, turn right and press — a workspace dial, a volume dial, a launch-on-press dial.
 - **Theme aware.** Key backgrounds, labels, glyphs and the press highlight come from the active Omarchy theme. Run `omarchy theme set …` and the deck re-renders instantly.
 - **Live editing.** Changes land on the hardware as you type, and the deck shows whichever page you're editing. Drag keys to rearrange them. Press a physical key to jump to it in the editor.
 - **Robust.** Reconnects after unplug/replug, and a typo in a hand-edited config keeps the last good layout on the deck. Apps opened from the deck keep running when the daemon restarts or upgrades. Uses about 9 MB of RAM and 0% CPU at idle.
@@ -99,7 +100,7 @@ omadeck speaks to decks through the [`elgato-streamdeck`](https://crates.io/crat
 | Stream Deck Mini / Mini MK.2, 6 keys | Expected to work |
 | Stream Deck XL / XL V2, 32 keys | Expected to work |
 | Stream Deck Neo, 8 keys | Keys expected to work; info screen and touch keys unsupported |
-| Stream Deck +, 8 keys | Keys expected to work; dials and touch strip unsupported |
+| Stream Deck +, 8 keys | Keys and dials (turn left/right, press); touch strip unsupported |
 | Stream Deck Pedal | Not supported (no display) |
 
 Got one of the untested models? Please [file a hardware report](https://github.com/thewizster/omadeck/issues/new?template=hardware_report.yml), whether it works or not.
@@ -128,6 +129,7 @@ On the deck, **Go back** returns to the page you came from, or Home. Renaming a 
 omadeckd                        run the daemon (normally via systemd)
 omadeckd list                   show connected decks
 omadeckd press 3 [PAGE]         run key 3's action (keys count from 0)
+omadeckd dial 0 left            run dial 0's turn-left / turn-right / press action
 omadeckd snapshot x.png [PAGE]  render the layout to an image
 ```
 
@@ -192,6 +194,24 @@ Action types:
 | `back` | |
 
 Per-key look overrides are `background`, `label_color` and `show_label`.
+
+On the Stream Deck +, dials are numbered left to right from 0. Each dial takes up to
+three actions; turns run once per detent:
+
+```toml
+[[dial]]
+index = 0
+label = "Workspace"
+[dial.turn_left]
+type = "hyprland"
+dispatch = "workspace e-1"
+[dial.turn_right]
+type = "hyprland"
+dispatch = "workspace e+1"
+[dial.press]
+type = "app"
+command = "walker"
+```
 
 ## How it works
 
