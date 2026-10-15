@@ -6,6 +6,10 @@ All notable changes to omadeck are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+- Stream Deck +: the daemon reads dial turns and presses and touch-strip taps and
+  swipes, and reports them on its event socket.
+
 ## [0.2.0] - 2026-10-18
 
 ### Added

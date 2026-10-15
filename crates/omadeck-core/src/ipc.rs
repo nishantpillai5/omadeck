@@ -39,6 +39,34 @@ pub enum Event {
         index: u8,
         message: String,
     },
+    /// A dial turned; `delta` is signed (+ is clockwise) and may exceed ±1 on a fast spin.
+    DialTurn {
+        index: u8,
+        delta: i8,
+    },
+    /// A dial is pressed down.
+    DialDown {
+        index: u8,
+    },
+    /// A dial is released.
+    DialUp {
+        index: u8,
+    },
+    /// The touch strip was tapped.
+    StripTap {
+        x: u16,
+        y: u16,
+    },
+    /// The touch strip was pressed and held.
+    StripLongPress {
+        x: u16,
+        y: u16,
+    },
+    /// The touch strip was swiped.
+    StripSwipe {
+        from: (u16, u16),
+        to: (u16, u16),
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -81,4 +109,37 @@ pub fn connect() -> Result<(Sender, impl Iterator<Item = Event>)> {
 /// Read commands sent by a client until it disconnects.
 pub fn commands(stream: UnixStream) -> impl Iterator<Item = Command> {
     BufReader::new(stream).lines().map_while(|l| l.ok()).filter_map(|l| serde_json::from_str(&l).ok())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn roundtrip(ev: &Event) {
+        let line = ev.to_line();
+        assert_eq!(serde_json::from_str::<Event>(&line).unwrap(), *ev);
+    }
+
+    #[test]
+    fn dial_events_roundtrip() {
+        roundtrip(&Event::DialTurn { index: 0, delta: -2 });
+        roundtrip(&Event::DialDown { index: 3 });
+        roundtrip(&Event::DialUp { index: 3 });
+    }
+
+    #[test]
+    fn strip_events_roundtrip() {
+        roundtrip(&Event::StripTap { x: 210, y: 40 });
+        roundtrip(&Event::StripLongPress { x: 600, y: 50 });
+        roundtrip(&Event::StripSwipe { from: (700, 50), to: (100, 48) });
+    }
+
+    #[test]
+    fn dial_turn_wire_shape() {
+        // The socket protocol is part of the contract with the configurator; pin it.
+        assert_eq!(
+            Event::DialTurn { index: 0, delta: -2 }.to_line(),
+            "{\"event\":\"dial_turn\",\"index\":0,\"delta\":-2}\n"
+        );
+    }
 }
