@@ -118,3 +118,16 @@ command = "playerctl play-pause"
 # [dial.press]
 # type = "volume"
 # mute = true                # toggle mute instead of changing the level
+#
+# A brightness dial: turn to change the panel brightness. Its panel on the strip
+# shows the current value, and the brightness is remembered across restarts.
+# [[dial]]
+# index = 3
+# label = "Brightness"
+# glyph = "f00de"            # a sun
+# [dial.turn_left]
+# type = "brightness"
+# change = -5
+# [dial.turn_right]
+# type = "brightness"
+# change = 5

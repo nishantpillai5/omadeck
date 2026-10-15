@@ -10,7 +10,8 @@ use gtk::{gdk, gio, glib};
 use omadeck_core::ipc::{self, Command as DaemonCommand, Event};
 use omadeck_core::paths::FileStamp;
 use omadeck_core::{
-    Action, Config, DeckInfo, DialConfig, DialStatus, HOME, KeyConfig, Keys, Page, Renderer, device, paths, tap_to_dial,
+    Action, Config, DeckInfo, DialConfig, DialStatus, HOME, KeyConfig, Keys, Level, LevelSource, Page, Renderer,
+    device, paths, tap_to_dial,
 };
 
 use crate::{editor, media};
@@ -496,10 +497,16 @@ impl App {
         let n = self.deck.borrow().dials as usize;
         let status: Vec<DialStatus> = (0..n)
             .map(|i| {
-                let level = cfg
-                    .dial(i as u8)
-                    .and_then(|d| d.volume_device())
-                    .and_then(|dev| omadeck_core::audio::volume(dev).map(|lv| lv.to_panel()));
+                // Volume reads the real level; brightness shows the config's value (the
+                // daemon's live value only differs right after a dial turn).
+                let level = cfg.dial(i as u8).and_then(|d| d.level_source()).and_then(|src| match src {
+                    LevelSource::Volume(dev) => omadeck_core::audio::volume(dev).map(|lv| lv.to_panel()),
+                    LevelSource::Brightness => Some(Level {
+                        value: cfg.brightness as f32 / 100.0,
+                        text: format!("{}%", cfg.brightness),
+                        muted: false,
+                    }),
+                });
                 DialStatus { pressed: false, level }
             })
             .collect();
@@ -948,8 +955,12 @@ impl App {
         let weak = Rc::downgrade(self);
         scale.connect_value_changed(move |s| {
             if let Some(app) = weak.upgrade() {
-                app.config.borrow_mut().brightness = s.value().round() as u8;
+                let value = s.value().round() as u8;
+                // The daemon owns the live brightness (state file); the config's value is
+                // the start value for a fresh start.
+                app.config.borrow_mut().brightness = value;
                 app.schedule_save();
+                app.send(DaemonCommand::SetBrightness { value });
             }
         });
         let bright = adw::ActionRow::builder().title("Brightness").build();
