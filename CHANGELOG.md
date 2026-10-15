@@ -13,6 +13,8 @@ All notable changes to omadeck are documented here. The format follows
   folder with a Back key in place. The deck follows the page you're editing, and the app
   follows page changes made on the deck.
 - `omadeckd press KEY [PAGE]` and `omadeckd snapshot FILE [PAGE]` take an optional page.
+- Stream Deck +: the daemon reads dial turns and presses and touch-strip taps and
+  swipes, and reports them on its event socket.
 
 ### Fixed
 - A colour value with a non-ASCII character (in the config or the Omarchy theme) crashed the

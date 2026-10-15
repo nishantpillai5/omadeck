@@ -968,6 +968,15 @@ impl App {
             Msg::Event(Event::ActionFailed { index, message }) => {
                 self.toast(&format!("Key {}: {message}", index + 1));
             }
+            // Dial and strip input: nothing in the configurator reacts to it yet.
+            Msg::Event(
+                Event::DialTurn { .. }
+                | Event::DialDown { .. }
+                | Event::DialUp { .. }
+                | Event::StripTap { .. }
+                | Event::StripLongPress { .. }
+                | Event::StripSwipe { .. },
+            ) => {}
         }
         self.update_title();
     }
