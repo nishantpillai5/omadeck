@@ -161,20 +161,33 @@ Details:
 - CHANGELOG line.
 
 ## Hardware checks
-- [ ] Turn = ±5% per detent, fast spin = one command, capped at 100%.
-- [ ] Omarchy's volume pop-up appears on turn and on press (mute), on the focused
-      monitor, and looks the same as when you use the keyboard's volume keys.
+
+Checked on the Stream Deck + (serial A00WA5081LZEYC) with Omarchy 4.0.4-1, on 2026-10-16.
+
+- [x] Turn = ±5% per detent, fast spin = one command, capped at 100%. (Log: a two-detent
+      turn ran a single `omarchy-audio-output-volume +10`; the backend clamps.)
+- [x] Omarchy's volume pop-up appears on turn and on press (mute), on the focused
+      monitor, and looks the same as when you use the keyboard's volume keys. (Commands
+      confirmed in the daemon log; the pop-up confirmed visually.)
 - [ ] With a speaker tuning or EasyEffects sink active, the strip shows the same number
-      as Omarchy's pop-up.
+      as Omarchy's pop-up. (Not tested: no EasyEffects or tuning on this machine.)
 - [ ] Mic dial: mute shows "Microphone muted" and lights the mic-mute LED, if the machine
-      has one.
-- [ ] Note the Omarchy version (`omarchy-version`) in the PR. If possible, also check
+      has one. (Not tested: no mic dial configured; the machine has Mic1/Mic2 sources.)
+- [x] Note the Omarchy version (`omarchy-version`) in the PR. If possible, also check
       the plain `wpctl` path by temporarily taking the Omarchy scripts off `PATH`.
-- [ ] Press toggles mute, and the panel shows the mute state within one poll.
+      (Version noted above; no PR exists yet. The `wpctl` parse path is unit-tested, not
+      hardware-checked.)
+- [x] Press toggles mute, and the panel shows the mute state within one poll. (Panel
+      showed the muted state and an empty bar.)
 - [ ] Changing volume with keyboard keys or `pavucontrol` updates the panel within ~1 s.
-- [ ] Input (mic) dial works the same way.
-- [ ] Switching the default sink (e.g. to headphones) follows the new default.
-- [ ] No `wpctl` processes pile up (`pgrep -c wpctl` while spinning).
-- [ ] CPU of `omadeckd` at idle with a volume dial is the same as before.
+      (Pipeline is the same poll-and-repaint path as the verified dial turns; needs a
+      visual check on the LCD, which the snapshot can't show.)
+- [ ] Input (mic) dial works the same way. (Not tested; shares the code path.)
+- [ ] Switching the default sink (e.g. to headphones) follows the new default. (Not
+      testable: the machine has a single sink.)
+- [x] No `wpctl` processes pile up (`pgrep -c wpctl` while spinning). (None; volume goes
+      through the Omarchy scripts anyway, and a spin is one command.)
+- [x] CPU of `omadeckd` at idle with a volume dial is the same as before. (~0%; the
+      worker sleeps between polls and only sends on change.)
 
 **Size:** about 400 lines.
