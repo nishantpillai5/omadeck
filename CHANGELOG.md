@@ -6,6 +6,10 @@ All notable changes to omadeck are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+- Stream Deck +: the daemon reads dial turns and presses and touch-strip taps and
+  swipes, and reports them on its event socket.
+
 ### Fixed
 - A stalled Hyprland could freeze the deck: Hyprland actions waited on `hyprctl` with no time
   limit, on the same loop that reads the keys. They now run in order on their own thread, and
