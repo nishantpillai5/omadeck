@@ -267,6 +267,18 @@ pub struct DialConfig {
     pub index: u8,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub label: String,
+    #[serde(default = "yes", skip_serializing_if = "is_true")]
+    pub show_label: bool,
+    /// PNG/JPEG/SVG/… path. Relative paths resolve against the config dir.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub icon: Option<String>,
+    /// A Nerd Font symbol drawn as the icon in the theme accent colour (used when `icon` is unset).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub glyph: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub background: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label_color: Option<String>,
     /// Runs once per detent when the dial is turned left.
     #[serde(default, skip_serializing_if = "Action::is_none")]
     pub turn_left: Action,
@@ -280,12 +292,57 @@ pub struct DialConfig {
 
 impl DialConfig {
     pub fn new(index: u8) -> Self {
-        Self { index, label: String::new(), turn_left: Action::None, turn_right: Action::None, press: Action::None }
+        Self {
+            index,
+            label: String::new(),
+            show_label: true,
+            icon: None,
+            glyph: None,
+            background: None,
+            label_color: None,
+            turn_left: Action::None,
+            turn_right: Action::None,
+            press: Action::None,
+        }
     }
 
     /// True when the dial carries nothing worth saving.
     pub fn is_blank(&self) -> bool {
-        self.label.is_empty() && self.turn_left.is_none() && self.turn_right.is_none() && self.press.is_none()
+        self.label.is_empty()
+            && self.show_label
+            && self.icon.is_none()
+            && self.glyph.is_none()
+            && self.background.is_none()
+            && self.label_color.is_none()
+            && self.turn_left.is_none()
+            && self.turn_right.is_none()
+            && self.press.is_none()
+    }
+
+    /// The look fields, shared with the key face renderer.
+    pub fn face(&self) -> crate::render::Face<'_> {
+        crate::render::Face {
+            label: self.label.trim(),
+            show_label: self.show_label,
+            icon: self.icon.as_deref(),
+            glyph: self.glyph.as_deref(),
+            background: self.background.as_deref(),
+            label_color: self.label_color.as_deref(),
+        }
+    }
+}
+
+impl KeyConfig {
+    /// The look fields, shared with the dial strip renderer.
+    pub fn face(&self) -> crate::render::Face<'_> {
+        crate::render::Face {
+            label: self.label.trim(),
+            show_label: self.show_label,
+            icon: self.icon.as_deref(),
+            glyph: self.glyph.as_deref(),
+            background: self.background.as_deref(),
+            label_color: self.label_color.as_deref(),
+        }
     }
 }
 

@@ -126,38 +126,29 @@ pub fn build_key(app: &Rc<App>, i: u8) -> gtk::Widget {
     });
     look.add(&show);
 
-    look.add(&icon_row(app, i, &key));
-
-    let glyph = adw::EntryRow::builder()
-        .title("Symbol (Nerd Font glyph, used when there's no image)")
-        .text(key.glyph.as_deref().unwrap_or(""))
-        .build();
-    let cheat = gtk::Button::builder()
-        .icon_name("web-browser-symbolic")
-        .tooltip_text("Browse Nerd Font symbols — copy one and paste it here")
-        .valign(gtk::Align::Center)
-        .css_classes(["flat"])
-        .build();
-    cheat.connect_clicked(|_| {
-        let _ =
-            gio::AppInfo::launch_default_for_uri("https://www.nerdfonts.com/cheat-sheet", gio::AppLaunchContext::NONE);
-    });
-    glyph.add_suffix(&cheat);
-    let a = app.clone();
-    glyph.connect_changed(move |e| {
-        let text = e.text().trim().to_string();
-        a.edit(i, |k| k.glyph = (!text.is_empty()).then_some(text));
-    });
-    look.add(&glyph);
+    look.add(&icon_row(
+        app,
+        key.icon.as_deref(),
+        move |a| Target::Key(a.key_ref(i)),
+        move |a, t, v| {
+            if let Target::Key(k) = t {
+                a.edit_ref(&k, |k| k.icon = v);
+            }
+        },
+    ));
+    look.add(&glyph_row(app, key.glyph.as_deref(), move |a, v| a.edit(i, |k| k.glyph = v)));
 
     let (bg, fg) = {
         let cfg = app.config.borrow();
         let r = app.renderer.borrow();
-        let bg = r.background(Some(&key), &cfg.style);
-        (bg, r.label_color(Some(&key), &cfg.style, bg))
+        let face = key.face();
+        let bg = r.background(Some(&face), &cfg.style);
+        (bg, r.label_color(Some(&face), &cfg.style, bg))
     };
-    look.add(&color_row(app, i, "Background", bg, key.background.is_some(), |k, c| k.background = c));
-    look.add(&color_row(app, i, "Label colour", fg, key.label_color.is_some(), |k, c| k.label_color = c));
+    look.add(&color_row(app, "Background", bg, key.background.is_some(), move |a, c| a.edit(i, |k| k.background = c)));
+    look.add(&color_row(app, "Label colour", fg, key.label_color.is_some(), move |a, c| {
+        a.edit(i, |k| k.label_color = c)
+    }));
     page.add(&look);
 
     page.upcast()
@@ -196,6 +187,47 @@ pub fn build_dial(app: &Rc<App>, i: u8) -> gtk::Widget {
     page.add(&dial_action_group(app, i, "Turn left", |d| d.turn_left.clone(), |d, a| d.turn_left = a));
     page.add(&dial_action_group(app, i, "Turn right", |d| d.turn_right.clone(), |d, a| d.turn_right = a));
     page.add(&dial_action_group(app, i, "Press", |d| d.press.clone(), |d, a| d.press = a));
+
+    // --- appearance (the strip panel) -----------------------------------------------------
+    let look = adw::PreferencesGroup::builder()
+        .title("Appearance")
+        .description("How the dial's panel looks on the touch strip")
+        .build();
+
+    let show = adw::SwitchRow::builder().title("Show label on strip").active(dial.show_label).build();
+    let a = app.clone();
+    show.connect_active_notify(move |r| {
+        let on = r.is_active();
+        a.edit_dial(i, |d| d.show_label = on);
+    });
+    look.add(&show);
+
+    look.add(&icon_row(
+        app,
+        dial.icon.as_deref(),
+        move |_| Target::Dial(i),
+        move |a, t, v| {
+            if let Target::Dial(j) = t {
+                a.edit_dial(j, |d| d.icon = v);
+            }
+        },
+    ));
+    look.add(&glyph_row(app, dial.glyph.as_deref(), move |a, v| a.edit_dial(i, |d| d.glyph = v)));
+
+    let (bg, fg) = {
+        let cfg = app.config.borrow();
+        let r = app.renderer.borrow();
+        let face = dial.face();
+        let bg = r.background(Some(&face), &cfg.style);
+        (bg, r.label_color(Some(&face), &cfg.style, bg))
+    };
+    look.add(&color_row(app, "Background", bg, dial.background.is_some(), move |a, c| {
+        a.edit_dial(i, |d| d.background = c)
+    }));
+    look.add(&color_row(app, "Label colour", fg, dial.label_color.is_some(), move |a, c| {
+        a.edit_dial(i, |d| d.label_color = c)
+    }));
+    page.add(&look);
 
     page.upcast()
 }
@@ -604,66 +636,113 @@ fn site_name(host: &str) -> String {
     c.next().map(|f| f.to_uppercase().collect::<String>() + c.as_str()).unwrap_or_default()
 }
 
-fn icon_row(app: &Rc<App>, i: u8, key: &KeyConfig) -> adw::ActionRow {
-    let subtitle = key
-        .icon
-        .as_deref()
+/// The icon row, shared by the key and dial editors; edits through `set_icon`, which
+/// takes the target captured for the async pickers, so a pick lands where it started.
+fn icon_row(
+    app: &Rc<App>,
+    icon: Option<&str>,
+    target: impl Fn(&Rc<App>) -> Target + Clone + 'static,
+    set_icon: impl Fn(&Rc<App>, Target, Option<String>) + Clone + 'static,
+) -> adw::ActionRow {
+    let subtitle = icon
         .map(|p| paths::resolve(p).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default())
         .unwrap_or_else(|| "None".into());
     let row = adw::ActionRow::builder().title("Icon").subtitle(subtitle).use_markup(false).build();
 
     let preview = gtk::Image::builder().pixel_size(40).css_classes(["icon-preview"]).build();
-    if let Some(img) = key.icon.as_deref().and_then(|p| omadeck_core::render::load_icon(&paths::resolve(p), 80)) {
+    if let Some(img) = icon.and_then(|p| omadeck_core::render::load_icon(&paths::resolve(p), 80)) {
         preview.set_paintable(Some(&media::texture(img)));
     } else {
         preview.set_icon_name(Some("image-x-generic-symbolic"));
     }
     row.add_prefix(&preview);
 
-    if key.icon.is_some() {
+    if icon.is_some() {
         let clear = gtk::Button::builder()
             .icon_name("edit-clear-symbolic")
             .tooltip_text("Remove icon")
             .valign(gtk::Align::Center)
             .css_classes(["flat"])
             .build();
-        let a = app.clone();
-        clear.connect_clicked(move |_| {
-            a.edit(i, |k| k.icon = None);
-            a.rebuild_editor();
+        clear.connect_clicked({
+            let a = app.clone();
+            let target = target.clone();
+            let set_icon = set_icon.clone();
+            move |_| {
+                let at = target(&a);
+                set_icon(&a, at, None);
+                a.rebuild_editor();
+            }
         });
         row.add_suffix(&clear);
     }
 
     let choose = gtk::Button::builder().label("Choose…").valign(gtk::Align::Center).build();
-    let a = app.clone();
-    choose.connect_clicked(move |_| {
-        let dialog = file_dialog("Choose an icon", Some(("Images", "image/*")));
-        let a = a.clone();
-        let at = a.key_ref(i);
-        glib::spawn_future_local(async move {
-            let Ok(file) = dialog.open_future(Some(&a.window)).await else { return };
-            let Some(path) = file.path() else { return };
-            match media::import_icon(&path) {
-                Ok(rel) => {
-                    a.edit_ref(&at, |k| k.icon = Some(rel));
-                    a.rebuild_editor();
+    choose.connect_clicked({
+        let a = app.clone();
+        let target = target.clone();
+        let set_icon = set_icon.clone();
+        move |_| {
+            let a2 = a.clone();
+            let set_icon = set_icon.clone();
+            let at = target(&a2);
+            let dialog = file_dialog("Choose an icon", Some(("Images", "image/*")));
+            glib::spawn_future_local(async move {
+                let Ok(file) = dialog.open_future(Some(&a2.window)).await else { return };
+                let Some(path) = file.path() else { return };
+                match media::import_icon(&path) {
+                    Ok(rel) => {
+                        set_icon(&a2, at, Some(rel));
+                        a2.rebuild_editor();
+                    }
+                    Err(e) => a2.toast(&format!("{e:#}")),
                 }
-                Err(e) => a.toast(&format!("{e:#}")),
-            }
-        });
+            });
+        }
     });
     row.add_suffix(&choose);
     row
 }
 
+/// The Nerd Font glyph row, shared by the key and dial editors; edits through `set_glyph`.
+fn glyph_row(
+    app: &Rc<App>,
+    glyph: Option<&str>,
+    set_glyph: impl Fn(&Rc<App>, Option<String>) + Clone + 'static,
+) -> adw::EntryRow {
+    let row = adw::EntryRow::builder()
+        .title("Symbol (Nerd Font glyph, used when there's no image)")
+        .text(glyph.unwrap_or(""))
+        .build();
+    let cheat = gtk::Button::builder()
+        .icon_name("web-browser-symbolic")
+        .tooltip_text("Browse Nerd Font symbols — copy one and paste it here")
+        .valign(gtk::Align::Center)
+        .css_classes(["flat"])
+        .build();
+    cheat.connect_clicked(|_| {
+        let _ =
+            gio::AppInfo::launch_default_for_uri("https://www.nerdfonts.com/cheat-sheet", gio::AppLaunchContext::NONE);
+    });
+    row.add_suffix(&cheat);
+    row.connect_changed({
+        let a = app.clone();
+        move |e| {
+            let text = e.text().trim().to_string();
+            set_glyph(&a, (!text.is_empty()).then_some(text));
+        }
+    });
+    row
+}
+
+/// A colour row with a reset-to-theme button, shared by the key and dial editors;
+/// edits through `set`.
 fn color_row(
     app: &Rc<App>,
-    i: u8,
     title: &str,
     current: Rgb,
     overridden: bool,
-    set: fn(&mut KeyConfig, Option<String>),
+    set: impl Fn(&Rc<App>, Option<String>) + Clone + 'static,
 ) -> adw::ActionRow {
     let row = adw::ActionRow::builder().title(title).subtitle(if overridden { "Custom" } else { "From theme" }).build();
     if overridden {
@@ -673,23 +752,29 @@ fn color_row(
             .valign(gtk::Align::Center)
             .css_classes(["flat"])
             .build();
-        let a = app.clone();
-        reset.connect_clicked(move |_| {
-            a.edit(i, |k| set(k, None));
-            a.rebuild_editor();
+        reset.connect_clicked({
+            let a = app.clone();
+            let set = set.clone();
+            move |_| {
+                set(&a, None);
+                a.rebuild_editor();
+            }
         });
         row.add_suffix(&reset);
     }
     let button = gtk::ColorDialogButton::new(Some(gtk::ColorDialog::builder().with_alpha(false).build()));
     button.set_valign(gtk::Align::Center);
     button.set_rgba(&gdk::RGBA::new(current.0 as f32 / 255.0, current.1 as f32 / 255.0, current.2 as f32 / 255.0, 1.0));
-    let a = app.clone();
-    button.connect_rgba_notify(move |b| {
-        let c = b.rgba();
-        let to = |v: f32| (v * 255.0).round().clamp(0.0, 255.0) as u8;
-        let hex = Rgb(to(c.red()), to(c.green()), to(c.blue())).hex();
-        a.edit(i, |k| set(k, Some(hex)));
-        a.rebuild_editor();
+    button.connect_rgba_notify({
+        let a = app.clone();
+        let set = set.clone();
+        move |b| {
+            let c = b.rgba();
+            let to = |v: f32| (v * 255.0).round().clamp(0.0, 255.0) as u8;
+            let hex = Rgb(to(c.red()), to(c.green()), to(c.blue())).hex();
+            set(&a, Some(hex));
+            a.rebuild_editor();
+        }
     });
     row.add_suffix(&button);
     row
