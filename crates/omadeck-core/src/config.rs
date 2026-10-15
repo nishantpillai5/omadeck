@@ -217,6 +217,15 @@ pub enum Direction {
     Press,
 }
 
+/// What a dial's strip panel shows a value for, if anything.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LevelSource {
+    /// The level of an audio device, polled by the daemon's audio worker.
+    Volume(AudioDevice),
+    /// The deck's panel brightness, kept in the daemon itself.
+    Brightness,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Action {
@@ -264,10 +273,20 @@ pub enum Action {
         #[serde(default = "default_step", skip_serializing_if = "is_default_step")]
         change: i8,
     },
+    /// Change the deck's panel brightness, 0–100. The daemon owns the current value and
+    /// persists it to the config, so this is never "run" like the other actions.
+    Brightness {
+        /// Percent to change by, signed (per detent on a dial).
+        #[serde(default, skip_serializing_if = "is_zero_i8")]
+        change: i8,
+        /// Set this absolute brightness instead of changing it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        set: Option<u8>,
+    },
 }
 
 impl Action {
-    pub const KINDS: [&'static str; 10] = [
+    pub const KINDS: [&'static str; 11] = [
         "Nothing",
         "Launch app",
         "Run script",
@@ -278,6 +297,7 @@ impl Action {
         "Go back",
         "Volume",
         "Next/previous page",
+        "Brightness",
     ];
 
     pub fn kind_index(&self) -> usize {
@@ -292,6 +312,7 @@ impl Action {
             Action::Back => 7,
             Action::Volume { .. } => 8,
             Action::PageStep { .. } => 9,
+            Action::Brightness { .. } => 10,
         }
     }
 
@@ -315,6 +336,7 @@ impl Action {
             7 => Action::Back,
             8 => Action::Volume { device: AudioDevice::Output, change: 5, mute: false },
             9 => Action::PageStep { change: 1 },
+            10 => Action::Brightness { change: 5, set: None },
             _ => Action::None,
         }
     }
@@ -350,6 +372,7 @@ impl Action {
                 c if c > 0 => format!("Page +{c}"),
                 c => format!("Page {c}"),
             },
+            Action::Brightness { change, set } => brightness_summary(*change, *set),
         }
     }
 }
@@ -361,6 +384,13 @@ fn volume_summary(device: AudioDevice, change: i8, mute: bool) -> String {
     }
     let sign = if change >= 0 { "+" } else { "" };
     if mic { format!("Mic {sign}{change}%") } else { format!("Volume {sign}{change}%") }
+}
+
+fn brightness_summary(change: i8, set: Option<u8>) -> String {
+    if let Some(v) = set {
+        return format!("Brightness {v}%");
+    }
+    format!("Brightness {}{}%", if change >= 0 { "+" } else { "" }, change)
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -424,10 +454,23 @@ impl DialConfig {
     /// The audio device this dial shows a level for: the device of the first `Volume`
     /// action among turn_right, turn_left and press. `None` for a non-volume dial.
     pub fn volume_device(&self) -> Option<AudioDevice> {
-        [&self.turn_right, &self.turn_left, &self.press].into_iter().find_map(|a| match a {
+        self.level_source().and_then(|s| match s {
+            LevelSource::Volume(dev) => Some(dev),
+            LevelSource::Brightness => None,
+        })
+    }
+
+    /// What this dial's strip panel shows: the first `Volume` action's device (which
+    /// wins), else `Brightness` when any of its actions is a brightness action.
+    pub fn level_source(&self) -> Option<LevelSource> {
+        let actions = [&self.turn_right, &self.turn_left, &self.press];
+        if let Some(dev) = actions.into_iter().find_map(|a| match a {
             Action::Volume { device, .. } => Some(*device),
             _ => None,
-        })
+        }) {
+            return Some(LevelSource::Volume(dev));
+        }
+        actions.iter().any(|a| matches!(a, Action::Brightness { .. })).then_some(LevelSource::Brightness)
     }
 
     /// The look fields, shared with the key face renderer.
@@ -669,6 +712,15 @@ impl Config {
 
 /// What the home page is called in the UI. It has no name in the config file.
 pub const HOME: &str = "Home";
+
+/// The brightness a brightness action lands on, clamped to 0–100. An absolute `set`
+/// wins over the relative `change`.
+pub fn apply_brightness(current: u8, set: Option<u8>, change: i32) -> u8 {
+    match set {
+        Some(v) => v.min(100),
+        None => (current as i32 + change).clamp(0, 100) as u8,
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -953,6 +1005,51 @@ mod tests {
     }
 
     #[test]
+    fn brightness_action_roundtrip_and_summaries() {
+        let a = Action::Brightness { change: -5, set: None };
+        let s = toml::to_string_pretty(&a).unwrap();
+        assert!(s.contains("type = \"brightness\""));
+        assert!(s.contains("change = -5"));
+        assert!(!s.contains("set"), "{s}");
+        assert_eq!(toml::from_str::<Action>(&s).unwrap(), a);
+
+        let a = Action::Brightness { change: 0, set: Some(40) };
+        let s = toml::to_string_pretty(&a).unwrap();
+        assert!(s.contains("set = 40"));
+        assert!(!s.contains("change"), "zero change is omitted: {s}");
+        assert_eq!(toml::from_str::<Action>(&s).unwrap(), a);
+
+        assert_eq!(Action::empty_of_kind(10), Action::Brightness { change: 5, set: None });
+        assert_eq!(Action::Brightness { change: 0, set: Some(40) }.summary(), "Brightness 40%");
+        assert_eq!(Action::Brightness { change: -5, set: None }.summary(), "Brightness -5%");
+        assert_eq!(Action::Brightness { change: 5, set: None }.summary(), "Brightness +5%");
+    }
+
+    #[test]
+    fn apply_brightness_clamps_and_set_wins() {
+        assert_eq!(apply_brightness(70, None, 5), 75);
+        assert_eq!(apply_brightness(70, None, -5), 65);
+        assert_eq!(apply_brightness(95, None, 10), 100, "clamps at the top");
+        assert_eq!(apply_brightness(5, None, -10), 0, "clamps at the bottom");
+        assert_eq!(apply_brightness(70, Some(40), 5), 40, "set wins over change");
+        assert_eq!(apply_brightness(70, Some(200), 0), 100, "set is clamped too");
+        assert_eq!(apply_brightness(70, None, 0), 70, "no change, no move");
+    }
+
+    #[test]
+    fn level_source_volume_wins_over_brightness() {
+        let d = DialConfig {
+            turn_right: Action::Brightness { change: 5, set: None },
+            press: Action::Volume { device: AudioDevice::Input, change: 0, mute: true },
+            ..DialConfig::new(0)
+        };
+        assert_eq!(d.level_source(), Some(LevelSource::Volume(AudioDevice::Input)));
+        let d = DialConfig { turn_right: Action::Brightness { change: 5, set: None }, ..DialConfig::new(0) };
+        assert_eq!(d.level_source(), Some(LevelSource::Brightness));
+        let d = DialConfig::new(0);
+        assert_eq!(d.level_source(), None);
+    }
+    #[test]
     fn example_parses() {
         let s = include_str!("../../../examples/config.toml");
         let c: Config = toml::from_str(s).unwrap();
@@ -979,7 +1076,7 @@ mod tests {
             blocks.push(&rest[start..end]);
             idx = end;
         }
-        assert_eq!(blocks.len(), 2, "two dial examples");
+        assert_eq!(blocks.len(), 3, "three dial examples");
         let uncommented = blocks
             .iter()
             .map(|b| b.lines().map(|l| l.strip_prefix("# ").unwrap_or(l)).collect::<Vec<_>>().join("\n"))
@@ -987,8 +1084,9 @@ mod tests {
             .join("\n");
         let c: Config = toml::from_str(&format!("{before}{uncommented}"))
             .expect("the commented dial blocks, uncommented, are valid config");
-        assert_eq!(c.dials.len(), 2);
+        assert_eq!(c.dials.len(), 3);
         assert!(!c.dials[0].turn_left.is_none());
         assert!(matches!(c.dials[1].turn_right, Action::Volume { .. }));
+        assert!(matches!(c.dials[2].turn_right, Action::Brightness { .. }));
     }
 }

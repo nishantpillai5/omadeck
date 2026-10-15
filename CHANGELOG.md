@@ -18,6 +18,14 @@ All notable changes to omadeck are documented here. The format follows
   on a key or per dial turn. Folders are skipped, so a flick can't land inside one;
   the configurator's folder button marks a page as one. Dials and the strip are the
   same on every page.
+- A `brightness` action: change the panel brightness by ±%, or set it to an exact
+  value. It is remembered across restarts in the state file (the config's value is
+  the start value), as in the Elgato app. A brightness dial shows its value and a
+  groove bar on the touch strip, and the configurator has a one-click **Brightness
+  dial** preset.
+- Volume and mic bars on the strip now update optimistically: a volume action moves
+  the bar immediately, and the daemon's read-back a moment later corrects it. A
+  config reload no longer blanks the bars of devices that are still shown.
 - A `volume` action: change the output or input (microphone) volume, or toggle mute.
   It runs through Omarchy's own volume commands when they're installed (so its on-screen
   pop-up shows, just like the volume keys) and falls back to `wpctl` otherwise. A fast

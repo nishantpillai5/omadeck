@@ -24,6 +24,8 @@ pub fn run(action: &Action) -> Result<()> {
         Action::Hyprland { dispatch } => hypr_dispatch(dispatch),
         Action::Page { .. } | Action::Back | Action::PageStep { .. } => bail!("changing pages only works on the deck"),
         Action::Volume { device, change, mute } => run_volume(*device, *change, *mute),
+        // The daemon owns the panel brightness; it applies and persists it itself.
+        Action::Brightness { .. } => bail!("brightness actions are handled by the daemon, not run from here"),
     }
 }
 
