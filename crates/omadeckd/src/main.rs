@@ -45,12 +45,17 @@ const AUDIO_POLL: Duration = Duration::from_millis(1000);
 /// Wait this long after our own volume change before re-reading, so the command finishes.
 const AUDIO_REFRESH_DELAY: Duration = Duration::from_millis(150);
 
+/// At most this many more HID reports are taken in one pass after the first, so a fast
+/// spin is handled together and its panels are painted once.
+const MAX_DRAIN: usize = 32;
+
 /// A message the main loop sends the audio worker.
 enum AudioCmd {
     /// Which devices some dial shows; polled every second while non-empty.
     Watch(Vec<AudioDevice>),
-    /// Re-read now (we just changed the volume ourselves).
-    Refresh,
+    /// We just changed this device; re-read it soon and send the result even if it's
+    /// unchanged, so an optimistic guess that was wrong gets corrected.
+    Refresh(AudioDevice),
 }
 
 /// The audio worker: reads the watched devices' levels off the deck loop and sends
@@ -82,7 +87,10 @@ fn start_audio_worker() -> AudioWorker {
                         next_poll = Instant::now();
                         continue;
                     }
-                    Ok(AudioCmd::Refresh) => {
+                    Ok(AudioCmd::Refresh(dev)) => {
+                        // Drop the last known value so the next read is sent even
+                        // when it equals what we already knew.
+                        last.remove(&dev);
                         next_poll = Instant::now() + AUDIO_REFRESH_DELAY;
                         continue;
                     }
@@ -135,6 +143,9 @@ struct Deck {
     dial_levels: Vec<Option<LevelSource>>,
     /// The last known level per volume device, for the strip panels.
     device_levels: HashMap<AudioDevice, Level>,
+    /// Panels to repaint at the end of this pass (`flush_dirty`), so a fast spin can't
+    /// queue a write per detent on the loop.
+    dirty_panels: Vec<bool>,
     /// The panel brightness, 0–100: the config value at start, changed by brightness actions.
     brightness: u8,
 }
@@ -299,9 +310,9 @@ fn run() -> Result<()> {
     let mut hid = device::new_hidapi().context("initialising hidapi")?;
     let audio = start_audio_worker();
     let (brightness_tx, brightness_rx) = mpsc::channel::<u8>();
-    std::thread::Builder::new()
+    let saver = std::thread::Builder::new()
         .name("brightness".into())
-        .spawn(move || brightness_saver(brightness_rx))
+        .spawn(move || brightness_saver(brightness_rx, save_brightness))
         .expect("spawning the brightness saver");
     let mut deck: Option<Deck> = None;
     let mut last_scan: Option<Instant> = None;
@@ -346,8 +357,10 @@ fn run() -> Result<()> {
         if reload_at.is_some_and(|t| Instant::now() >= t) {
             reload_at = None;
             // A typo while hand-editing shouldn't wipe the deck: keep the last good config.
+            let mut hand_edit = None;
             match Config::load() {
                 Ok(new_cfg) => {
+                    hand_edit = hand_edited_brightness(&cfg, &new_cfg);
                     CONFIG_BRIGHTNESS.store(new_cfg.brightness, std::sync::atomic::Ordering::Relaxed);
                     cfg = new_cfg;
                 }
@@ -373,6 +386,11 @@ fn run() -> Result<()> {
                 d.device_levels.retain(|dev, _| watched.contains(dev));
                 let _ = audio.cmd.send(AudioCmd::Watch(watched));
             }
+            // A hand edit of `brightness` in config.toml wins over the state file, like
+            // any other hot-reloaded field (it is also saved there).
+            if let Some(v) = hand_edit {
+                set_brightness(deck.as_mut(), &brightness_tx, v);
+            }
             if let Some(d) = &deck
                 && let Err(e) = paint_all(d, &cfg, nav.current(), &mut renderer)
             {
@@ -390,10 +408,8 @@ fn run() -> Result<()> {
                 Command::SetBrightness { value } => bright = Some(value),
             }
         }
-        if let Some(v) = bright
-            && let Some(d) = &mut deck
-        {
-            do_brightness(d, &cfg, &mut renderer, &brightness_tx, Some(v), 0);
+        if let Some(v) = bright {
+            set_brightness(deck.as_mut(), &brightness_tx, v);
         }
         if let Some(page) = show {
             wanted_page = None;
@@ -447,7 +463,7 @@ fn run() -> Result<()> {
             })
             .collect();
         for i in expired {
-            paint_dial(d, &cfg, &mut renderer, i);
+            mark_dirty(d, i);
         }
 
         // Volume levels from the audio worker: update the device and repaint its panels.
@@ -455,13 +471,23 @@ fn run() -> Result<()> {
             d.device_levels.insert(dev, level.clone());
             for (i, src) in d.dial_levels.iter().enumerate().take(d.info.dials as usize) {
                 if *src == Some(LevelSource::Volume(dev)) {
-                    paint_dial(d, &cfg, &mut renderer, i as u8);
+                    d.dirty_panels[i] = true;
                 }
             }
         }
 
         match d.reader.read(Some(READ_TIMEOUT)) {
-            Ok(updates) => {
+            Ok(mut updates) => {
+                // A read returns one HID report. Take the reports already queued behind
+                // it too (a zero timeout doesn't wait), so a fast spin is one pass.
+                if !updates.is_empty() {
+                    for _ in 0..MAX_DRAIN {
+                        match d.reader.read(Some(Duration::ZERO)) {
+                            Ok(more) if !more.is_empty() => updates.extend(more),
+                            _ => break,
+                        }
+                    }
+                }
                 for u in updates {
                     match u {
                         DeviceStateUpdate::ButtonDown(i) => {
@@ -475,7 +501,7 @@ fn run() -> Result<()> {
                                 log::warn!("key {i}: {e:#}");
                                 hub.publish(Event::ActionFailed { index: i, message: format!("{e:#}") });
                             }
-                            after_volume(d, &cfg, &mut renderer, &audio, &k.action, 1);
+                            after_volume(d, &audio, &k.action, 1);
                         }
                         DeviceStateUpdate::ButtonUp(i) => {
                             paint(d, &cfg, nav.current(), &mut renderer, i, false);
@@ -503,7 +529,7 @@ fn run() -> Result<()> {
                                         log::warn!("dial {i}: {e:#}");
                                         hub.publish(Event::DialActionFailed { index: i, message: format!("{e:#}") });
                                     }
-                                    after_volume(d, &cfg, &mut renderer, &audio, act, steps);
+                                    after_volume(d, &audio, act, steps);
                                 }
                             }
                         }
@@ -513,7 +539,7 @@ fn run() -> Result<()> {
                             if let Some(p) = d.dial_pressed.get_mut(i as usize) {
                                 *p = true;
                             }
-                            paint_dial(d, &cfg, &mut renderer, i);
+                            mark_dirty(d, i);
                             if let Some(dc) = cfg.dial(i)
                                 && !dc.press.is_none()
                             {
@@ -531,7 +557,7 @@ fn run() -> Result<()> {
                                     log::warn!("dial {i}: {e:#}");
                                     hub.publish(Event::DialActionFailed { index: i, message: format!("{e:#}") });
                                 }
-                                after_volume(d, &cfg, &mut renderer, &audio, &dc.press, 1);
+                                after_volume(d, &audio, &dc.press, 1);
                             }
                         }
                         DeviceStateUpdate::EncoderUp(i) => {
@@ -540,7 +566,7 @@ fn run() -> Result<()> {
                             if let Some(p) = d.dial_pressed.get_mut(i as usize) {
                                 *p = false;
                             }
-                            paint_dial(d, &cfg, &mut renderer, i);
+                            mark_dirty(d, i);
                         }
                         DeviceStateUpdate::TouchScreenPress(x, y) => {
                             log::info!("strip tap at ({x}, {y})");
@@ -556,7 +582,7 @@ fn run() -> Result<()> {
                                     // expiry sweep both measure elapsed time since it.
                                     *t = Some(Instant::now());
                                 }
-                                paint_dial(d, &cfg, &mut renderer, i as u8);
+                                mark_dirty(d, i as u8);
                                 if let Some(dc) = cfg.dial(i as u8)
                                     && !dc.press.is_none()
                                 {
@@ -577,7 +603,7 @@ fn run() -> Result<()> {
                                             message: format!("{e:#}"),
                                         });
                                     }
-                                    after_volume(d, &cfg, &mut renderer, &audio, &dc.press, 1);
+                                    after_volume(d, &audio, &dc.press, 1);
                                 }
                             }
                         }
@@ -614,6 +640,12 @@ fn run() -> Result<()> {
                 hub.publish(Event::Disconnected);
             }
         }
+
+        // Everything this pass dirtied (input, levels, flashes, a GUI brightness change),
+        // painted once.
+        if let Some(d) = &mut deck {
+            flush_dirty(d, &cfg, &mut renderer);
+        }
     }
 
     log::info!("shutting down");
@@ -622,6 +654,9 @@ fn run() -> Result<()> {
         let _ = d.dev.reset();
     }
     hub.shutdown();
+    // Let the saver write a brightness that is still settling.
+    drop(brightness_tx);
+    let _ = saver.join();
     Ok(())
 }
 
@@ -671,6 +706,7 @@ fn connect(hid: &mut HidApi, cfg: &Config, page: Option<&str>, renderer: &mut Re
         flash_until: vec![None; n_dials],
         dial_levels: (0..n_dials).map(|i| cfg.dial(i as u8).and_then(|d| d.level_source())).collect(),
         device_levels: HashMap::new(),
+        dirty_panels: vec![false; n_dials],
         // The state file wins over the config's start value once the deck has run.
         brightness: State::load().start_brightness(cfg.brightness),
     };
@@ -692,7 +728,6 @@ fn dispatch(
     d: &mut Deck,
     cfg: &Config,
     nav: &mut Nav,
-    renderer: &mut Renderer,
     brightness: &mpsc::Sender<u8>,
     act: &Action,
     steps: u8,
@@ -714,23 +749,33 @@ fn dispatch(
         Action::Brightness { change, set } => {
             // A relative turn changes the brightness per detent; `set` applies once.
             let change = if set.is_none() { i32::from(*change) * steps as i32 } else { 0 };
-            do_brightness(d, cfg, renderer, brightness, *set, change);
+            do_brightness(d, brightness, *set, change);
             Ok(false)
         }
         a => action::run_steps(a, steps).map(|_| false),
     }
 }
 
+/// The new start brightness when `new` changes the config's `brightness` (a hand edit,
+/// or the configurator with no daemon), else `None`.
+fn hand_edited_brightness(old: &Config, new: &Config) -> Option<u8> {
+    (new.brightness != old.brightness).then_some(new.brightness)
+}
+
+/// Set the brightness from outside the deck's own input (the configurator's slider, a
+/// config edit). With no deck it is only saved, and the next connect starts from it.
+fn set_brightness(deck: Option<&mut Deck>, saver: &mpsc::Sender<u8>, value: u8) {
+    match deck {
+        Some(d) => do_brightness(d, saver, Some(value), 0),
+        None => {
+            let _ = saver.send(value.min(100));
+        }
+    }
+}
+
 /// Apply a brightness action: set the panel, remember it in the state file (so it
 /// survives a restart, as in the Elgato app), and repaint the brightness dials' panels.
-fn do_brightness(
-    d: &mut Deck,
-    cfg: &Config,
-    renderer: &mut Renderer,
-    brightness: &mpsc::Sender<u8>,
-    set: Option<u8>,
-    change: i32,
-) {
+fn do_brightness(d: &mut Deck, brightness: &mpsc::Sender<u8>, set: Option<u8>, change: i32) {
     let next = apply_brightness(d.brightness, set, change);
     if next == d.brightness {
         return;
@@ -743,7 +788,7 @@ fn do_brightness(
     let _ = brightness.send(next);
     for (i, src) in d.dial_levels.iter().enumerate().take(d.info.dials as usize) {
         if *src == Some(LevelSource::Brightness) {
-            paint_dial(d, cfg, renderer, i as u8);
+            d.dirty_panels[i] = true;
         }
     }
 }
@@ -753,9 +798,14 @@ fn do_brightness(
 /// same reason). The value is the last known level plus the change, clamped 0–100; the
 /// audio worker's refresh re-reads the true value a moment later and corrects it, which
 /// for a relative change is the same number.
-fn after_volume(d: &mut Deck, cfg: &Config, renderer: &mut Renderer, audio: &AudioWorker, act: &Action, steps: u8) {
+fn after_volume(d: &mut Deck, audio: &AudioWorker, act: &Action, steps: u8) {
     let Action::Volume { device, change, mute } = act else { return };
-    let cur = d.device_levels.get(device).cloned().unwrap_or(Level { value: 0.0, text: "–".into(), muted: false });
+    let Some(cur) = d.device_levels.get(device).cloned() else {
+        // Nothing read yet (just connected): a guess from 0 would show a wrong bar; the
+        // refresh brings the real value.
+        let _ = audio.cmd.send(AudioCmd::Refresh(*device));
+        return;
+    };
     let pct = (cur.value * 100.0).round() as i32;
     let next = if *mute {
         // A press toggles mute; guess the new state from the current one.
@@ -768,16 +818,16 @@ fn after_volume(d: &mut Deck, cfg: &Config, renderer: &mut Renderer, audio: &Aud
     d.device_levels.insert(*device, next);
     for (i, src) in d.dial_levels.iter().enumerate().take(d.info.dials as usize) {
         if *src == Some(LevelSource::Volume(*device)) {
-            paint_dial(d, cfg, renderer, i as u8);
+            d.dirty_panels[i] = true;
         }
     }
-    let _ = audio.cmd.send(AudioCmd::Refresh);
+    let _ = audio.cmd.send(AudioCmd::Refresh(*device));
 }
 
 /// Write the brightness to the state file, debounced: one write per burst of turns,
 /// off the deck loop, so a hard spin doesn't serialize the file on every detent. The
 /// user's config.toml is never touched.
-fn brightness_saver(rx: mpsc::Receiver<u8>) {
+fn brightness_saver(rx: mpsc::Receiver<u8>, save: impl Fn(u8)) {
     let settle = Duration::from_millis(200);
     let mut pending = rx.recv().ok();
     while let Some(first) = pending {
@@ -786,12 +836,16 @@ fn brightness_saver(rx: mpsc::Receiver<u8>) {
         while let Ok(next) = rx.recv_timeout(settle) {
             v = next;
         }
-        let seen = CONFIG_BRIGHTNESS.load(std::sync::atomic::Ordering::Relaxed);
-        if let Err(e) = (State { brightness: Some(v), config_brightness: Some(seen) }).save() {
-            log::warn!("saving brightness: {e:#}");
-        }
+        save(v);
         // Blocks for the next turn; ends when the daemon drops the sender.
         pending = rx.recv().ok();
+    }
+}
+
+fn save_brightness(v: u8) {
+    let seen = CONFIG_BRIGHTNESS.load(std::sync::atomic::Ordering::Relaxed);
+    if let Err(e) = (State { brightness: Some(v), config_brightness: Some(seen) }).save() {
+        log::warn!("saving brightness: {e:#}");
     }
 }
 
@@ -807,7 +861,7 @@ fn run_deck_action(
     act: &Action,
     steps: u8,
 ) -> Result<bool> {
-    let moved = dispatch(d, cfg, nav, renderer, brightness, act, steps)?;
+    let moved = dispatch(d, cfg, nav, brightness, act, steps)?;
     if moved {
         show_page(Some(d), cfg, nav, renderer, hub);
     }
@@ -857,14 +911,35 @@ fn write_panel(d: &Deck, cfg: &Config, renderer: &mut Renderer, i: u8) -> Result
     Ok(())
 }
 
-/// Redraw one 200×100 dial panel.
-fn paint_dial(d: &Deck, cfg: &Config, renderer: &mut Renderer, i: u8) {
-    if d.info.strip.is_none() || i >= d.info.dials {
+/// Redraw one 200×100 dial panel. Volume and brightness changes mark the panel dirty
+/// instead of calling this directly, so a fast spin coalesces to one write per loop pass.
+/// Mark dial `i`'s panel for the end-of-pass paint.
+fn mark_dirty(d: &mut Deck, i: u8) {
+    if let Some(f) = d.dirty_panels.get_mut(i as usize) {
+        *f = true;
+    }
+}
+
+/// Paint every dirty dial panel and flush once. Runs at the end of every loop pass, the
+/// only place panels are painted outside `paint_all`, so a fast spin, a tap flash and a
+/// level change in the same pass cost one write per panel.
+fn flush_dirty(d: &mut Deck, cfg: &Config, renderer: &mut Renderer) {
+    if !d.dirty_panels.contains(&true) {
         return;
     }
-    if let Err(e) = write_panel(d, cfg, renderer, i).and_then(|_| Ok(d.dev.flush()?)) {
-        log::warn!("paint dial {i}: {e}");
+    if d.info.strip.is_some() {
+        for i in 0..d.info.dials {
+            if d.dirty_panels.get(i as usize).copied().unwrap_or(false)
+                && let Err(e) = write_panel(d, cfg, renderer, i)
+            {
+                log::warn!("paint dial {i}: {e}");
+            }
+        }
+        if let Err(e) = d.dev.flush() {
+            log::warn!("flush: {e}");
+        }
     }
+    d.dirty_panels.fill(false);
 }
 
 fn write_key(d: &Deck, cfg: &Config, page: Option<&str>, renderer: &mut Renderer, i: u8, pressed: bool) -> Result<()> {
@@ -878,6 +953,8 @@ fn snapshot(out: &Path, page: Option<&str>) -> Result<()> {
     let cfg = Config::load()?;
     let keys = cfg.page(page).with_context(|| format!("no page named {}", page.unwrap_or_default()))?;
     let info = device::detect().into_iter().next().unwrap_or_else(DeckInfo::fallback);
+    // The deck runs on the state file's brightness once it has run, as `connect` does.
+    let brightness = State::load().start_brightness(cfg.brightness);
     let mut renderer = Renderer::new(&cfg.style);
     let size = 144u32;
     let gap = 18u32;
@@ -896,14 +973,14 @@ fn snapshot(out: &Path, page: Option<&str>) -> Result<()> {
     }
     let mut y = grid_h + gap;
     if let Some((sw, sh)) = info.strip {
-        // Brightness dials show the config's value (it is static); volume dials show a
-        // dash, as their level is live.
+        // Brightness dials show the live start value; volume dials show a dash, as their
+        // level is read by the running daemon.
         let status: Vec<DialStatus> = (0..info.dials as usize)
             .map(|i| {
                 let level = matches!(cfg.dial(i as u8).and_then(|d| d.level_source()), Some(LevelSource::Brightness))
                     .then_some(Level {
-                        value: cfg.brightness as f32 / 100.0,
-                        text: format!("{}%", cfg.brightness),
+                        value: brightness as f32 / 100.0,
+                        text: format!("{}%", brightness),
                         muted: false,
                     });
                 DialStatus { pressed: false, level }
@@ -936,5 +1013,34 @@ fn draw_circle(img: &mut image::RgbaImage, cx: u32, cy: u32, r: u32, c: image::R
                 img.put_pixel(x, y, c);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Arc;
+
+    #[test]
+    fn saver_writes_the_last_value_when_dropped() {
+        let saved = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let (tx, rx) = mpsc::channel::<u8>();
+        let out = saved.clone();
+        let saver = std::thread::spawn(move || brightness_saver(rx, move |v| out.lock().unwrap().push(v)));
+        for v in [30, 40, 50] {
+            tx.send(v).unwrap();
+        }
+        // Shutdown: drop the sender and join, as `run` does; the burst is saved once.
+        drop(tx);
+        saver.join().unwrap();
+        assert_eq!(*saved.lock().unwrap(), vec![50]);
+    }
+
+    #[test]
+    fn hand_edit_is_a_changed_brightness() {
+        let old = Config { brightness: 70, ..Default::default() };
+        let new = Config { brightness: 30, ..Default::default() };
+        assert_eq!(hand_edited_brightness(&old, &new), Some(30));
+        assert_eq!(hand_edited_brightness(&old, &old), None);
     }
 }
