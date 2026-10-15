@@ -109,6 +109,10 @@ fn is_true(b: &bool) -> bool {
     *b
 }
 
+fn is_zero_i8(v: &i8) -> bool {
+    *v == 0
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Style {
     /// Take default colours from the active Omarchy theme (re-rendered when the theme changes).
@@ -178,6 +182,29 @@ impl KeyConfig {
     }
 }
 
+/// Which audio device a volume action works on.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AudioDevice {
+    #[default]
+    Output,
+    Input,
+}
+
+impl AudioDevice {
+    pub fn is_output(&self) -> bool {
+        matches!(self, AudioDevice::Output)
+    }
+}
+
+/// One of a dial's three action slots.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Direction {
+    Left,
+    Right,
+    Press,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Action {
@@ -206,11 +233,33 @@ pub enum Action {
     Page { page: String },
     /// Return to the page shown before this one (Home if there is none).
     Back,
+    /// Change the system volume, through Omarchy's volume commands (so its pop-up shows)
+    /// or `wpctl`.
+    Volume {
+        /// The output (default) or the input (microphone).
+        #[serde(default, skip_serializing_if = "AudioDevice::is_output")]
+        device: AudioDevice,
+        /// Percent to change by, signed. Ignored when `mute` is set.
+        #[serde(default, skip_serializing_if = "is_zero_i8")]
+        change: i8,
+        /// Toggle mute instead of changing the level.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        mute: bool,
+    },
 }
 
 impl Action {
-    pub const KINDS: [&'static str; 8] =
-        ["Nothing", "Launch app", "Run script", "Play sound", "Open website", "Hyprland", "Open page", "Go back"];
+    pub const KINDS: [&'static str; 9] = [
+        "Nothing",
+        "Launch app",
+        "Run script",
+        "Play sound",
+        "Open website",
+        "Hyprland",
+        "Open page",
+        "Go back",
+        "Volume",
+    ];
 
     pub fn kind_index(&self) -> usize {
         match self {
@@ -222,6 +271,7 @@ impl Action {
             Action::Hyprland { .. } => 5,
             Action::Page { .. } => 6,
             Action::Back => 7,
+            Action::Volume { .. } => 8,
         }
     }
 
@@ -243,7 +293,21 @@ impl Action {
             5 => Action::Hyprland { dispatch: String::new() },
             6 => Action::Page { page: String::new() },
             7 => Action::Back,
+            8 => Action::Volume { device: AudioDevice::Output, change: 5, mute: false },
             _ => Action::None,
+        }
+    }
+
+    /// The action a kind pick starts from in one of a dial's slots. Turning left gets
+    /// the opposite sign of turning right (lower the volume), and a Volume press mutes,
+    /// as on Elgato's volume dial. Everything else is `empty_of_kind`.
+    pub fn default_for(kind: usize, dir: Direction) -> Self {
+        match (Self::empty_of_kind(kind), dir) {
+            (Action::Volume { device, .. }, Direction::Press) => Action::Volume { device, change: 0, mute: true },
+            (Action::Volume { device, change, mute }, Direction::Left) => {
+                Action::Volume { device, change: -change, mute }
+            }
+            (act, _) => act,
         }
     }
 
@@ -257,8 +321,18 @@ impl Action {
             Action::Hyprland { dispatch } => format!("hyprctl dispatch {dispatch}"),
             Action::Page { page } => format!("Open page {page}"),
             Action::Back => "Go back".into(),
+            Action::Volume { device, change, mute } => volume_summary(*device, *change, *mute),
         }
     }
+}
+
+fn volume_summary(device: AudioDevice, change: i8, mute: bool) -> String {
+    let mic = !device.is_output();
+    if mute {
+        return if mic { "Toggle mute (mic)".into() } else { "Toggle mute".into() };
+    }
+    let sign = if change >= 0 { "+" } else { "" };
+    if mic { format!("Mic {sign}{change}%") } else { format!("Volume {sign}{change}%") }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -317,6 +391,15 @@ impl DialConfig {
             && self.turn_left.is_none()
             && self.turn_right.is_none()
             && self.press.is_none()
+    }
+
+    /// The audio device this dial shows a level for: the device of the first `Volume`
+    /// action among turn_right, turn_left and press. `None` for a non-volume dial.
+    pub fn volume_device(&self) -> Option<AudioDevice> {
+        [&self.turn_right, &self.turn_left, &self.press].into_iter().find_map(|a| match a {
+            Action::Volume { device, .. } => Some(*device),
+            _ => None,
+        })
     }
 
     /// The look fields, shared with the key face renderer.
@@ -701,6 +784,26 @@ mod tests {
     }
 
     #[test]
+    fn default_for_follows_direction() {
+        let volume = Action::Volume { device: AudioDevice::Output, change: 5, mute: false }.kind_index();
+        assert_eq!(
+            Action::default_for(volume, Direction::Left),
+            Action::Volume { device: AudioDevice::Output, change: -5, mute: false }
+        );
+        assert_eq!(
+            Action::default_for(volume, Direction::Right),
+            Action::Volume { device: AudioDevice::Output, change: 5, mute: false }
+        );
+        assert_eq!(
+            Action::default_for(volume, Direction::Press),
+            Action::Volume { device: AudioDevice::Output, change: 0, mute: true }
+        );
+        for kind in 0..Action::KINDS.len() {
+            assert_eq!(Action::default_for(kind, Direction::Right), Action::empty_of_kind(kind));
+        }
+    }
+
+    #[test]
     fn save_tidies_every_page() {
         let dir = std::env::temp_dir().join(format!("omadeck-test-{}", std::process::id()));
         let path = dir.join("config.toml");
@@ -832,6 +935,50 @@ mod tests {
     }
 
     #[test]
+    fn volume_action_roundtrip_and_defaults() {
+        let mut c = Config::default();
+        let d = c.dial_mut(0);
+        d.label = "Volume".into();
+        d.turn_left = Action::Volume { device: AudioDevice::Output, change: -5, mute: false };
+        d.turn_right = Action::Volume { device: AudioDevice::Output, change: 5, mute: false };
+        d.press = Action::Volume { device: AudioDevice::Output, change: 0, mute: true };
+        let s = toml::to_string_pretty(&c).unwrap();
+        assert!(s.contains("type = \"volume\""));
+        // The default device and the zero/false fields are left out.
+        assert!(!s.contains("device"));
+        assert!(!s.contains("mute = false"));
+        assert!(s.contains("change = -5") && s.contains("change = 5") && s.contains("mute = true"));
+        let back: Config = toml::from_str(&s).unwrap();
+        assert_eq!(c, back);
+    }
+
+    #[test]
+    fn volume_input_device_is_saved() {
+        let mut c = Config::default();
+        c.dial_mut(1).press = Action::Volume { device: AudioDevice::Input, change: 0, mute: true };
+        let s = toml::to_string_pretty(&c).unwrap();
+        assert!(s.contains("device = \"input\""));
+        let back: Config = toml::from_str(&s).unwrap();
+        assert_eq!(c, back);
+    }
+
+    #[test]
+    fn volume_device_picks_first() {
+        let d = DialConfig {
+            turn_right: Action::Volume { device: AudioDevice::Output, change: 5, mute: false },
+            press: Action::Volume { device: AudioDevice::Input, change: 0, mute: true },
+            ..DialConfig::new(0)
+        };
+        assert_eq!(d.volume_device(), Some(AudioDevice::Output));
+        let d = DialConfig {
+            press: Action::Volume { device: AudioDevice::Input, change: 0, mute: true },
+            ..DialConfig::new(0)
+        };
+        assert_eq!(d.volume_device(), Some(AudioDevice::Input));
+        assert_eq!(DialConfig::new(0).volume_device(), None);
+    }
+
+    #[test]
     fn example_parses() {
         let s = include_str!("../../../examples/config.toml");
         let c: Config = toml::from_str(s).unwrap();
@@ -841,12 +988,33 @@ mod tests {
     #[test]
     fn example_dial_parses() {
         let s = include_str!("../../../examples/config.toml");
-        let start = s.find("# [[dial]]").expect("a commented [[dial]] block");
-        let (before, block) = s.split_at(start);
-        let uncommented = block.lines().map(|l| l.strip_prefix("# ").unwrap_or(l)).collect::<Vec<_>>().join("\n");
+        let first = s.find("# [[dial]]").expect("a commented [[dial]] block");
+        let (before, rest) = s.split_at(first);
+        // Each dial block runs from its `# [[dial]]` to the next one or a blank comment line.
+        let mut blocks: Vec<&str> = Vec::new();
+        let mut idx = 0;
+        while let Some(rel) = rest[idx..].find("# [[dial]]") {
+            let start = idx + rel;
+            let after = start + "# [[dial]]".len();
+            let end_blank = rest[after..].find("\n#\n").map(|p| after + p);
+            let end_next = rest[after..].find("# [[dial]]").map(|p| after + p);
+            let end = match (end_blank, end_next) {
+                (Some(b), Some(n)) => b.min(n),
+                (b, n) => b.or(n).unwrap_or(rest.len()),
+            };
+            blocks.push(&rest[start..end]);
+            idx = end;
+        }
+        assert_eq!(blocks.len(), 2, "two dial examples");
+        let uncommented = blocks
+            .iter()
+            .map(|b| b.lines().map(|l| l.strip_prefix("# ").unwrap_or(l)).collect::<Vec<_>>().join("\n"))
+            .collect::<Vec<_>>()
+            .join("\n");
         let c: Config = toml::from_str(&format!("{before}{uncommented}"))
-            .expect("the commented dial block, uncommented, is valid config");
-        assert_eq!(c.dials.len(), 1);
+            .expect("the commented dial blocks, uncommented, are valid config");
+        assert_eq!(c.dials.len(), 2);
         assert!(!c.dials[0].turn_left.is_none());
+        assert!(matches!(c.dials[1].turn_right, Action::Volume { .. }));
     }
 }

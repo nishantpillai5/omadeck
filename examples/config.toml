@@ -94,3 +94,19 @@ command = "playerctl play-pause"
 # [dial.press]
 # type = "app"
 # command = "walker"
+#
+# A volume dial: turn to change the output volume, press to mute. Its panel on the
+# strip shows the current level and a groove bar, kept in sync with the real volume.
+# [[dial]]
+# index = 1
+# label = "Volume"
+# glyph = "f057e"            # a speaker; a mic ("f036c") for an input dial
+# [dial.turn_left]
+# type = "volume"
+# change = -5
+# [dial.turn_right]
+# type = "volume"
+# change = 5
+# [dial.press]
+# type = "volume"
+# mute = true                # toggle mute instead of changing the level
