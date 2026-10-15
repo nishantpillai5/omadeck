@@ -10,7 +10,7 @@ use gtk::{gdk, gio, glib};
 use omadeck_core::config::{self, RemovedPage};
 use omadeck_core::ipc::{self, Command as DaemonCommand, Event};
 use omadeck_core::paths::FileStamp;
-use omadeck_core::{Action, Config, DeckInfo, HOME, KeyConfig, Keys, Page, Renderer, device, paths};
+use omadeck_core::{Action, Config, DeckInfo, DialConfig, HOME, KeyConfig, Keys, Page, Renderer, device, paths};
 
 use crate::{editor, media};
 
@@ -31,10 +31,26 @@ pub struct KeyRef {
     index: u8,
 }
 
+/// What an editor row is editing: a key on a page, or a dial. Work that finishes later
+/// (a picker, an icon fetch) holds one of these, so the result lands where it started
+/// even if the window has moved on since. Dials have no page, so they're always safe.
+#[derive(Clone)]
+pub enum Target {
+    Key(KeyRef),
+    Dial(u8),
+}
+
 enum Msg {
     DaemonUp(ipc::Sender),
     DaemonDown,
     Event(Event),
+}
+
+/// What the editor is showing.
+#[derive(Clone, Copy, PartialEq)]
+pub enum Selection {
+    Key(u8),
+    Dial(u8),
 }
 
 pub struct App {
@@ -59,12 +75,13 @@ pub struct App {
     daemon: RefCell<Option<ipc::Sender>>,
     editor_slot: adw::Bin,
     keys: RefCell<Vec<(gtk::Button, gtk::Image)>>,
+    dials: RefCell<Vec<(gtk::Button, gtk::Label)>>,
     pub config: RefCell<Config>,
     pub renderer: RefCell<Renderer>,
     deck: RefCell<DeckInfo>,
     connected: Cell<bool>,
     daemon_up: Cell<bool>,
-    selected: Cell<Option<u8>>,
+    selected: Cell<Option<Selection>>,
     save_source: RefCell<Option<glib::SourceId>>,
     theme_css: gtk::CssProvider,
     theme_monitor: RefCell<Option<gio::FileMonitor>>,
@@ -242,6 +259,7 @@ impl App {
             daemon: RefCell::default(),
             editor_slot,
             keys: RefCell::default(),
+            dials: RefCell::default(),
             config: RefCell::new(config),
             renderer: RefCell::new(renderer),
             deck: RefCell::new(deck),
@@ -320,7 +338,7 @@ impl App {
         app.sync_page_list();
         app.rebuild_grid();
         // OMADECK_SELECT=<n> opens with a key selected (handy for screenshots and scripting).
-        app.select(std::env::var("OMADECK_SELECT").ok().and_then(|v| v.parse().ok()));
+        app.select(std::env::var("OMADECK_SELECT").ok().and_then(|v| v.parse().ok()).map(Selection::Key));
         app.update_title();
         app.listen();
         app.watch_config();
@@ -354,15 +372,36 @@ impl App {
             let weak = Rc::downgrade(self);
             button.connect_clicked(move |_| {
                 if let Some(app) = weak.upgrade() {
-                    app.select(Some(i));
+                    app.select(Some(Selection::Key(i)));
                 }
             });
             self.add_dnd(&button, &image, i);
             self.grid.attach(&button, (i % deck.cols) as i32, (i / deck.cols) as i32, 1, 1);
             self.keys.borrow_mut().push((button, image));
         }
+        // Dials (Stream Deck +): round buttons under the key columns, as on the hardware.
+        self.dials.borrow_mut().clear();
+        for i in 0..deck.dials {
+            let label = gtk::Label::builder()
+                .ellipsize(gtk::pango::EllipsizeMode::End)
+                .width_request(px - 24)
+                .css_classes(["deck-dial-label"])
+                .build();
+            let button = gtk::Button::builder().child(&label).css_classes(["deck-dial"]).build();
+            button.set_size_request(px, px);
+            let weak = Rc::downgrade(self);
+            button.connect_clicked(move |_| {
+                if let Some(app) = weak.upgrade() {
+                    app.select(Some(Selection::Dial(i)));
+                }
+            });
+            self.grid.attach(&button, (i % deck.cols) as i32, (deck.rows + i / deck.cols) as i32, 1, 1);
+            self.dials.borrow_mut().push((button, label));
+        }
         self.model_label.set_label(&deck.model.to_uppercase());
-        if self.selected.get().is_some_and(|s| s >= deck.key_count()) {
+        if let Some(Selection::Key(i)) = self.selected.get()
+            && i >= deck.key_count()
+        {
             self.select(None);
         }
         self.refresh_all();
@@ -397,7 +436,7 @@ impl App {
                 app.with_page(|keys| keys.swap(from as u8, i));
                 app.refresh_key(from as u8);
                 app.refresh_key(i);
-                app.select(Some(i));
+                app.select(Some(Selection::Key(i)));
                 app.schedule_save();
             }
             true
@@ -436,7 +475,7 @@ impl App {
         self.with_page(|keys| *keys.get_mut(i) = KeyConfig { index: i, ..back_key() });
         self.refresh_key(i);
         self.schedule_save();
-        self.select(Some(i));
+        self.select(Some(Selection::Key(i)));
     }
 
     pub fn refresh_all(&self) {
@@ -444,19 +483,45 @@ impl App {
         for i in 0..n {
             self.refresh_key(i);
         }
+        let n = self.dials.borrow().len() as u8;
+        for i in 0..n {
+            self.refresh_dial(i);
+        }
     }
 
-    pub fn select(self: &Rc<Self>, i: Option<u8>) {
-        self.selected.set(i);
+    pub fn refresh_dial(&self, i: u8) {
+        let dials = self.dials.borrow();
+        let Some((button, label)) = dials.get(i as usize) else { return };
+        let cfg = self.config.borrow();
+        let name =
+            cfg.dial(i).map(|d| d.label.clone()).filter(|l| !l.is_empty()).unwrap_or_else(|| format!("Dial {}", i + 1));
+        label.set_text(&name);
+        let tip = match cfg.dial(i).filter(|d| !d.is_blank()) {
+            Some(d) => format!("{} — press: {}", name, d.press.summary()),
+            None => format!("Dial {} — empty", i + 1),
+        };
+        button.set_tooltip_text(Some(&tip));
+    }
+
+    pub fn select(self: &Rc<Self>, sel: Option<Selection>) {
+        self.selected.set(sel);
         for (n, (button, _)) in self.keys.borrow().iter().enumerate() {
-            if Some(n as u8) == i {
+            if Some(Selection::Key(n as u8)) == sel {
                 button.add_css_class("selected");
             } else {
                 button.remove_css_class("selected");
             }
         }
-        let widget: gtk::Widget = match i {
-            Some(i) => editor::build(self, i),
+        for (n, (button, _)) in self.dials.borrow().iter().enumerate() {
+            if Some(Selection::Dial(n as u8)) == sel {
+                button.add_css_class("selected");
+            } else {
+                button.remove_css_class("selected");
+            }
+        }
+        let widget: gtk::Widget = match sel {
+            Some(Selection::Key(i)) => editor::build_key(self, i),
+            Some(Selection::Dial(i)) => editor::build_dial(self, i),
             None => adw::StatusPage::builder()
                 .icon_name("input-keyboard-symbolic")
                 .title("Pick a key")
@@ -552,6 +617,20 @@ impl App {
                 app.rebuild_editor();
             }
         });
+    }
+
+    /// Mutate a dial, refresh its preview and queue a save.
+    pub fn edit_dial(self: &Rc<Self>, i: u8, f: impl FnOnce(&mut DialConfig)) {
+        f(self.config.borrow_mut().dial_mut(i));
+        self.refresh_dial(i);
+        self.schedule_save();
+    }
+
+    pub fn clear_dial(self: &Rc<Self>, i: u8) {
+        self.config.borrow_mut().clear_dial(i);
+        self.refresh_dial(i);
+        self.schedule_save();
+        self.rebuild_editor();
     }
 
     pub fn schedule_save(self: &Rc<Self>) {
@@ -1058,7 +1137,7 @@ impl App {
                 self.connected.set(true);
                 let relayout = {
                     let cur = self.deck.borrow();
-                    cur.rows != deck.rows || cur.cols != deck.cols || cur.model != deck.model
+                    cur.rows != deck.rows || cur.cols != deck.cols || cur.model != deck.model || cur.dials != deck.dials
                 };
                 *self.deck.borrow_mut() = deck;
                 if relayout {
@@ -1073,8 +1152,8 @@ impl App {
                 if let Some((b, _)) = self.keys.borrow().get(index as usize) {
                     b.add_css_class("pressed");
                 }
-                if self.selected.get() != Some(index) {
-                    self.select(Some(index));
+                if self.selected.get() != Some(Selection::Key(index)) {
+                    self.select(Some(Selection::Key(index)));
                 }
             }
             Msg::Event(Event::KeyUp { index }) => {
@@ -1085,11 +1164,25 @@ impl App {
             Msg::Event(Event::ActionFailed { index, message }) => {
                 self.toast(&format!("Key {}: {message}", index + 1));
             }
-            // Dial and strip input: nothing in the configurator reacts to it yet.
+            Msg::Event(Event::DialDown { index }) => {
+                if let Some((b, _)) = self.dials.borrow().get(index as usize) {
+                    b.add_css_class("pressed");
+                }
+                if self.selected.get() != Some(Selection::Dial(index)) {
+                    self.select(Some(Selection::Dial(index)));
+                }
+            }
+            Msg::Event(Event::DialUp { index }) => {
+                if let Some((b, _)) = self.dials.borrow().get(index as usize) {
+                    b.remove_css_class("pressed");
+                }
+            }
+            Msg::Event(Event::DialActionFailed { index, message }) => {
+                self.toast(&format!("Dial {}: {message}", index + 1));
+            }
+            // Dial turns and strip touches: nothing in the configurator reacts to them yet.
             Msg::Event(
                 Event::DialTurn { .. }
-                | Event::DialDown { .. }
-                | Event::DialUp { .. }
                 | Event::StripTap { .. }
                 | Event::StripLongPress { .. }
                 | Event::StripSwipe { .. },

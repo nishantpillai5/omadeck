@@ -1,15 +1,15 @@
-//! The right-hand panel: what a key does and how it looks.
+//! The right-hand panel: what a key or dial does and how it looks.
 
 use std::rc::Rc;
 
 use adw::prelude::*;
 use gtk::{gdk, gio, glib};
-use omadeck_core::{Action, HOME, KeyConfig, Rgb, action, paths};
+use omadeck_core::{Action, DialConfig, HOME, KeyConfig, Rgb, action, paths};
 
-use crate::app::{App, KeyRef};
+use crate::app::{App, Target};
 use crate::{apps, media};
 
-pub fn build(app: &Rc<App>, i: u8) -> gtk::Widget {
+pub fn build_key(app: &Rc<App>, i: u8) -> gtk::Widget {
     let key = app.key(i).unwrap_or_else(|| KeyConfig::new(i));
     let deck = app.deck_info();
     let page = adw::PreferencesPage::new();
@@ -60,34 +60,51 @@ pub fn build(app: &Rc<App>, i: u8) -> gtk::Widget {
     buttons.append(&clear);
     group.set_header_suffix(Some(&buttons));
 
-    let kinds = gtk::StringList::new(&Action::KINDS);
-    let kind_row = adw::ComboRow::builder().title("When pressed").model(&kinds).build();
-    kind_row.set_selected(key.action.kind_index() as u32);
-    match key.action {
-        Action::Page { .. } => kind_row.set_subtitle("Shows another page of keys on the deck"),
-        Action::Back => kind_row.set_subtitle("Returns to the page shown before this one, or Home"),
-        _ => {}
-    }
-    let a = app.clone();
-    kind_row.connect_selected_notify(move |row| {
-        let sel = row.selected() as usize;
-        let cur = a.key(i).map(|k| k.action.kind_index()).unwrap_or(0);
-        if sel == cur {
-            return;
-        }
-        let mut action = Action::empty_of_kind(sel);
-        if let Action::Page { page } = &mut action {
-            // Nothing to choose from yet: make the page, like creating a folder.
-            let others = a.config.borrow().pages.iter().any(|p| Some(&p.name) != a.current_page().as_ref());
-            if !others {
-                *page = new_folder(&a, i);
+    action_editor(
+        app,
+        &group,
+        "When pressed",
+        move |a| Target::Key(a.key_ref(i)),
+        move |a| a.key(i).map(|k| k.action.clone()).unwrap_or_default(),
+        move |a, act| {
+            let mut action = act;
+            if let Action::Page { page } = &mut action {
+                // Nothing to choose from yet: make the page, like creating a folder.
+                let others = a.config.borrow().pages.iter().any(|p| Some(&p.name) != a.current_page().as_ref());
+                if !others {
+                    *page = new_folder(a, i);
+                }
             }
-        }
-        a.edit(i, |k| k.action = action);
-        a.rebuild_editor();
-    });
-    group.add(&kind_row);
-    action_rows(app, i, &key, &group);
+            a.edit(i, |k| k.action = action);
+        },
+        move |a, t, act| {
+            if let Target::Key(k) = t {
+                a.edit_ref(&k, |k| k.action = act);
+            }
+        },
+        move |a, t, command, name, icon| {
+            if let Target::Key(k) = t {
+                a.edit_ref(k, |k| {
+                    k.action = Action::App { command };
+                    k.label = name;
+                    if icon.is_some() {
+                        k.icon = icon;
+                    }
+                });
+            }
+        },
+        move |a| new_folder(a, i),
+        Some(Rc::new(move |a, t, icon, name| {
+            if let Target::Key(k) = t {
+                a.edit_ref(&k, |k| {
+                    k.icon = Some(icon);
+                    if k.label.is_empty() {
+                        k.label = name;
+                    }
+                });
+            }
+        })),
+    );
     page.add(&group);
 
     // --- appearance -----------------------------------------------------------------------
@@ -146,8 +163,171 @@ pub fn build(app: &Rc<App>, i: u8) -> gtk::Widget {
     page.upcast()
 }
 
-fn action_rows(app: &Rc<App>, i: u8, key: &KeyConfig, group: &adw::PreferencesGroup) {
-    match &key.action {
+pub fn build_dial(app: &Rc<App>, i: u8) -> gtk::Widget {
+    let dial = app.config.borrow().dial(i).cloned().unwrap_or_else(|| DialConfig::new(i));
+    let page = adw::PreferencesPage::new();
+
+    // --- dial -----------------------------------------------------------------------------
+    let group = adw::PreferencesGroup::builder()
+        .title(format!("Dial {}", i + 1))
+        .description("Dials are numbered left to right, from 0")
+        .build();
+
+    let clear = gtk::Button::builder()
+        .icon_name("user-trash-symbolic")
+        .tooltip_text("Clear this dial")
+        .valign(gtk::Align::Center)
+        .sensitive(!dial.is_blank())
+        .css_classes(["flat"])
+        .build();
+    let a = app.clone();
+    clear.connect_clicked(move |_| a.clear_dial(i));
+    group.set_header_suffix(Some(&clear));
+
+    let label = adw::EntryRow::builder().title("Label").text(&dial.label).build();
+    let a = app.clone();
+    label.connect_changed(move |e| {
+        let text = e.text().to_string();
+        a.edit_dial(i, |d| d.label = text);
+    });
+    group.add(&label);
+    page.add(&group);
+
+    page.add(&dial_action_group(app, i, "Turn left", |d| d.turn_left.clone(), |d, a| d.turn_left = a));
+    page.add(&dial_action_group(app, i, "Turn right", |d| d.turn_right.clone(), |d, a| d.turn_right = a));
+    page.add(&dial_action_group(app, i, "Press", |d| d.press.clone(), |d, a| d.press = a));
+
+    page.upcast()
+}
+
+/// One dial direction: a "Turn left" / "Turn right" / "Press" group with a ▶ test button.
+fn dial_action_group(
+    app: &Rc<App>,
+    i: u8,
+    title: &str,
+    get: impl Fn(&DialConfig) -> Action + Clone + 'static,
+    set: impl Fn(&mut DialConfig, Action) + Clone + 'static,
+) -> adw::PreferencesGroup {
+    let group = adw::PreferencesGroup::builder().title(title).build();
+
+    let act = app.config.borrow().dial(i).map(&get).unwrap_or_default();
+    let test = gtk::Button::builder()
+        .icon_name("media-playback-start-symbolic")
+        .tooltip_text(if act == Action::Back { "Back only works on the deck" } else { "Try it now" })
+        .valign(gtk::Align::Center)
+        .sensitive(match &act {
+            Action::None | Action::Back => false,
+            Action::Page { page } => app.config.borrow().has_page(page),
+            _ => true,
+        })
+        .css_classes(["flat"])
+        .build();
+    let a = app.clone();
+    let get_test = get.clone();
+    test.connect_clicked(move |_| {
+        let act = a.config.borrow().dial(i).map(&get_test).unwrap_or_default();
+        if let Action::Page { page } = act {
+            a.show_page(Some(page), true);
+        } else if let Err(e) = action::run(&act) {
+            a.toast(&format!("{e:#}"));
+        }
+    });
+    group.set_header_suffix(Some(&test));
+
+    let set1 = set.clone();
+    let set2 = set.clone();
+    let set3 = set.clone();
+    action_editor(
+        app,
+        &group,
+        "Action",
+        move |_| Target::Dial(i),
+        move |a| a.config.borrow().dial(i).map(&get).unwrap_or_default(),
+        move |a, act| a.edit_dial(i, |d| set1(d, act)),
+        move |a, t, act| {
+            if let Target::Dial(j) = t {
+                a.edit_dial(j, |d| set2(d, act));
+            }
+        },
+        move |a, t, command, name, _| {
+            if let Target::Dial(j) = t {
+                a.edit_dial(*j, |d| {
+                    set3(d, Action::App { command });
+                    d.label = name;
+                });
+            }
+        },
+        move |a| {
+            let label = a.config.borrow().dial(i).map(|d| d.label.clone()).unwrap_or_default();
+            a.add_page(if label.trim().is_empty() { "Page" } else { &label })
+        },
+        None,
+    );
+    group
+}
+
+/// Handles a fetched website icon: (app, target, imported icon path, site name).
+type FaviconHandler = Rc<dyn Fn(&Rc<App>, Target, String, String) + 'static>;
+
+/// Fill `group` with the action combo and the rows for the selected action. `get` and
+/// `edit` read and replace the action of whatever is being edited (a key or a dial
+/// direction); `target` captures it for work that finishes later (a picker, an icon
+/// fetch), so the result lands where it started. `on_app_picked` applies the extras an
+/// app pick carries (name and icon); `on_new_page` creates the page a "New page" button
+/// points the action at; `on_favicon`, when given, handles the website icon fetch.
+#[allow(clippy::too_many_arguments)]
+fn action_editor(
+    app: &Rc<App>,
+    group: &adw::PreferencesGroup,
+    combo_title: &str,
+    target: impl Fn(&Rc<App>) -> Target + Clone + 'static,
+    get: impl Fn(&Rc<App>) -> Action + Clone + 'static,
+    edit: impl Fn(&Rc<App>, Action) + Clone + 'static,
+    edit_at: impl Fn(&Rc<App>, Target, Action) + Clone + 'static,
+    on_app_picked: impl Fn(&Rc<App>, &Target, String, String, Option<String>) + Clone + 'static,
+    on_new_page: impl Fn(&Rc<App>) -> String + Clone + 'static,
+    on_favicon: Option<FaviconHandler>,
+) {
+    let action = get(app);
+    let kinds = gtk::StringList::new(&Action::KINDS);
+    let kind_row = adw::ComboRow::builder().title(combo_title).model(&kinds).build();
+    kind_row.set_selected(action.kind_index() as u32);
+    match action {
+        Action::Page { .. } => kind_row.set_subtitle("Shows another page of keys on the deck"),
+        Action::Back => kind_row.set_subtitle("Returns to the page shown before this one, or Home"),
+        _ => {}
+    }
+    let a = app.clone();
+    kind_row.connect_selected_notify({
+        let get = get.clone();
+        let edit = edit.clone();
+        move |row| {
+            let sel = row.selected() as usize;
+            let cur = get(&a).kind_index();
+            if sel != cur {
+                edit(&a, Action::empty_of_kind(sel));
+                a.rebuild_editor();
+            }
+        }
+    });
+    group.add(&kind_row);
+    action_rows(app, group, target, get, edit, edit_at, on_app_picked, on_new_page, on_favicon);
+}
+
+#[allow(clippy::too_many_arguments)]
+fn action_rows(
+    app: &Rc<App>,
+    group: &adw::PreferencesGroup,
+    target: impl Fn(&Rc<App>) -> Target + Clone + 'static,
+    get: impl Fn(&Rc<App>) -> Action + Clone + 'static,
+    edit: impl Fn(&Rc<App>, Action) + Clone + 'static,
+    edit_at: impl Fn(&Rc<App>, Target, Action) + Clone + 'static,
+    on_app_picked: impl Fn(&Rc<App>, &Target, String, String, Option<String>) + Clone + 'static,
+    on_new_page: impl Fn(&Rc<App>) -> String + Clone + 'static,
+    on_favicon: Option<FaviconHandler>,
+) {
+    let action = get(app);
+    match &action {
         Action::None => {}
 
         Action::App { command } => {
@@ -167,9 +347,12 @@ fn action_rows(app: &Rc<App>, i: u8, key: &KeyConfig, group: &adw::PreferencesGr
             }
             let choose = gtk::Button::builder().label("Choose…").valign(gtk::Align::Center).build();
             let a = app.clone();
+            let target = target.clone();
+            let on_app_picked = on_app_picked.clone();
             choose.connect_clicked(move |_| {
+                let at = target(&a);
+                let on_app_picked = on_app_picked.clone();
                 let a2 = a.clone();
-                let at = a.key_ref(i);
                 apps::pick(&a.window, move |info| {
                     let command = info
                         .id()
@@ -177,13 +360,7 @@ fn action_rows(app: &Rc<App>, i: u8, key: &KeyConfig, group: &adw::PreferencesGr
                         .unwrap_or_else(|| info.commandline().map(|c| c.to_string_lossy().into()).unwrap_or_default());
                     let icon = media::import_app_icon(&info);
                     let name = info.display_name().to_string();
-                    a2.edit_ref(&at, |k| {
-                        k.action = Action::App { command };
-                        k.label = name;
-                        if icon.is_some() {
-                            k.icon = icon;
-                        }
-                    });
+                    on_app_picked(&a2, &at, command, name, icon);
                     a2.rebuild_editor();
                 });
             });
@@ -193,9 +370,10 @@ fn action_rows(app: &Rc<App>, i: u8, key: &KeyConfig, group: &adw::PreferencesGr
 
             let cmd = adw::EntryRow::builder().title("Desktop entry or command").text(command).build();
             let a = app.clone();
+            let edit = edit.clone();
             cmd.connect_changed(move |e| {
                 let command = e.text().to_string();
-                a.edit(i, |k| k.action = Action::App { command });
+                edit(&a, Action::App { command });
             });
             group.add(&cmd);
         }
@@ -204,13 +382,14 @@ fn action_rows(app: &Rc<App>, i: u8, key: &KeyConfig, group: &adw::PreferencesGr
             let row = adw::EntryRow::builder().title("Script").text(path).build();
             let a = app.clone();
             let t = *terminal;
+            let edit_row = edit.clone();
             row.connect_changed(move |e| {
                 let path = e.text().to_string();
-                a.edit(i, |k| k.action = Action::Script { path, terminal: t });
+                edit_row(&a, Action::Script { path, terminal: t });
             });
-            row.add_suffix(&browse_button(app, i, "Choose a script", None, move |a, at, p| {
+            row.add_suffix(&browse_button(app, target.clone(), "Choose a script", None, move |a, tg, p| {
                 let path = paths::portable(&p);
-                a.edit_ref(at, |k| k.action = Action::Script { path, terminal: t });
+                edit_at(a, tg, Action::Script { path, terminal: t });
             }));
             group.add(&row);
 
@@ -220,13 +399,17 @@ fn action_rows(app: &Rc<App>, i: u8, key: &KeyConfig, group: &adw::PreferencesGr
                 .active(*terminal)
                 .build();
             let a = app.clone();
+            let get = get.clone();
+            let edit_switch = edit.clone();
             term.connect_active_notify(move |r| {
                 let on = r.is_active();
-                a.edit(i, |k| {
-                    if let Action::Script { terminal, .. } = &mut k.action {
-                        *terminal = on;
-                    }
-                });
+                // Read the action out of the borrow before editing (a `Ref` held across
+                // the edit would panic in `borrow_mut`).
+                let mut act = get(&a);
+                if let Action::Script { terminal, .. } = &mut act {
+                    *terminal = on;
+                }
+                edit_switch(&a, act);
                 a.rebuild_editor();
             });
             group.add(&term);
@@ -236,27 +419,36 @@ fn action_rows(app: &Rc<App>, i: u8, key: &KeyConfig, group: &adw::PreferencesGr
             let row = adw::EntryRow::builder().title("Sound file").text(file).build();
             let a = app.clone();
             let v = *volume;
+            let edit_row = edit.clone();
             row.connect_changed(move |e| {
                 let file = e.text().to_string();
-                a.edit(i, |k| k.action = Action::Sound { file, volume: v });
+                edit_row(&a, Action::Sound { file, volume: v });
             });
-            row.add_suffix(&browse_button(app, i, "Choose a sound", Some(("Audio", "audio/*")), move |a, at, p| {
-                let file = paths::portable(&p);
-                a.edit_ref(at, |k| k.action = Action::Sound { file, volume: v });
-            }));
+            row.add_suffix(&browse_button(
+                app,
+                target.clone(),
+                "Choose a sound",
+                Some(("Audio", "audio/*")),
+                move |a, tg, p| {
+                    let file = paths::portable(&p);
+                    edit_at(a, tg, Action::Sound { file, volume: v });
+                },
+            ));
             group.add(&row);
 
             let vol = adw::SpinRow::with_range(0.0, 150.0, 5.0);
             vol.set_title("Volume (%)");
             vol.set_value((volume.unwrap_or(1.0) * 100.0).round() as f64);
             let a = app.clone();
+            let get = get.clone();
+            let edit_vol = edit.clone();
             vol.connect_value_notify(move |r| {
                 let pct = r.value() as f32 / 100.0;
-                a.edit(i, |k| {
-                    if let Action::Sound { volume, .. } = &mut k.action {
-                        *volume = if (pct - 1.0).abs() < f32::EPSILON { None } else { Some(pct) };
-                    }
-                });
+                let mut act = get(&a);
+                if let Action::Sound { volume, .. } = &mut act {
+                    *volume = if (pct - 1.0).abs() < f32::EPSILON { None } else { Some(pct) };
+                }
+                edit_vol(&a, act);
             });
             group.add(&vol);
         }
@@ -264,57 +456,60 @@ fn action_rows(app: &Rc<App>, i: u8, key: &KeyConfig, group: &adw::PreferencesGr
         Action::Url { url } => {
             let row = adw::EntryRow::builder().title("Website").text(url).input_purpose(gtk::InputPurpose::Url).build();
             let a = app.clone();
+            let edit = edit.clone();
             row.connect_changed(move |e| {
                 let url = e.text().to_string();
-                a.edit(i, |k| k.action = Action::Url { url });
+                edit(&a, Action::Url { url });
             });
             group.add(&row);
 
-            let fetch_row = adw::ActionRow::builder()
-                .title("Site icon")
-                .subtitle("Asks the website for its icon. If it has none, DuckDuckGo's icon service is used instead")
-                .build();
-            let fetch = gtk::Button::builder().label("Fetch").valign(gtk::Align::Center).build();
-            let a = app.clone();
-            fetch.connect_clicked(move |btn| {
-                let url = match a.key(i).map(|k| k.action) {
-                    Some(Action::Url { url }) if !url.trim().is_empty() => url,
-                    _ => {
-                        a.toast("Enter a website first");
-                        return;
-                    }
-                };
-                btn.set_sensitive(false);
-                btn.set_label("Fetching…");
-                let a = a.clone();
-                let btn = btn.clone();
-                let at = a.key_ref(i);
-                glib::spawn_future_local(async move {
-                    let u = url.clone();
-                    let res = gio::spawn_blocking(move || media::fetch_favicon(&u)).await;
-                    btn.set_sensitive(true);
-                    btn.set_label("Fetch");
-                    match res {
-                        Ok(Ok((icon, source))) => {
-                            if source == media::IconSource::DuckDuckGo {
-                                a.toast("The site had no usable icon, so this one came from DuckDuckGo");
-                            }
-                            let name = media::host_of(&url).map(|h| site_name(&h)).unwrap_or_default();
-                            a.edit_ref(&at, |k| {
-                                k.icon = Some(icon);
-                                if k.label.is_empty() {
-                                    k.label = name;
-                                }
-                            });
-                            a.rebuild_editor();
+            if let Some(on_favicon) = on_favicon {
+                let fetch_row = adw::ActionRow::builder()
+                    .title("Site icon")
+                    .subtitle(
+                        "Asks the website for its icon. If it has none, DuckDuckGo's icon service is used instead",
+                    )
+                    .build();
+                let fetch = gtk::Button::builder().label("Fetch").valign(gtk::Align::Center).build();
+                let a = app.clone();
+                let get = get.clone();
+                let target = target.clone();
+                fetch.connect_clicked(move |btn| {
+                    let url = match get(&a) {
+                        Action::Url { url } if !url.trim().is_empty() => url,
+                        _ => {
+                            a.toast("Enter a website first");
+                            return;
                         }
-                        Ok(Err(e)) => a.toast(&format!("Couldn't fetch the icon: {e:#}")),
-                        Err(_) => a.toast("Couldn't fetch the icon"),
-                    }
+                    };
+                    btn.set_sensitive(false);
+                    btn.set_label("Fetching…");
+                    let a = a.clone();
+                    let btn = btn.clone();
+                    let at = target(&a);
+                    let on_favicon = on_favicon.clone();
+                    glib::spawn_future_local(async move {
+                        let u = url.clone();
+                        let res = gio::spawn_blocking(move || media::fetch_favicon(&u)).await;
+                        btn.set_sensitive(true);
+                        btn.set_label("Fetch");
+                        match res {
+                            Ok(Ok((icon, source))) => {
+                                if source == media::IconSource::DuckDuckGo {
+                                    a.toast("The site had no usable icon, so this one came from DuckDuckGo");
+                                }
+                                let name = media::host_of(&url).map(|h| site_name(&h)).unwrap_or_default();
+                                on_favicon(&a, at, icon, name);
+                                a.rebuild_editor();
+                            }
+                            Ok(Err(e)) => a.toast(&format!("Couldn't fetch the icon: {e:#}")),
+                            Err(_) => a.toast("Couldn't fetch the icon"),
+                        }
+                    });
                 });
-            });
-            fetch_row.add_suffix(&fetch);
-            group.add(&fetch_row);
+                fetch_row.add_suffix(&fetch);
+                group.add(&fetch_row);
+            }
         }
 
         Action::Hyprland { dispatch } => {
@@ -324,9 +519,10 @@ fn action_rows(app: &Rc<App>, i: u8, key: &KeyConfig, group: &adw::PreferencesGr
             ));
             let row = adw::EntryRow::builder().title("Dispatcher and arguments").text(dispatch).build();
             let a = app.clone();
+            let edit = edit.clone();
             row.connect_changed(move |e| {
                 let dispatch = e.text().to_string();
-                a.edit(i, |k| k.action = Action::Hyprland { dispatch });
+                edit(&a, Action::Hyprland { dispatch });
             });
             group.add(&row);
         }
@@ -345,9 +541,10 @@ fn action_rows(app: &Rc<App>, i: u8, key: &KeyConfig, group: &adw::PreferencesGr
             let row = adw::ComboRow::builder().title("Page").model(&gtk::StringList::new(&labels)).build();
             row.set_selected(choices.iter().position(|c| c.as_deref() == Some(page.as_str())).unwrap_or(0) as u32);
             let a = app.clone();
+            let edit_row = edit.clone();
             row.connect_selected_notify(move |r| {
                 if let Some(Some(name)) = choices.get(r.selected() as usize).cloned() {
-                    a.edit(i, |k| k.action = Action::Page { page: name });
+                    edit_row(&a, Action::Page { page: name });
                     a.rebuild_editor();
                 }
             });
@@ -366,9 +563,11 @@ fn action_rows(app: &Rc<App>, i: u8, key: &KeyConfig, group: &adw::PreferencesGr
             open.connect_clicked(move |_| a.show_page(Some(target.clone()), true));
             let new = gtk::Button::builder().label("New page").valign(gtk::Align::Center).build();
             let a = app.clone();
+            let edit_new = edit.clone();
+            let on_new_page = on_new_page.clone();
             new.connect_clicked(move |_| {
-                let name = new_folder(&a, i);
-                a.edit(i, |k| k.action = Action::Page { page: name });
+                let name = on_new_page(&a);
+                edit_new(&a, Action::Page { page: name });
                 a.rebuild_editor();
             });
             buttons.add_suffix(&new);
@@ -512,10 +711,10 @@ fn file_dialog(title: &str, filter: Option<(&str, &str)>) -> gtk::FileDialog {
 
 fn browse_button(
     app: &Rc<App>,
-    i: u8,
+    target: impl Fn(&Rc<App>) -> Target + Clone + 'static,
     title: &'static str,
     filter: Option<(&'static str, &'static str)>,
-    on_file: impl Fn(&Rc<App>, &KeyRef, std::path::PathBuf) + Clone + 'static,
+    on_file: impl Fn(&Rc<App>, Target, std::path::PathBuf) + Clone + 'static,
 ) -> gtk::Button {
     let btn = gtk::Button::builder()
         .icon_name("folder-open-symbolic")
@@ -528,12 +727,12 @@ fn browse_button(
         let dialog = file_dialog(title, filter);
         let a = a.clone();
         let on_file = on_file.clone();
-        let at = a.key_ref(i);
+        let at = target(&a);
         glib::spawn_future_local(async move {
             if let Ok(file) = dialog.open_future(Some(&a.window)).await
                 && let Some(p) = file.path()
             {
-                on_file(&a, &at, p);
+                on_file(&a, at, p);
                 a.rebuild_editor();
             }
         });
