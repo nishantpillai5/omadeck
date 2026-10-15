@@ -6,6 +6,14 @@ All notable changes to omadeck are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+- Pages and folders. Extra pages live in `[[page]]` tables (top-level keys stay the Home page),
+  with two new actions: `page` opens a page by name and `back` returns to the previous one.
+  The configurator gets a page switcher (new, rename, delete), and "New page" on a key builds a
+  folder with a Back key in place. The deck follows the page you're editing, and the app
+  follows page changes made on the deck.
+- `omadeckd press KEY [PAGE]` and `omadeckd snapshot FILE [PAGE]` take an optional page.
+
 ## [0.1.0] - 2026-10-02
 
 The first public release.

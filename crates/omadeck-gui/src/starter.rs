@@ -3,7 +3,7 @@
 use std::path::Path;
 
 use gtk::{gdk, gio, prelude::*};
-use omadeck_core::{Action, Config, KeyConfig};
+use omadeck_core::{Action, Config, KeyConfig, Keys};
 
 use crate::media;
 
@@ -84,5 +84,5 @@ pub fn layout() -> Config {
         ),
         key(14, "Lock", themed_icon(&["system-lock-screen", "changes-prevent"]), app("omarchy system lock")),
     ]);
-    Config { keys, ..Config::default() }
+    Config { keys: Keys(keys), ..Config::default() }
 }

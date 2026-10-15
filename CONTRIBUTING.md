@@ -21,8 +21,8 @@ cargo run -p omadeck-gui           # configurator, in another terminal
 
 Handy while developing:
 
-- `omadeckd snapshot out.png` renders the current layout without touching the hardware.
-- `omadeckd press 3` runs key 3's action without pressing anything.
+- `omadeckd snapshot out.png [PAGE]` renders a layout without touching the hardware.
+- `omadeckd press 3 [PAGE]` runs key 3's action without pressing anything.
 - `OMADECK_SELECT=3 omadeck` opens the configurator with key 3 selected.
 - `XDG_CONFIG_HOME=/tmp/omadeck-test cargo run -p omadeck-gui` works with a throwaway config.
 

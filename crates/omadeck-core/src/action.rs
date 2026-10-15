@@ -20,6 +20,7 @@ pub fn run(action: &Action) -> Result<()> {
         Action::Sound { file, volume } => play_sound(&paths::resolve(file), *volume),
         Action::Url { url } => open_url(url),
         Action::Hyprland { dispatch } => hypr_dispatch(dispatch),
+        Action::Page { .. } | Action::Back => bail!("changing pages only works on the deck"),
     }
 }
 

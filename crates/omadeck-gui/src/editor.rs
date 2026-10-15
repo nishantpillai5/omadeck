@@ -4,34 +4,46 @@ use std::rc::Rc;
 
 use adw::prelude::*;
 use gtk::{gdk, gio, glib};
-use omadeck_core::{Action, KeyConfig, Rgb, action, paths};
+use omadeck_core::{Action, HOME, KeyConfig, Rgb, action, paths};
 
 use crate::app::App;
 use crate::{apps, media};
 
 pub fn build(app: &Rc<App>, i: u8) -> gtk::Widget {
-    let key = app.config.borrow().key(i).cloned().unwrap_or_else(|| KeyConfig::new(i));
+    let key = app.key(i).unwrap_or_else(|| KeyConfig::new(i));
     let deck = app.deck_info();
     let page = adw::PreferencesPage::new();
+    let page_name = app.current_page();
 
     // --- action ---------------------------------------------------------------------------
     let group = adw::PreferencesGroup::builder()
         .title(format!("Key {}", i + 1))
-        .description(format!("Row {} · Column {}", i / deck.cols + 1, i % deck.cols + 1))
+        .description(format!(
+            "{} · Row {} · Column {}",
+            page_name.as_deref().unwrap_or(HOME),
+            i / deck.cols + 1,
+            i % deck.cols + 1
+        ))
         .build();
 
     let buttons = gtk::Box::new(gtk::Orientation::Horizontal, 6);
     let test = gtk::Button::builder()
         .icon_name("media-playback-start-symbolic")
-        .tooltip_text("Try it now")
+        .tooltip_text(if key.action == Action::Back { "Back only works on the deck" } else { "Try it now" })
         .valign(gtk::Align::Center)
-        .sensitive(key.action != Action::None)
+        .sensitive(match &key.action {
+            Action::None | Action::Back => false,
+            Action::Page { page } => app.config.borrow().has_page(page),
+            _ => true,
+        })
         .css_classes(["flat"])
         .build();
     let a = app.clone();
     test.connect_clicked(move |_| {
-        let act = a.config.borrow().key(i).map(|k| k.action.clone()).unwrap_or_default();
-        if let Err(e) = action::run(&act) {
+        let act = a.key(i).map(|k| k.action).unwrap_or_default();
+        if let Action::Page { page } = act {
+            a.show_page(Some(page), true);
+        } else if let Err(e) = action::run(&act) {
             a.toast(&format!("{e:#}"));
         }
     });
@@ -51,14 +63,28 @@ pub fn build(app: &Rc<App>, i: u8) -> gtk::Widget {
     let kinds = gtk::StringList::new(&Action::KINDS);
     let kind_row = adw::ComboRow::builder().title("When pressed").model(&kinds).build();
     kind_row.set_selected(key.action.kind_index() as u32);
+    match key.action {
+        Action::Page { .. } => kind_row.set_subtitle("Shows another page of keys on the deck"),
+        Action::Back => kind_row.set_subtitle("Returns to the page shown before this one, or Home"),
+        _ => {}
+    }
     let a = app.clone();
     kind_row.connect_selected_notify(move |row| {
         let sel = row.selected() as usize;
-        let cur = a.config.borrow().key(i).map(|k| k.action.kind_index()).unwrap_or(0);
-        if sel != cur {
-            a.edit(i, |k| k.action = Action::empty_of_kind(sel));
-            a.rebuild_editor();
+        let cur = a.key(i).map(|k| k.action.kind_index()).unwrap_or(0);
+        if sel == cur {
+            return;
         }
+        let mut action = Action::empty_of_kind(sel);
+        if let Action::Page { page } = &mut action {
+            // Nothing to choose from yet: make the page, like creating a folder.
+            let others = a.config.borrow().pages.iter().any(|p| Some(&p.name) != a.current_page().as_ref());
+            if !others {
+                *page = new_folder(&a, i);
+            }
+        }
+        a.edit(i, |k| k.action = action);
+        a.rebuild_editor();
     });
     group.add(&kind_row);
     action_rows(app, i, &key, &group);
@@ -250,7 +276,7 @@ fn action_rows(app: &Rc<App>, i: u8, key: &KeyConfig, group: &adw::PreferencesGr
             let fetch = gtk::Button::builder().label("Fetch").valign(gtk::Align::Center).build();
             let a = app.clone();
             fetch.connect_clicked(move |btn| {
-                let url = match a.config.borrow().key(i).map(|k| k.action.clone()) {
+                let url = match a.key(i).map(|k| k.action) {
                     Some(Action::Url { url }) if !url.trim().is_empty() => url,
                     _ => {
                         a.toast("Enter a website first");
@@ -302,7 +328,71 @@ fn action_rows(app: &Rc<App>, i: u8, key: &KeyConfig, group: &adw::PreferencesGr
             });
             group.add(&row);
         }
+
+        Action::Page { page } => {
+            let current = app.current_page();
+            let names: Vec<String> =
+                app.config.borrow().page_names().into_iter().filter(|n| Some(n) != current.as_ref()).collect();
+            // A combo row always shows some item, so an unset or missing target gets a placeholder.
+            let mut choices: Vec<Option<String>> = names.iter().cloned().map(Some).collect();
+            if !names.contains(page) {
+                choices.insert(0, None);
+            }
+            let placeholder = if page.is_empty() { "Choose a page".to_string() } else { format!("{page} (missing)") };
+            let labels: Vec<&str> = choices.iter().map(|c| c.as_deref().unwrap_or(&placeholder)).collect();
+            let row = adw::ComboRow::builder().title("Page").model(&gtk::StringList::new(&labels)).build();
+            row.set_selected(choices.iter().position(|c| c.as_deref() == Some(page.as_str())).unwrap_or(0) as u32);
+            let a = app.clone();
+            row.connect_selected_notify(move |r| {
+                if let Some(Some(name)) = choices.get(r.selected() as usize).cloned() {
+                    a.edit(i, |k| k.action = Action::Page { page: name });
+                    a.rebuild_editor();
+                }
+            });
+            group.add(&row);
+
+            let buttons = adw::ActionRow::builder().title("Open it to add keys").build();
+            let open = gtk::Button::builder()
+                .icon_name("go-next-symbolic")
+                .tooltip_text("Edit this page")
+                .valign(gtk::Align::Center)
+                .sensitive(names.contains(page))
+                .css_classes(["flat"])
+                .build();
+            let a = app.clone();
+            let target = page.clone();
+            open.connect_clicked(move |_| a.show_page(Some(target.clone()), true));
+            let new = gtk::Button::builder().label("New page").valign(gtk::Align::Center).build();
+            let a = app.clone();
+            new.connect_clicked(move |_| {
+                let name = new_folder(&a, i);
+                a.edit(i, |k| k.action = Action::Page { page: name });
+                a.rebuild_editor();
+            });
+            buttons.add_suffix(&new);
+            buttons.add_suffix(&open);
+            buttons.set_activatable_widget(Some(&open));
+            group.add(&buttons);
+        }
+
+        Action::Back => {}
     }
+}
+
+/// Create a page for key `i` to open, and make the key look like a folder if it's plain.
+fn new_folder(app: &Rc<App>, i: u8) -> String {
+    let label = app.key(i).map(|k| k.label).unwrap_or_default();
+    let name = app.add_page(if label.trim().is_empty() { "Page" } else { &label });
+    let n = name.clone();
+    app.edit(i, |k| {
+        if k.icon.is_none() && k.glyph.is_none() {
+            k.glyph = Some("\u{f024b}".into());
+        }
+        if k.label.is_empty() {
+            k.label = n;
+        }
+    });
+    name
 }
 
 /// "omarchy.org" → "Omarchy", "www.youtube.com" → "Youtube".

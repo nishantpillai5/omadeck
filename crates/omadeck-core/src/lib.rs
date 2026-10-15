@@ -9,7 +9,7 @@ pub mod paths;
 pub mod render;
 pub mod theme;
 
-pub use config::{Action, Config, KeyConfig, Style};
+pub use config::{Action, Config, HOME, KeyConfig, Keys, Page, Style};
 pub use device::DeckInfo;
 pub use render::Renderer;
 pub use theme::{Rgb, Theme};

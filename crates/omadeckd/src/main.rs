@@ -2,6 +2,7 @@
 //! config and Omarchy theme changes live, and survives unplug/replug.
 
 mod hub;
+mod nav;
 
 use std::path::Path;
 use std::sync::Arc;
@@ -12,10 +13,11 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result};
 use notify::{RecursiveMode, Watcher};
 use omadeck_core::device::{self, DeviceStateReader, DeviceStateUpdate, HidApi, Kind, StreamDeck};
-use omadeck_core::ipc::Event;
-use omadeck_core::{Config, DeckInfo, Renderer, action, paths};
+use omadeck_core::ipc::{Command, Event};
+use omadeck_core::{Action, Config, DeckInfo, Renderer, action, paths};
 
 use hub::Hub;
+use nav::Nav;
 
 const SCAN_INTERVAL: Duration = Duration::from_secs(2);
 const READ_TIMEOUT: Duration = Duration::from_millis(100);
@@ -46,11 +48,16 @@ fn main() {
         }
         Some("press") => {
             let Some(i) = args.next().and_then(|v| v.parse::<u8>().ok()) else {
-                eprintln!("usage: omadeckd press KEY   (keys are numbered from 0)");
+                eprintln!("usage: omadeckd press KEY [PAGE]   (keys are numbered from 0)");
                 std::process::exit(2);
             };
+            let page = args.next();
             let cfg = load_config();
-            let act = cfg.key(i).map(|k| k.action.clone()).unwrap_or_default();
+            let Some(keys) = cfg.page(page.as_deref()) else {
+                eprintln!("no page named {}", page.unwrap_or_default());
+                std::process::exit(1);
+            };
+            let act = keys.get(i).map(|k| k.action.clone()).unwrap_or_default();
             println!("key {i}: {}", act.summary());
             if let Err(e) = action::run(&act) {
                 eprintln!("{e:#}");
@@ -62,7 +69,7 @@ fn main() {
         }
         Some("snapshot") => {
             let out = args.next().unwrap_or_else(|| "omadeck.png".into());
-            if let Err(e) = snapshot(Path::new(&out)) {
+            if let Err(e) = snapshot(Path::new(&out), args.next().as_deref()) {
                 eprintln!("snapshot failed: {e:#}");
                 std::process::exit(1);
             }
@@ -75,7 +82,7 @@ fn main() {
         }
         Some(_) => {
             eprintln!(
-                "usage: omadeckd [run | list | press KEY | snapshot FILE.png | --version]\n\nRuns the omadeck Stream Deck daemon."
+                "usage: omadeckd [run | list | press KEY [PAGE] | snapshot FILE.png [PAGE] | --version]\n\nRuns the omadeck Stream Deck daemon."
             );
             std::process::exit(2);
         }
@@ -122,6 +129,9 @@ fn run() -> Result<()> {
 
     let mut cfg = load_config();
     let mut renderer = Renderer::new(&cfg.style);
+    let mut nav = Nav::default();
+    // A page the configurator asked for that isn't in the config yet (it saves a moment later).
+    let mut wanted_page: Option<String> = None;
     log::info!("theme: {}", renderer.theme.name);
 
     let mut hid = device::new_hidapi().context("initialising hidapi")?;
@@ -147,17 +157,44 @@ fn run() -> Result<()> {
             renderer.reload_theme();
             renderer.clear_cache();
             log::info!("reloaded config (theme: {})", renderer.theme.name);
+            let mut moved = nav.retain_existing(&cfg);
+            if let Some(p) = wanted_page.take_if(|p| cfg.has_page(p)) {
+                moved |= nav.go(Some(&p));
+            }
+            if moved {
+                hub.publish(Event::PageChanged { page: nav.current().map(str::to_string) });
+            }
             if let Some(d) = &deck
-                && let Err(e) = paint_all(d, &cfg, &mut renderer)
+                && let Err(e) = paint_all(d, &cfg, nav.current(), &mut renderer)
             {
                 log::warn!("repaint failed: {e}");
+            }
+        }
+
+        // Only the latest page request counts, so flicking through pages in the configurator
+        // doesn't echo a trail of stale page changes back to it.
+        let mut show = None;
+        for cmd in hub.commands() {
+            match cmd {
+                Command::ShowPage { page } => show = Some(page),
+            }
+        }
+        if let Some(page) = show {
+            wanted_page = None;
+            match page {
+                Some(p) if !cfg.has_page(&p) => wanted_page = Some(p),
+                page => {
+                    if nav.go(page.as_deref()) {
+                        show_page(deck.as_ref(), &cfg, &nav, &mut renderer, &hub);
+                    }
+                }
             }
         }
 
         let Some(d) = &deck else {
             if last_scan.is_none_or(|t| t.elapsed() >= SCAN_INTERVAL) {
                 last_scan = Some(Instant::now());
-                deck = connect(&mut hid, &cfg, &mut renderer);
+                deck = connect(&mut hid, &cfg, nav.current(), &mut renderer);
                 hub.publish(match &deck {
                     Some(d) => Event::Connected { deck: d.info.clone() },
                     None => Event::Disconnected,
@@ -173,18 +210,27 @@ fn run() -> Result<()> {
                 for u in updates {
                     match u {
                         DeviceStateUpdate::ButtonDown(i) => {
-                            paint(d, &cfg, &mut renderer, i, true);
-                            hub.publish(Event::KeyDown { index: i });
-                            if let Some(k) = cfg.key(i) {
-                                log::info!("key {i}: {}", k.action.summary());
-                                if let Err(e) = action::run(&k.action) {
+                            paint(d, &cfg, nav.current(), &mut renderer, i, true);
+                            hub.publish(Event::KeyDown { index: i, page: nav.current().map(str::to_string) });
+                            let Some(k) = cfg.key(nav.current(), i) else { continue };
+                            log::info!("key {i}: {}", k.action.summary());
+                            let moved = match &k.action {
+                                Action::Page { page } if cfg.has_page(page) => Ok(nav.go(Some(page))),
+                                Action::Page { page } => Err(anyhow::anyhow!("there's no page named “{page}”")),
+                                Action::Back => Ok(nav.back()),
+                                a => action::run(a).map(|_| false),
+                            };
+                            match moved {
+                                Ok(true) => show_page(Some(d), &cfg, &nav, &mut renderer, &hub),
+                                Ok(false) => {}
+                                Err(e) => {
                                     log::warn!("key {i}: {e:#}");
                                     hub.publish(Event::ActionFailed { index: i, message: format!("{e:#}") });
                                 }
                             }
                         }
                         DeviceStateUpdate::ButtonUp(i) => {
-                            paint(d, &cfg, &mut renderer, i, false);
+                            paint(d, &cfg, nav.current(), &mut renderer, i, false);
                             hub.publish(Event::KeyUp { index: i });
                         }
                         _ => {}
@@ -230,7 +276,7 @@ fn load_config() -> Config {
 
 // elgato-streamdeck hands out its reader via `Arc<Self>`; everything stays on this thread.
 #[allow(clippy::arc_with_non_send_sync)]
-fn connect(hid: &mut HidApi, cfg: &Config, renderer: &mut Renderer) -> Option<Deck> {
+fn connect(hid: &mut HidApi, cfg: &Config, page: Option<&str>, renderer: &mut Renderer) -> Option<Deck> {
     if let Err(e) = device::refresh_device_list(hid) {
         log::warn!("hidapi refresh: {e}");
         return None;
@@ -251,36 +297,48 @@ fn connect(hid: &mut HidApi, cfg: &Config, renderer: &mut Renderer) -> Option<De
         serial,
         deck.dev.firmware_version().unwrap_or_default()
     );
-    if let Err(e) = paint_all(&deck, cfg, renderer) {
+    if let Err(e) = paint_all(&deck, cfg, page, renderer) {
         log::warn!("initial paint failed: {e}");
     }
     Some(deck)
 }
 
-fn paint_all(d: &Deck, cfg: &Config, renderer: &mut Renderer) -> Result<()> {
+/// Repaint the deck after `nav` moved to another page, and tell the configurators.
+fn show_page(d: Option<&Deck>, cfg: &Config, nav: &Nav, renderer: &mut Renderer, hub: &Hub) {
+    log::info!("page: {}", nav.current().unwrap_or(omadeck_core::HOME));
+    if let Some(d) = d
+        && let Err(e) = paint_all(d, cfg, nav.current(), renderer)
+    {
+        log::warn!("repaint failed: {e}");
+    }
+    hub.publish(Event::PageChanged { page: nav.current().map(str::to_string) });
+}
+
+fn paint_all(d: &Deck, cfg: &Config, page: Option<&str>, renderer: &mut Renderer) -> Result<()> {
     d.dev.set_brightness(cfg.brightness)?;
     for i in 0..d.kind.key_count() {
-        write_key(d, cfg, renderer, i, false)?;
+        write_key(d, cfg, page, renderer, i, false)?;
     }
     d.dev.flush()?;
     Ok(())
 }
 
-fn paint(d: &Deck, cfg: &Config, renderer: &mut Renderer, i: u8, pressed: bool) {
-    if let Err(e) = write_key(d, cfg, renderer, i, pressed).and_then(|_| Ok(d.dev.flush()?)) {
+fn paint(d: &Deck, cfg: &Config, page: Option<&str>, renderer: &mut Renderer, i: u8, pressed: bool) {
+    if let Err(e) = write_key(d, cfg, page, renderer, i, pressed).and_then(|_| Ok(d.dev.flush()?)) {
         log::warn!("paint key {i}: {e}");
     }
 }
 
-fn write_key(d: &Deck, cfg: &Config, renderer: &mut Renderer, i: u8, pressed: bool) -> Result<()> {
-    let face = renderer.render(cfg.key(i), &cfg.style, d.info.key_size, pressed);
+fn write_key(d: &Deck, cfg: &Config, page: Option<&str>, renderer: &mut Renderer, i: u8, pressed: bool) -> Result<()> {
+    let face = renderer.render(cfg.key(page, i), &cfg.style, d.info.key_size, pressed);
     d.dev.set_button_image(i, image::DynamicImage::ImageRgba8(face))?;
     Ok(())
 }
 
 /// Render the configured layout to a PNG, the way it looks on the hardware.
-fn snapshot(out: &Path) -> Result<()> {
+fn snapshot(out: &Path, page: Option<&str>) -> Result<()> {
     let cfg = Config::load()?;
+    let keys = cfg.page(page).with_context(|| format!("no page named {}", page.unwrap_or_default()))?;
     let info = device::detect().into_iter().next().unwrap_or_else(DeckInfo::fallback);
     let mut renderer = Renderer::new(&cfg.style);
     let size = 144u32;
@@ -288,7 +346,7 @@ fn snapshot(out: &Path) -> Result<()> {
     let (w, h) = (info.cols as u32 * (size + gap) + gap, info.rows as u32 * (size + gap) + gap);
     let mut canvas = image::RgbaImage::from_pixel(w, h, image::Rgba([10, 10, 12, 255]));
     for i in 0..info.key_count() {
-        let face = renderer.render(cfg.key(i), &cfg.style, size, false);
+        let face = renderer.render(keys.get(i), &cfg.style, size, false);
         let (r, c) = (i as u32 / info.cols as u32, i as u32 % info.cols as u32);
         image::imageops::overlay(&mut canvas, &face, (gap + c * (size + gap)) as i64, (gap + r * (size + gap)) as i64);
     }

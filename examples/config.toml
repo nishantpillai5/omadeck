@@ -1,7 +1,8 @@
 # omadeck example configuration
 # Copy to ~/.config/omadeck/config.toml, or just use the `omadeck` app.
 #
-# Keys are numbered left-to-right, top-to-bottom starting at 0.
+# Keys are numbered left-to-right, top-to-bottom starting at 0. Top-level [[key]]s are the
+# Home page; more pages are [[page]] tables with their own [[page.key]]s.
 # Icon paths may be absolute, start with ~/, or be relative to ~/.config/omadeck/.
 
 brightness = 70
@@ -51,3 +52,28 @@ label = "Backup"
 type = "script"
 path = "~/bin/backup.sh"
 terminal = true              # open in a terminal so you can watch it run
+
+[[key]]
+index = 5
+label = "Media"
+glyph = "f024b"              # folder symbol
+[key.action]
+type = "page"
+page = "Media"               # the name of a [[page]] below
+
+[[page]]
+name = "Media"
+
+[[page.key]]
+index = 0
+label = "Back"
+glyph = "f004d"
+[page.key.action]
+type = "back"                # the previous page, or Home
+
+[[page.key]]
+index = 1
+label = "Play/Pause"
+[page.key.action]
+type = "app"
+command = "playerctl play-pause"

@@ -1,8 +1,10 @@
-//! Tiny event feed from the daemon to the configurator: newline-delimited JSON over a
-//! Unix socket at `$XDG_RUNTIME_DIR/omadeck.sock`.
+//! Tiny protocol between the daemon and the configurator: newline-delimited JSON over a
+//! Unix socket at `$XDG_RUNTIME_DIR/omadeck.sock`. The daemon sends events; clients may
+//! send commands back.
 
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
+use std::time::Duration;
 
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
@@ -19,8 +21,15 @@ pub enum Event {
     },
     /// Sent on connect when no deck is attached, and on unplug.
     Disconnected,
+    /// Sent on connect and whenever the deck shows another page (`None` is home).
+    PageChanged {
+        page: Option<String>,
+    },
     KeyDown {
         index: u8,
+        /// The page the key was on.
+        #[serde(default)]
+        page: Option<String>,
     },
     KeyUp {
         index: u8,
@@ -32,16 +41,44 @@ pub enum Event {
     },
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "command", rename_all = "snake_case")]
+pub enum Command {
+    /// Show a page on the deck (`None` is home), e.g. the one being edited.
+    ShowPage { page: Option<String> },
+}
+
+fn line<T: Serialize>(v: &T) -> String {
+    let mut s = serde_json::to_string(v).expect("message serializes");
+    s.push('\n');
+    s
+}
+
 impl Event {
     pub fn to_line(&self) -> String {
-        let mut s = serde_json::to_string(self).expect("event serializes");
-        s.push('\n');
-        s
+        line(self)
     }
 }
 
-/// Connect to a running daemon and iterate its events. Ends when the daemon goes away.
-pub fn subscribe() -> Result<impl Iterator<Item = Event>> {
+/// The sending half of a connection to the daemon.
+pub struct Sender(UnixStream);
+
+impl Sender {
+    pub fn send(&mut self, cmd: &Command) -> Result<()> {
+        Ok(self.0.write_all(line(cmd).as_bytes())?)
+    }
+}
+
+/// Connect to a running daemon: a sender for commands, and its events until it goes away.
+pub fn connect() -> Result<(Sender, impl Iterator<Item = Event>)> {
     let stream = UnixStream::connect(paths::socket_path()?)?;
-    Ok(BufReader::new(stream).lines().map_while(|l| l.ok()).filter_map(|l| serde_json::from_str(&l).ok()))
+    let writer = stream.try_clone()?;
+    writer.set_write_timeout(Some(Duration::from_millis(200)))?;
+    let events = BufReader::new(stream).lines().map_while(|l| l.ok()).filter_map(|l| serde_json::from_str(&l).ok());
+    Ok((Sender(writer), events))
+}
+
+/// Read commands sent by a client until it disconnects.
+pub fn commands(stream: UnixStream) -> impl Iterator<Item = Command> {
+    BufReader::new(stream).lines().map_while(|l| l.ok()).filter_map(|l| serde_json::from_str(&l).ok())
 }

@@ -29,19 +29,20 @@ Written in Rust: a tiny background daemon drives the hardware, and a GTK4/libadw
 
 ## Features
 
-- **Five action types**
+- **Six action types**
   - **Launch app:** pick from your installed apps; the app's icon and name come along. Apps launch through `uwsm-app`, the same way Omarchy launches them.
   - **Run script:** optionally in a terminal so you can watch the output.
   - **Play sound:** through PipeWire (`pw-play`), with per-key volume.
   - **Open website:** one click fetches the site's icon for the key. The icon is requested from the site itself; DuckDuckGo's icon service is used only if the site offers none, and the app tells you when that happens.
   - **Hyprland:** any dispatcher. Lua (`hl.dsp.focus({ workspace = "3" })`) is passed straight to `hyprctl dispatch`. Classic syntax (`workspace 3`, `movetoworkspace 2`, `togglefloating`, `fullscreen`, `killactive`, `exec …`) is translated automatically on Hyprland versions that use a Lua config.
+  - **Open page:** pages and folders, for more keys than your deck has. A new page starts with a Back key, so a key that opens it works like a folder.
 - **Icons your way**
   - PNG, JPEG, SVG, WebP or GIF images.
   - App icons from your icon theme.
   - **Nerd Font glyphs**, drawn in your theme's accent colour.
   - Labels are rendered in your Omarchy font.
 - **Theme aware.** Key backgrounds, labels, glyphs and the press highlight come from the active Omarchy theme. Run `omarchy theme set …` and the deck re-renders instantly.
-- **Live editing.** Changes land on the hardware as you type. Drag keys to rearrange them. Press a physical key to jump to it in the editor.
+- **Live editing.** Changes land on the hardware as you type, and the deck shows whichever page you're editing. Drag keys to rearrange them. Press a physical key to jump to it in the editor.
 - **Robust.** Reconnects after unplug/replug, and a typo in a hand-edited config keeps the last good layout on the deck. Uses about 9 MB of RAM and 0% CPU at idle.
 - **Portable.** Everything lives in `~/.config/omadeck/`, and imported icons are copied into it, so you can copy that folder to another machine.
 
@@ -114,13 +115,19 @@ Open **omadeck** from the launcher (<kbd>Super</kbd>+<kbd>Space</kbd>). On first
 
 Click any key to change it, or clear it with the trash button. The ▶ button tests the action without touching the deck.
 
+### Pages and folders
+
+The switcher above the deck picks the page you're editing; **+** adds a page, and the pencil and trash buttons rename or delete it. To make a folder, set a key to **Open page** and click **New page**: you get a page with a Back key already in place, and the key gets a folder symbol. Open it with **›** to fill it.
+
+On the deck, **Go back** returns to the page you came from, or Home. Renaming a page updates every key that opens it.
+
 ### Command line
 
 ```text
 omadeckd                 run the daemon (normally via systemd)
 omadeckd list            show connected decks
-omadeckd press 3         run key 3's action (keys count from 0)
-omadeckd snapshot x.png  render the current layout to an image
+omadeckd press 3 [PAGE]         run key 3's action (keys count from 0)
+omadeckd snapshot x.png [PAGE]  render the layout to an image
 ```
 
 `omadeckd press` is handy in Hyprland bindings and scripts, for example to share one action between a key and a keyboard shortcut.
@@ -150,6 +157,23 @@ glyph = "\U000F075F"           # Nerd Font symbol (or "f075f" / "U+F075F")
 [key.action]
 type = "app"
 command = "omarchy audio output volume mute-toggle"
+
+[[key]]
+index = 4
+label = "Media"
+glyph = "\U000F024B"
+[key.action]
+type = "page"                  # open another page
+page = "Media"
+
+[[page]]                       # top-level [[key]]s are the Home page; more pages go here
+name = "Media"
+
+[[page.key]]
+index = 0
+label = "Back"
+[page.key.action]
+type = "back"                  # previous page, or Home
 ```
 
 Action types:
@@ -161,6 +185,8 @@ Action types:
 | `sound` | `file`, `volume` (0.0–1.5) |
 | `url` | `url` |
 | `hyprland` | `dispatch` |
+| `page` | `page` (a page `name`) |
+| `back` | |
 
 Per-key look overrides are `background`, `label_color` and `show_label`.
 
@@ -178,7 +204,7 @@ site/             project website: static HTML/CSS/JS with an interactive demo
 
 - **Single source of truth.** The GUI only writes `config.toml` (atomically). The daemon watches it, plus Omarchy's theme state in `~/.local/state/omarchy/current`, and repaints.
 - **Same pixels everywhere.** The renderer in `omadeck-core` is shared, so the previews in the app are rendered by the same code that paints the hardware.
-- **Event feed.** The daemon publishes connect/disconnect and key events as JSON lines on `$XDG_RUNTIME_DIR/omadeck.sock`. The app uses this for its status line and press-to-select.
+- **Event feed.** The daemon publishes connect/disconnect, page and key events as JSON lines on `$XDG_RUNTIME_DIR/omadeck.sock`. The app uses this for its status line, press-to-select and following the deck's page, and sends back the page you're editing so the deck can show it.
 
 ## Troubleshooting
 
@@ -190,7 +216,6 @@ site/             project website: static HTML/CSS/JS with an interactive demo
 
 Ideas, roughly in order. Want one sooner? Open an issue or a PR; see [CONTRIBUTING](CONTRIBUTING.md).
 
-- [ ] **Pages and folders**: more than 15 keys' worth of actions
 - [ ] **Toggle keys** with on/off faces (mute, night light, …) that reflect real state
 - [ ] **Multi-actions**: run several actions from one key, with optional delays
 - [ ] **Stream Deck +**: dials and touch strip (volume, brightness, scrubbing)

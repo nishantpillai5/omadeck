@@ -7,16 +7,21 @@ use std::time::Duration;
 
 use adw::prelude::*;
 use gtk::{gdk, gio, glib};
-use omadeck_core::ipc::{self, Event};
-use omadeck_core::{Config, DeckInfo, KeyConfig, Renderer, device, paths};
+use omadeck_core::ipc::{self, Command as DaemonCommand, Event};
+use omadeck_core::{Action, Config, DeckInfo, HOME, KeyConfig, Keys, Page, Renderer, device, paths};
 
 use crate::{editor, media};
 
 /// Previews are rendered larger than displayed so they stay crisp on HiDPI screens.
 const PREVIEW_PX: u32 = 192;
 
+/// The key a new page starts with, so a page opened from a key works like a folder.
+fn back_key() -> KeyConfig {
+    KeyConfig { label: "Back".into(), glyph: Some("\u{f004d}".into()), action: Action::Back, ..KeyConfig::new(0) }
+}
+
 enum Msg {
-    DaemonUp,
+    DaemonUp(ipc::Sender),
     DaemonDown,
     Event(Event),
 }
@@ -28,6 +33,14 @@ pub struct App {
     banner: adw::Banner,
     grid: gtk::Grid,
     model_label: gtk::Label,
+    page_list: gtk::StringList,
+    page_dropdown: gtk::DropDown,
+    page_actions: gtk::Box,
+    /// Set while the page dropdown is updated from code, so it doesn't count as a choice.
+    syncing_pages: Cell<bool>,
+    /// The page being edited: `None` is home.
+    page: RefCell<Option<String>>,
+    daemon: RefCell<Option<ipc::Sender>>,
     editor_slot: adw::Bin,
     keys: RefCell<Vec<(gtk::Button, gtk::Image)>>,
     pub config: RefCell<Config>,
@@ -88,6 +101,21 @@ impl App {
         frame.add_css_class("deck-frame");
         frame.append(&grid);
         frame.append(&model_label);
+        let page_list = gtk::StringList::new(&[HOME]);
+        let page_dropdown = gtk::DropDown::builder().model(&page_list).tooltip_text("The page you're editing").build();
+        let new_page = gtk::Button::builder().icon_name("list-add-symbolic").tooltip_text("New page").build();
+        let rename_page =
+            gtk::Button::builder().icon_name("document-edit-symbolic").tooltip_text("Rename this page").build();
+        let delete_page =
+            gtk::Button::builder().icon_name("user-trash-symbolic").tooltip_text("Delete this page").build();
+        let page_actions = gtk::Box::builder().css_classes(["linked"]).visible(false).build();
+        page_actions.append(&rename_page);
+        page_actions.append(&delete_page);
+        let page_bar = gtk::Box::builder().spacing(6).halign(gtk::Align::Center).build();
+        page_bar.append(&page_dropdown);
+        page_bar.append(&new_page);
+        page_bar.append(&page_actions);
+
         let hint = gtk::Label::builder()
             .label("Click a key to edit it · drag keys to rearrange · press a key on your deck to jump to it")
             .css_classes(["deck-hint", "caption"])
@@ -105,6 +133,7 @@ impl App {
             .margin_start(24)
             .margin_end(24)
             .build();
+        deck_area.append(&page_bar);
         deck_area.append(&frame);
         deck_area.append(&hint);
 
@@ -157,6 +186,12 @@ impl App {
             banner,
             grid,
             model_label,
+            page_list,
+            page_dropdown,
+            page_actions,
+            syncing_pages: Cell::new(false),
+            page: RefCell::default(),
+            daemon: RefCell::default(),
             editor_slot,
             keys: RefCell::default(),
             config: RefCell::new(config),
@@ -171,6 +206,36 @@ impl App {
         });
 
         settings_btn.set_popover(Some(&app.settings_popover()));
+        let weak = Rc::downgrade(&app);
+        app.page_dropdown.connect_selected_notify(move |dd| {
+            let Some(app) = weak.upgrade() else { return };
+            if app.syncing_pages.get() {
+                return;
+            }
+            let page = match dd.selected() {
+                0 | gtk::INVALID_LIST_POSITION => None,
+                n => app.config.borrow().pages.get(n as usize - 1).map(|p| p.name.clone()),
+            };
+            app.show_page(page, true);
+        });
+        let weak = Rc::downgrade(&app);
+        new_page.connect_clicked(move |_| {
+            if let Some(app) = weak.upgrade() {
+                app.ask_new_page();
+            }
+        });
+        let weak = Rc::downgrade(&app);
+        rename_page.connect_clicked(move |_| {
+            if let Some(app) = weak.upgrade() {
+                app.ask_rename_page();
+            }
+        });
+        let weak = Rc::downgrade(&app);
+        delete_page.connect_clicked(move |_| {
+            if let Some(app) = weak.upgrade() {
+                app.ask_delete_page();
+            }
+        });
         let weak = Rc::downgrade(&app);
         app.banner.connect_button_clicked(move |_| {
             if let Some(app) = weak.upgrade() {
@@ -191,6 +256,7 @@ impl App {
 
         app.apply_theme_css();
         app.watch_theme();
+        app.sync_page_list();
         app.rebuild_grid();
         // OMADECK_SELECT=<n> opens with a key selected (handy for screenshots and scripting).
         app.select(std::env::var("OMADECK_SELECT").ok().and_then(|v| v.parse().ok()));
@@ -268,7 +334,7 @@ impl App {
             b.remove_css_class("drop-target");
             let (Some(app), Ok(from)) = (weak.upgrade(), value.get::<u32>()) else { return false };
             if from as u8 != i {
-                app.config.borrow_mut().swap_keys(from as u8, i);
+                app.with_page(|keys| keys.swap(from as u8, i));
                 app.refresh_key(from as u8);
                 app.refresh_key(i);
                 app.select(Some(i));
@@ -283,7 +349,7 @@ impl App {
         let keys = self.keys.borrow();
         let Some((button, image)) = keys.get(i as usize) else { return };
         let cfg = self.config.borrow();
-        let key = cfg.key(i);
+        let key = cfg.key(self.page.borrow().as_deref(), i);
         let face = self.renderer.borrow_mut().render(key, &cfg.style, PREVIEW_PX, false);
         image.set_paintable(Some(&media::texture(face)));
         let tip = match key.filter(|k| !k.is_blank()) {
@@ -340,15 +406,32 @@ impl App {
 
     // --- editing & saving -----------------------------------------------------------------
 
+    /// A key on the page being edited.
+    pub fn key(&self, i: u8) -> Option<KeyConfig> {
+        self.config.borrow().key(self.page.borrow().as_deref(), i).cloned()
+    }
+
+    /// Change the keys of the page being edited.
+    fn with_page<R>(&self, f: impl FnOnce(&mut Keys) -> R) -> R {
+        let page = self.page.borrow();
+        let mut cfg = self.config.borrow_mut();
+        let cfg = &mut *cfg;
+        f(match cfg.page_mut(page.as_deref()) {
+            Some(keys) => keys,
+            // The page vanished under us; edit home rather than lose the change.
+            None => &mut cfg.keys,
+        })
+    }
+
     /// Mutate a key, refresh its preview and queue a save.
     pub fn edit(self: &Rc<Self>, i: u8, f: impl FnOnce(&mut KeyConfig)) {
-        f(self.config.borrow_mut().key_mut(i));
+        self.with_page(|keys| f(keys.get_mut(i)));
         self.refresh_key(i);
         self.schedule_save();
     }
 
     pub fn clear_key(self: &Rc<Self>, i: u8) {
-        self.config.borrow_mut().clear_key(i);
+        self.with_page(|keys| keys.clear(i));
         self.refresh_key(i);
         self.schedule_save();
         self.rebuild_editor();
@@ -378,6 +461,151 @@ impl App {
     fn save_now(&self) {
         if let Err(e) = self.config.borrow().save() {
             self.toast(&format!("Couldn't save: {e:#}"));
+        }
+    }
+
+    // --- pages ----------------------------------------------------------------------------
+
+    pub fn current_page(&self) -> Option<String> {
+        self.page.borrow().clone()
+    }
+
+    /// Edit another page. With `tell_daemon` the deck shows it too, so edits land live.
+    pub fn show_page(self: &Rc<Self>, page: Option<String>, tell_daemon: bool) {
+        let page = page.filter(|p| self.config.borrow().has_page(p));
+        let changed = *self.page.borrow() != page;
+        *self.page.borrow_mut() = page.clone();
+        if changed {
+            self.sync_page_list();
+            self.select(None);
+            self.refresh_all();
+        }
+        if tell_daemon {
+            self.send(DaemonCommand::ShowPage { page });
+        }
+    }
+
+    /// Mirror the config's pages in the page switcher.
+    fn sync_page_list(&self) {
+        self.syncing_pages.set(true);
+        let cfg = self.config.borrow();
+        let names = cfg.page_names();
+        let mut items: Vec<&str> = vec![HOME];
+        items.extend(names.iter().map(String::as_str));
+        self.page_list.splice(0, self.page_list.n_items(), &items);
+        let page = self.page.borrow();
+        let pos = page.as_deref().and_then(|p| names.iter().position(|n| n == p)).map(|n| n + 1).unwrap_or(0);
+        self.page_dropdown.set_selected(pos as u32);
+        self.page_actions.set_visible(page.is_some());
+        self.syncing_pages.set(false);
+    }
+
+    /// Add a page that starts with a Back key, so it works as a folder. Returns its name.
+    pub fn add_page(self: &Rc<Self>, name: &str) -> String {
+        let mut cfg = self.config.borrow_mut();
+        let name = cfg.unique_page_name(name);
+        cfg.pages.push(Page { name: name.clone(), keys: Keys(vec![back_key()]) });
+        drop(cfg);
+        self.sync_page_list();
+        self.schedule_save();
+        name
+    }
+
+    /// A dialog asking for a page name; `done` gets the accepted name.
+    fn page_name_dialog(
+        self: &Rc<Self>,
+        heading: &str,
+        accept: &str,
+        initial: &str,
+        current: Option<String>,
+        done: impl Fn(&Rc<Self>, String) + 'static,
+    ) {
+        let dialog = adw::AlertDialog::new(Some(heading), None);
+        dialog.add_responses(&[("cancel", "Cancel"), ("ok", accept)]);
+        dialog.set_response_appearance("ok", adw::ResponseAppearance::Suggested);
+        dialog.set_default_response(Some("ok"));
+        dialog.set_close_response("cancel");
+        let entry = gtk::Entry::builder().text(initial).activates_default(true).build();
+        dialog.set_extra_child(Some(&entry));
+        let weak = Rc::downgrade(self);
+        let d = dialog.clone();
+        let check = move |e: &gtk::Entry| {
+            let Some(app) = weak.upgrade() else { return };
+            let name = e.text();
+            let problem = if current.as_deref() == Some(name.trim()) {
+                None
+            } else {
+                app.config.borrow().page_name_problem(&name)
+            };
+            d.set_body(problem.unwrap_or(""));
+            d.set_response_enabled("ok", problem.is_none());
+        };
+        check(&entry);
+        entry.connect_changed(check);
+        let weak = Rc::downgrade(self);
+        let e = entry.clone();
+        dialog.connect_response(Some("ok"), move |_, _| {
+            if let Some(app) = weak.upgrade() {
+                done(&app, e.text().trim().to_string());
+            }
+        });
+        dialog.present(Some(&self.window));
+        entry.grab_focus();
+    }
+
+    fn ask_new_page(self: &Rc<Self>) {
+        let suggestion = self.config.borrow().unique_page_name("Page");
+        self.page_name_dialog("New page", "Create", &suggestion, None, |app, name| {
+            let name = app.add_page(&name);
+            app.show_page(Some(name), true);
+            app.toast("New page — give a key the “Open page” action to reach it from your deck");
+        });
+    }
+
+    fn ask_rename_page(self: &Rc<Self>) {
+        let Some(old) = self.current_page() else { return };
+        self.page_name_dialog("Rename page", "Rename", &old.clone(), Some(old.clone()), move |app, new| {
+            if new == old {
+                return;
+            }
+            app.config.borrow_mut().rename_page(&old, &new);
+            *app.page.borrow_mut() = Some(new.clone());
+            app.sync_page_list();
+            app.refresh_all();
+            app.schedule_save();
+            app.rebuild_editor();
+            app.send(DaemonCommand::ShowPage { page: Some(new) });
+        });
+    }
+
+    fn ask_delete_page(self: &Rc<Self>) {
+        let Some(name) = self.current_page() else { return };
+        let links = self.config.borrow().links_to(&name);
+        let body = match links {
+            0 => "Its keys will be deleted too.".to_string(),
+            1 => "Its keys will be deleted too, and the key that opens it will stop doing anything.".to_string(),
+            n => format!("Its keys will be deleted too, and the {n} keys that open it will stop doing anything."),
+        };
+        let dialog = adw::AlertDialog::new(Some(&format!("Delete “{name}”?")), Some(&body));
+        dialog.add_responses(&[("cancel", "Cancel"), ("delete", "Delete")]);
+        dialog.set_response_appearance("delete", adw::ResponseAppearance::Destructive);
+        dialog.set_close_response("cancel");
+        let weak = Rc::downgrade(self);
+        dialog.connect_response(Some("delete"), move |_, _| {
+            let Some(app) = weak.upgrade() else { return };
+            app.config.borrow_mut().remove_page(&name);
+            app.schedule_save();
+            app.show_page(None, true);
+            app.sync_page_list();
+        });
+        dialog.present(Some(&self.window));
+    }
+
+    fn send(&self, cmd: DaemonCommand) {
+        if let Some(sender) = self.daemon.borrow_mut().as_mut()
+            && let Err(e) = sender.send(&cmd)
+        {
+            log::warn!("telling omadeckd: {e}");
         }
     }
 
@@ -521,8 +749,8 @@ impl App {
             .name("ipc".into())
             .spawn(move || {
                 loop {
-                    if let Ok(events) = ipc::subscribe() {
-                        if tx.send_blocking(Msg::DaemonUp).is_err() {
+                    if let Ok((sender, events)) = ipc::connect() {
+                        if tx.send_blocking(Msg::DaemonUp(sender)).is_err() {
                             return;
                         }
                         for e in events {
@@ -549,11 +777,13 @@ impl App {
 
     fn handle(self: &Rc<Self>, msg: Msg) {
         match msg {
-            Msg::DaemonUp => {
+            Msg::DaemonUp(sender) => {
+                *self.daemon.borrow_mut() = Some(sender);
                 self.daemon_up.set(true);
                 self.banner.set_revealed(false);
             }
             Msg::DaemonDown => {
+                self.daemon.borrow_mut().take();
                 self.daemon_up.set(false);
                 self.connected.set(false);
                 self.banner.set_revealed(true);
@@ -570,7 +800,10 @@ impl App {
                 }
             }
             Msg::Event(Event::Disconnected) => self.connected.set(false),
-            Msg::Event(Event::KeyDown { index }) => {
+            // Follow the deck: pressing a page key there shows that page here too.
+            Msg::Event(Event::PageChanged { page }) => self.show_page(page, false),
+            Msg::Event(Event::KeyDown { index, page }) => {
+                self.show_page(page, false);
                 if let Some((b, _)) = self.keys.borrow().get(index as usize) {
                     b.add_css_class("pressed");
                 }
