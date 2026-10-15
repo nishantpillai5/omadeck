@@ -23,11 +23,20 @@ pub struct Config {
     /// More pages, opened from keys with a `page` action.
     #[serde(default, rename = "page", skip_serializing_if = "Vec::is_empty")]
     pub pages: Vec<Page>,
+    /// Dials on the Stream Deck +, one `[[dial]]` table per dial.
+    #[serde(default, rename = "dial", skip_serializing_if = "Vec::is_empty")]
+    pub dials: Vec<DialConfig>,
 }
 
 impl Default for Config {
     fn default() -> Self {
-        Self { brightness: default_brightness(), style: Style::default(), keys: Keys::default(), pages: Vec::new() }
+        Self {
+            brightness: default_brightness(),
+            style: Style::default(),
+            keys: Keys::default(),
+            pages: Vec::new(),
+            dials: Vec::new(),
+        }
     }
 }
 
@@ -221,6 +230,10 @@ impl Action {
         matches!(self, Action::Page { .. } | Action::Back)
     }
 
+    pub fn is_none(&self) -> bool {
+        matches!(self, Action::None)
+    }
+
     pub fn empty_of_kind(i: usize) -> Self {
         match i {
             1 => Action::App { command: String::new() },
@@ -245,6 +258,34 @@ impl Action {
             Action::Page { page } => format!("Open page {page}"),
             Action::Back => "Go back".into(),
         }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DialConfig {
+    /// Zero-based dial index, left to right.
+    pub index: u8,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub label: String,
+    /// Runs once per detent when the dial is turned left.
+    #[serde(default, skip_serializing_if = "Action::is_none")]
+    pub turn_left: Action,
+    /// Runs once per detent when the dial is turned right.
+    #[serde(default, skip_serializing_if = "Action::is_none")]
+    pub turn_right: Action,
+    /// Runs when the dial is pressed down.
+    #[serde(default, skip_serializing_if = "Action::is_none")]
+    pub press: Action,
+}
+
+impl DialConfig {
+    pub fn new(index: u8) -> Self {
+        Self { index, label: String::new(), turn_left: Action::None, turn_right: Action::None, press: Action::None }
+    }
+
+    /// True when the dial carries nothing worth saving.
+    pub fn is_blank(&self) -> bool {
+        self.label.is_empty() && self.turn_left.is_none() && self.turn_right.is_none() && self.press.is_none()
     }
 }
 
@@ -279,6 +320,8 @@ impl Config {
         for p in &mut clean.pages {
             p.keys.tidy();
         }
+        clean.dials.retain(|d| !d.is_blank());
+        clean.dials.sort_by_key(|d| d.index);
         let body = format!(
             "# omadeck configuration - edit by hand or with the `omadeck` app.\n\n{}",
             toml::to_string_pretty(&clean)?
@@ -389,6 +432,24 @@ impl Config {
             }
         }
     }
+
+    pub fn dial(&self, index: u8) -> Option<&DialConfig> {
+        self.dials.iter().find(|d| d.index == index)
+    }
+
+    /// Get a dial for editing, creating it if needed.
+    pub fn dial_mut(&mut self, index: u8) -> &mut DialConfig {
+        if let Some(pos) = self.dials.iter().position(|d| d.index == index) {
+            &mut self.dials[pos]
+        } else {
+            self.dials.push(DialConfig::new(index));
+            self.dials.last_mut().unwrap()
+        }
+    }
+
+    pub fn clear_dial(&mut self, index: u8) {
+        self.dials.retain(|d| d.index != index);
+    }
 }
 
 /// What the home page is called in the UI. It has no name in the config file.
@@ -486,9 +547,69 @@ mod tests {
     }
 
     #[test]
+    fn old_config_without_dials_loads() {
+        let old = r#"
+            brightness = 70
+            [[key]]
+            index = 0
+            label = "Term"
+            [key.action]
+            type = "app"
+            command = "Alacritty.desktop"
+        "#;
+        let c: Config = toml::from_str(old).unwrap();
+        assert!(c.dials.is_empty());
+        assert_eq!(c.keys.iter().count(), 1);
+    }
+
+    #[test]
+    fn keys_only_config_saves_without_dials() {
+        let mut c = Config::default();
+        c.keys.get_mut(0).label = "Term".into();
+        let s = toml::to_string_pretty(&c).unwrap();
+        assert!(!s.contains("dial"));
+    }
+
+    #[test]
+    fn dials_roundtrip() {
+        let mut c = Config::default();
+        let d = c.dial_mut(0);
+        d.label = "Workspace".into();
+        d.turn_left = Action::Hyprland { dispatch: "workspace e-1".into() };
+        d.turn_right = Action::Hyprland { dispatch: "workspace e+1".into() };
+        d.press = Action::App { command: "walker".into() };
+        let s = toml::to_string_pretty(&c).unwrap();
+        assert!(s.contains("[[dial]]"));
+        let back: Config = toml::from_str(&s).unwrap();
+        assert_eq!(c, back);
+    }
+
+    #[test]
+    fn dial_with_only_press_saves_minimally() {
+        let mut c = Config::default();
+        c.dial_mut(2).press = Action::App { command: "walker".into() };
+        let s = toml::to_string_pretty(&c).unwrap();
+        assert!(!s.contains("turn_left"));
+        assert!(!s.contains("turn_right"));
+        assert!(s.contains("index = 2"));
+    }
+
+    #[test]
     fn example_parses() {
         let s = include_str!("../../../examples/config.toml");
         let c: Config = toml::from_str(s).unwrap();
         assert!(!c.keys.is_empty());
+    }
+
+    #[test]
+    fn example_dial_parses() {
+        let s = include_str!("../../../examples/config.toml");
+        let start = s.find("# [[dial]]").expect("a commented [[dial]] block");
+        let (before, block) = s.split_at(start);
+        let uncommented = block.lines().map(|l| l.strip_prefix("# ").unwrap_or(l)).collect::<Vec<_>>().join("\n");
+        let c: Config = toml::from_str(&format!("{before}{uncommented}"))
+            .expect("the commented dial block, uncommented, is valid config");
+        assert_eq!(c.dials.len(), 1);
+        assert!(!c.dials[0].turn_left.is_none());
     }
 }

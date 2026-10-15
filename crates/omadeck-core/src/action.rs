@@ -24,6 +24,15 @@ pub fn run(action: &Action) -> Result<()> {
     }
 }
 
+/// Run `action` `steps` times, once per detent for dial turns. The daemon caps `steps`
+/// at 8 per event, so a hard spin can't fork dozens of processes at once.
+pub fn run_steps(action: &Action, steps: u8) -> Result<()> {
+    for _ in 0..steps {
+        run(action)?;
+    }
+    Ok(())
+}
+
 fn which(bin: &str) -> bool {
     std::env::var_os("PATH").map(|p| std::env::split_paths(&p).any(|d| d.join(bin).is_file())).unwrap_or(false)
 }

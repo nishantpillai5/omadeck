@@ -15,6 +15,8 @@ All notable changes to omadeck are documented here. The format follows
 - `omadeckd press KEY [PAGE]` and `omadeckd snapshot FILE [PAGE]` take an optional page.
 - Stream Deck +: the daemon reads dial turns and presses and touch-strip taps and
   swipes, and reports them on its event socket.
+- Dials on the Stream Deck + can run any action on turn left, turn right and press,
+  configured with `[[dial]]` tables or in the configurator.
 
 ### Fixed
 - A colour value with a non-ASCII character (in the config or the Omarchy theme) crashed the
