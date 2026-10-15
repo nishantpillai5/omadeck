@@ -67,6 +67,12 @@ pub enum Event {
         from: (u16, u16),
         to: (u16, u16),
     },
+    /// A dial action failed to start. Separate from `ActionFailed` so key and dial
+    /// indices never get mixed up; older configurators ignore it.
+    DialActionFailed {
+        index: u8,
+        message: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

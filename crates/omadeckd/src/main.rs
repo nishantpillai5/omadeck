@@ -78,6 +78,33 @@ fn main() {
             std::thread::sleep(Duration::from_millis(300));
             return;
         }
+        Some("dial") => {
+            let (Some(n), Some(which)) = (args.next(), args.next()) else {
+                eprintln!("usage: omadeckd dial N left|right|press");
+                std::process::exit(2);
+            };
+            let Ok(i) = n.parse::<u8>() else {
+                eprintln!("usage: omadeckd dial N left|right|press");
+                std::process::exit(2);
+            };
+            let cfg = load_config();
+            let act = match which.as_str() {
+                "left" => cfg.dial(i).map(|d| d.turn_left.clone()).unwrap_or_default(),
+                "right" => cfg.dial(i).map(|d| d.turn_right.clone()).unwrap_or_default(),
+                "press" => cfg.dial(i).map(|d| d.press.clone()).unwrap_or_default(),
+                _ => {
+                    eprintln!("usage: omadeckd dial N left|right|press");
+                    std::process::exit(2);
+                }
+            };
+            println!("dial {i} {which}: {}", act.summary());
+            if let Err(e) = action::run(&act) {
+                eprintln!("{e:#}");
+                std::process::exit(1);
+            }
+            std::thread::sleep(Duration::from_millis(300));
+            return;
+        }
         Some("snapshot") => {
             let out = args.next().unwrap_or_else(|| "omadeck.png".into());
             if let Err(e) = snapshot(Path::new(&out), args.next().as_deref()) {
@@ -93,7 +120,7 @@ fn main() {
         }
         Some(_) => {
             eprintln!(
-                "usage: omadeckd [run | list | press KEY [PAGE] | snapshot FILE.png [PAGE] | --version]\n\nRuns the omadeck Stream Deck daemon."
+                "usage: omadeckd [run | list | press KEY [PAGE] | dial N left|right|press | snapshot FILE.png [PAGE] | --version]\n\nRuns the omadeck Stream Deck daemon."
             );
             std::process::exit(2);
         }
@@ -274,10 +301,31 @@ fn run() -> Result<()> {
                         DeviceStateUpdate::EncoderTwist(i, delta) => {
                             log::debug!("dial {i} turned {delta}");
                             hub.publish(Event::DialTurn { index: i, delta });
+                            if let Some(d) = cfg.dial(i) {
+                                let (act, dir) =
+                                    if delta >= 0 { (&d.turn_right, "right") } else { (&d.turn_left, "left") };
+                                let steps = delta.unsigned_abs().min(8);
+                                if !act.is_none() {
+                                    log::info!("dial {i} turned {dir} x{steps}: {}", act.summary());
+                                    if let Err(e) = action::run_steps(act, steps) {
+                                        log::warn!("dial {i}: {e:#}");
+                                        hub.publish(Event::DialActionFailed { index: i, message: format!("{e:#}") });
+                                    }
+                                }
+                            }
                         }
                         DeviceStateUpdate::EncoderDown(i) => {
                             log::info!("dial {i} pressed");
                             hub.publish(Event::DialDown { index: i });
+                            if let Some(d) = cfg.dial(i)
+                                && !d.press.is_none()
+                            {
+                                log::info!("dial {i}: {}", d.press.summary());
+                                if let Err(e) = action::run(&d.press) {
+                                    log::warn!("dial {i}: {e:#}");
+                                    hub.publish(Event::DialActionFailed { index: i, message: format!("{e:#}") });
+                                }
+                            }
                         }
                         DeviceStateUpdate::EncoderUp(i) => {
                             log::info!("dial {i} released");
