@@ -36,13 +36,14 @@ Written in Rust: a tiny background daemon drives the hardware, and a GTK4/libadw
   - **Open website:** one click fetches the site's icon for the key. The icon is requested from the site itself; DuckDuckGo's icon service is used only if the site offers none, and the app tells you when that happens.
   - **Hyprland:** any dispatcher. Lua (`hl.dsp.focus({ workspace = "3" })`) is passed straight to `hyprctl dispatch`. Classic syntax (`workspace 3`, `movetoworkspace 2`, `togglefloating`, `fullscreen`, `killactive`, `exec …`) is translated automatically on Hyprland versions that use a Lua config.
   - **Open page:** pages and folders, for more keys than your deck has. A new page starts with a Back key, so a key that opens it works like a folder.
+  - **Volume:** change the output or input (microphone) volume, or toggle mute. It goes through Omarchy's own volume commands when they're installed, so the same on-screen pop-up shows as your volume keys — otherwise it falls back to `wpctl`.
 - **Icons your way**
   - PNG, JPEG, SVG, WebP or GIF images.
   - App icons from your icon theme.
   - **Nerd Font glyphs**, drawn in your theme's accent colour.
   - Labels are rendered in your Omarchy font.
 - **Stream Deck + dials.** Each dial runs any of the action types on turn left, turn right and press — a workspace dial, a volume dial, a launch-on-press dial.
-- **Stream Deck + touch strip.** The strip shows each dial's label and icon in its own panel, in the theme's colours, following the same panel layouts as Elgato's own app. Tapping a panel presses its dial; the pressed panel highlights briefly.
+- **Stream Deck + touch strip.** The strip shows each dial's label and icon in its own panel, in the theme's colours, following the same panel layouts as Elgato's own app. A volume dial shows its level and a groove bar in Elgato's `Indicator` layout, kept in sync when the volume changes elsewhere. Tapping a panel presses its dial; the pressed panel highlights briefly.
 - **Theme aware.** Key backgrounds, labels, glyphs and the press highlight come from the active Omarchy theme. Run `omarchy theme set …` and the deck re-renders instantly.
 - **Live editing.** Changes land on the hardware as you type, and the deck shows whichever page you're editing. Drag keys to rearrange them. Press a physical key to jump to it in the editor.
 - **Robust.** Reconnects after unplug/replug, and a typo in a hand-edited config keeps the last good layout on the deck. Uses about 9 MB of RAM and 0% CPU at idle.
@@ -190,6 +191,7 @@ Action types:
 | `hyprland` | `dispatch` |
 | `page` | `page` (a page `name`) |
 | `back` | |
+| `volume` | `device` (`output`/`input`), `change` (±%), `mute` |
 
 Per-key look overrides are `background`, `label_color` and `show_label`. Dials take the same fields (`icon`, `glyph`, `background`, `label_color`, `show_label`) for their panel on the touch strip.
 
@@ -209,6 +211,26 @@ dispatch = "workspace e+1"
 [dial.press]
 type = "app"
 command = "walker"
+```
+
+A volume dial: turn to change the output volume, press to mute. Its panel on the
+strip shows the current level and a groove bar (Elgato's `Indicator` layout), kept in
+sync when the volume changes from the keyboard or elsewhere:
+
+```toml
+[[dial]]
+index = 1
+label = "Volume"
+glyph = "f057e"
+[dial.turn_left]
+type = "volume"
+change = -5
+[dial.turn_right]
+type = "volume"
+change = 5
+[dial.press]
+type = "volume"
+mute = true
 ```
 
 ## How it works
@@ -239,7 +261,7 @@ Ideas, roughly in order. Want one sooner? Open an issue or a PR; see [CONTRIBUTI
 
 - [ ] **Toggle keys** with on/off faces (mute, night light, …) that reflect real state
 - [ ] **Multi-actions**: run several actions from one key, with optional delays
-- [ ] **Stream Deck +**: a value layout on the strip (volume, brightness) and page switching on swipe
+- [~] **Stream Deck +**: a value layout on the strip — volume (done), then brightness — and page switching on swipe
 - [ ] **OBS** scene and recording keys via obs-websocket
 - [ ] **Live keys** that show a clock, CPU usage or the active workspace
 - [ ] **Multiple decks** with a layout per serial number

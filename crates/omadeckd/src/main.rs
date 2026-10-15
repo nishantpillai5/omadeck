@@ -4,6 +4,7 @@
 mod hub;
 mod nav;
 
+use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -15,7 +16,9 @@ use notify::{RecursiveMode, Watcher};
 use omadeck_core::device::{self, DeviceStateReader, DeviceStateUpdate, HidApi, ImageRect, Kind, StreamDeck};
 use omadeck_core::ipc::{Command, Event};
 use omadeck_core::paths::FileStamp;
-use omadeck_core::{Action, Config, DeckInfo, DialStatus, PANEL_W, Renderer, action, paths, tap_to_dial};
+use omadeck_core::{
+    Action, AudioDevice, Config, DeckInfo, DialStatus, Level, PANEL_W, Renderer, action, audio, paths, tap_to_dial,
+};
 
 use hub::Hub;
 use nav::Nav;
@@ -29,6 +32,79 @@ const STAMP_INTERVAL: Duration = Duration::from_secs(1);
 const DIAL_FLASH: Duration = Duration::from_millis(150);
 /// The Plus's LCD can ignore the first writes right after connect; repaint once after this.
 const POST_CONNECT_REPAINT: Duration = Duration::from_secs(1);
+/// How often the audio worker re-reads a watched device's level.
+const AUDIO_POLL: Duration = Duration::from_millis(1000);
+/// Wait this long after our own volume change before re-reading, so the command finishes.
+const AUDIO_REFRESH_DELAY: Duration = Duration::from_millis(150);
+
+/// A message the main loop sends the audio worker.
+enum AudioCmd {
+    /// Which devices some dial shows; polled every second while non-empty.
+    Watch(Vec<AudioDevice>),
+    /// Re-read now (we just changed the volume ourselves).
+    Refresh,
+}
+
+/// The audio worker: reads the watched devices' levels off the deck loop and sends
+/// `(device, level)` when a value changes, so a fast spin never blocks the deck.
+struct AudioWorker {
+    cmd: mpsc::Sender<AudioCmd>,
+    levels: mpsc::Receiver<(AudioDevice, Level)>,
+}
+
+fn start_audio_worker() -> AudioWorker {
+    let (cmd_tx, cmd_rx) = mpsc::channel::<AudioCmd>();
+    let (lvl_tx, lvl_rx) = mpsc::channel::<(AudioDevice, Level)>();
+    std::thread::Builder::new()
+        .name("audio".into())
+        .spawn(move || {
+            let mut watched: Vec<AudioDevice> = Vec::new();
+            let mut last: HashMap<AudioDevice, audio::Level> = HashMap::new();
+            let mut next_poll = Instant::now();
+            loop {
+                loop {
+                    match cmd_rx.try_recv() {
+                        Ok(AudioCmd::Watch(devs)) => {
+                            watched = devs;
+                            last.clear();
+                            next_poll = Instant::now();
+                        }
+                        Ok(AudioCmd::Refresh) => next_poll = Instant::now() + AUDIO_REFRESH_DELAY,
+                        Err(mpsc::TryRecvError::Empty) => break,
+                        Err(mpsc::TryRecvError::Disconnected) => return,
+                    }
+                }
+                let now = Instant::now();
+                if now >= next_poll && !watched.is_empty() {
+                    for dev in &watched {
+                        if let Some(lv) = audio::volume(*dev)
+                            && last.get(dev) != Some(&lv)
+                        {
+                            last.insert(*dev, lv);
+                            if lvl_tx.send((*dev, lv.to_panel())).is_err() {
+                                return;
+                            }
+                        }
+                    }
+                    next_poll = now + AUDIO_POLL;
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+        })
+        .expect("spawn audio thread");
+    AudioWorker { cmd: cmd_tx, levels: lvl_rx }
+}
+
+/// The volume devices any dial shows, so the audio worker only reads what's on screen.
+fn watched_devices(cfg: &Config, n_dials: usize) -> Vec<AudioDevice> {
+    let mut devs = Vec::new();
+    for dev in [AudioDevice::Output, AudioDevice::Input] {
+        if (0..n_dials).any(|i| cfg.dial(i as u8).and_then(|d| d.volume_device()) == Some(dev)) {
+            devs.push(dev);
+        }
+    }
+    devs
+}
 
 struct Deck {
     dev: Arc<StreamDeck>,
@@ -39,13 +115,18 @@ struct Deck {
     dial_pressed: Vec<bool>,
     /// Until when each dial's panel stays highlighted after a tap on the strip.
     flash_until: Vec<Option<Instant>>,
+    /// The volume device each dial shows on its panel, if any.
+    dial_devices: Vec<Option<AudioDevice>>,
+    /// The last known level per volume device, for the strip panels.
+    device_levels: HashMap<AudioDevice, Level>,
 }
 
 /// The live state of dial `i` for the strip renderer.
 fn dial_status(d: &Deck, i: u8, now: Instant) -> DialStatus {
     let n = i as usize;
     let flashed = d.flash_until.get(n).and_then(|t| *t).is_some_and(|t| now.duration_since(t) < DIAL_FLASH);
-    DialStatus { pressed: d.dial_pressed.get(n).copied().unwrap_or(false) || flashed, level: None }
+    let level = d.dial_devices.get(n).and_then(|dev| dev.and_then(|dev| d.device_levels.get(&dev).cloned()));
+    DialStatus { pressed: d.dial_pressed.get(n).copied().unwrap_or(false) || flashed, level }
 }
 
 fn main() {
@@ -191,6 +272,7 @@ fn run() -> Result<()> {
     log::info!("theme: {}", renderer.theme.name);
 
     let mut hid = device::new_hidapi().context("initialising hidapi")?;
+    let audio = start_audio_worker();
     let mut deck: Option<Deck> = None;
     let mut last_scan: Option<Instant> = None;
     let mut reload_at: Option<Instant> = None;
@@ -245,6 +327,11 @@ fn run() -> Result<()> {
             if moved {
                 hub.publish(Event::PageChanged { page: nav.current().map(str::to_string) });
             }
+            if let Some(d) = &mut deck {
+                d.dial_devices = (0..d.info.dials).map(|i| cfg.dial(i).and_then(|dc| dc.volume_device())).collect();
+                d.device_levels.clear();
+                let _ = audio.cmd.send(AudioCmd::Watch(watched_devices(&cfg, d.info.dials as usize)));
+            }
             if let Some(d) = &deck
                 && let Err(e) = paint_all(d, &cfg, nav.current(), &mut renderer)
             {
@@ -280,8 +367,9 @@ fn run() -> Result<()> {
                     Some(d) => Event::Connected { deck: d.info.clone() },
                     None => Event::Disconnected,
                 });
-                if deck.is_some() {
+                if let Some(d) = &deck {
                     repaint_at = Some(Instant::now() + POST_CONNECT_REPAINT);
+                    let _ = audio.cmd.send(AudioCmd::Watch(watched_devices(&cfg, d.info.dials as usize)));
                 }
             } else {
                 std::thread::sleep(READ_TIMEOUT);
@@ -312,6 +400,16 @@ fn run() -> Result<()> {
             .collect();
         for i in expired {
             paint_dial(d, &cfg, &mut renderer, i);
+        }
+
+        // Volume levels from the audio worker: update the device and repaint its panels.
+        while let Ok((dev, level)) = audio.levels.try_recv() {
+            d.device_levels.insert(dev, level.clone());
+            for (i, ddev) in d.dial_devices.iter().enumerate().take(d.info.dials as usize) {
+                if *ddev == Some(dev) {
+                    paint_dial(d, &cfg, &mut renderer, i as u8);
+                }
+            }
         }
 
         match d.reader.read(Some(READ_TIMEOUT)) {
@@ -355,6 +453,9 @@ fn run() -> Result<()> {
                                         log::warn!("dial {i}: {e:#}");
                                         hub.publish(Event::DialActionFailed { index: i, message: format!("{e:#}") });
                                     }
+                                    if matches!(act, Action::Volume { .. }) {
+                                        let _ = audio.cmd.send(AudioCmd::Refresh);
+                                    }
                                 }
                             }
                         }
@@ -372,6 +473,9 @@ fn run() -> Result<()> {
                                 if let Err(e) = action::run(&dc.press) {
                                     log::warn!("dial {i}: {e:#}");
                                     hub.publish(Event::DialActionFailed { index: i, message: format!("{e:#}") });
+                                }
+                                if matches!(&dc.press, Action::Volume { .. }) {
+                                    let _ = audio.cmd.send(AudioCmd::Refresh);
                                 }
                             }
                         }
@@ -407,6 +511,9 @@ fn run() -> Result<()> {
                                             message: format!("{e:#}"),
                                         });
                                     }
+                                    if matches!(&dc.press, Action::Volume { .. }) {
+                                        let _ = audio.cmd.send(AudioCmd::Refresh);
+                                    }
                                 }
                             }
                         }
@@ -431,6 +538,7 @@ fn run() -> Result<()> {
                 log::warn!("lost {} ({e}); waiting for it to come back", d.info.model);
                 deck = None;
                 last_scan = None;
+                let _ = audio.cmd.send(AudioCmd::Watch(Vec::new()));
                 hub.publish(Event::Disconnected);
             }
         }
@@ -481,7 +589,16 @@ fn connect(hid: &mut HidApi, cfg: &Config, page: Option<&str>, renderer: &mut Re
     let reader = dev.get_reader();
     let info = DeckInfo::new(kind, &serial);
     let n_dials = info.dials as usize;
-    let deck = Deck { dev, reader, kind, info, dial_pressed: vec![false; n_dials], flash_until: vec![None; n_dials] };
+    let deck = Deck {
+        dev,
+        reader,
+        kind,
+        info,
+        dial_pressed: vec![false; n_dials],
+        flash_until: vec![None; n_dials],
+        dial_devices: (0..n_dials).map(|i| cfg.dial(i as u8).and_then(|d| d.volume_device())).collect(),
+        device_levels: HashMap::new(),
+    };
     log::info!(
         "connected {} (serial {}, firmware {})",
         deck.info.model,

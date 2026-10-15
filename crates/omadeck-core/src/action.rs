@@ -6,10 +6,12 @@ use std::path::Path;
 use std::process::{Command, Stdio};
 use std::sync::OnceLock;
 use std::thread;
+use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 
-use crate::config::Action;
+use crate::audio;
+use crate::config::{Action, AudioDevice};
 use crate::paths;
 
 pub fn run(action: &Action) -> Result<()> {
@@ -21,15 +23,125 @@ pub fn run(action: &Action) -> Result<()> {
         Action::Url { url } => open_url(url),
         Action::Hyprland { dispatch } => hypr_dispatch(dispatch),
         Action::Page { .. } | Action::Back => bail!("changing pages only works on the deck"),
+        Action::Volume { device, change, mute } => run_volume(*device, *change, *mute),
     }
 }
 
 /// Run `action` `steps` times, once per detent for dial turns. The daemon caps `steps`
 /// at 8 per event, so a hard spin can't fork dozens of processes at once.
 pub fn run_steps(action: &Action, steps: u8) -> Result<()> {
+    // A fast spin folds into one volume command instead of `steps` processes: Omarchy 4's
+    // script ignores a second mute within 250 ms, and one command is snappier.
+    if let Action::Volume { device, change, mute } = action {
+        if *mute {
+            return run_volume(*device, 0, true);
+        }
+        let total = (*change as i32 * steps as i32).clamp(-100, 100) as i8;
+        return run_volume(*device, total, false);
+    }
     for _ in 0..steps {
         run(action)?;
     }
+    Ok(())
+}
+
+/// Change the system volume. It goes through Omarchy's own commands when they're
+/// installed, so its on-screen pop-up shows just like the volume keys; otherwise it
+/// falls back to `wpctl`.
+fn run_volume(device: AudioDevice, change: i8, mute: bool) -> Result<()> {
+    let backend = audio::backend();
+    let monitor = (backend == audio::Backend::Omarchy3).then(audio::focused_monitor).flatten();
+    let cmds = volume_command(backend, device, change, mute, monitor.as_deref());
+    spawn_seq(cmds)?;
+    // Omarchy 4 has no command to change the mic's volume, so show its pop-up ourselves.
+    if backend == audio::Backend::Omarchy4 && device == AudioDevice::Input && !mute {
+        thread::spawn(|| {
+            std::thread::sleep(Duration::from_millis(80));
+            if let Some(lv) = audio::volume(AudioDevice::Input) {
+                let mut c = Command::new("omarchy-osd");
+                c.args(["-i", "microphone", "-p", &lv.percent.to_string()]);
+                let _ = spawn(c);
+            }
+        });
+    }
+    Ok(())
+}
+
+/// The command(s) that apply a volume change, run in order. Pure, so every backend's
+/// table row can be tested without spawning anything. `monitor` is the focused monitor,
+/// used only by Omarchy 3's `swayosd-client --monitor`.
+pub fn volume_command(
+    backend: audio::Backend,
+    device: AudioDevice,
+    change: i8,
+    mute: bool,
+    monitor: Option<&str>,
+) -> Vec<Vec<String>> {
+    match backend {
+        audio::Backend::Omarchy4 => omarchy4(device, change, mute),
+        audio::Backend::Omarchy3 => swayosd(monitor.unwrap_or("HDMI-A-1"), device, change, mute),
+        audio::Backend::Plain => wpctl(device, change, mute),
+    }
+}
+
+fn omarchy4(device: AudioDevice, change: i8, mute: bool) -> Vec<Vec<String>> {
+    if device.is_output() {
+        let arg = if mute { "mute-toggle".into() } else { signed(change) };
+        vec![vec!["omarchy-audio-output-volume".into(), arg]]
+    } else if mute {
+        vec![vec!["omarchy-audio-input-mute".into()]]
+    } else {
+        // No Omarchy command for mic volume; `wpctl` (the pop-up is added by run_volume).
+        vec![vec!["wpctl".into(), "set-volume".into(), "@DEFAULT_AUDIO_SOURCE@".into(), wpctl_rel(change)]]
+    }
+}
+
+fn swayosd(monitor: &str, device: AudioDevice, change: i8, mute: bool) -> Vec<Vec<String>> {
+    let which = if device.is_output() { "--output-volume" } else { "--input-volume" };
+    let arg = if mute { "mute-toggle".to_string() } else { signed(change) };
+    vec![vec!["swayosd-client".into(), "--monitor".into(), monitor.into(), which.into(), arg]]
+}
+
+fn wpctl(device: AudioDevice, change: i8, mute: bool) -> Vec<Vec<String>> {
+    let target = if device.is_output() { "@DEFAULT_AUDIO_SINK@" } else { "@DEFAULT_AUDIO_SOURCE@" };
+    if mute {
+        vec![vec!["wpctl".into(), "set-mute".into(), target.into(), "toggle".into()]]
+    } else {
+        vec![vec!["wpctl".into(), "set-volume".into(), "-l".into(), "1.0".into(), target.into(), wpctl_rel(change)]]
+    }
+}
+
+/// A signed percent step, `+5` / `-5`, as Omarchy's and swayosd's scripts take it.
+fn signed(n: i8) -> String {
+    if n >= 0 { format!("+{n}") } else { n.to_string() }
+}
+
+/// A relative percent step, `5%+` / `5%-`, as `wpctl set-volume` takes it.
+fn wpctl_rel(n: i8) -> String {
+    format!("{}%{}", n.abs(), if n >= 0 { '+' } else { '-' })
+}
+
+/// Run a sequence of commands in order on one helper thread, so e.g. a volume change is
+/// applied before a follow-up reads the new value.
+fn spawn_seq(cmds: Vec<Vec<String>>) -> Result<()> {
+    if cmds.is_empty() {
+        return Ok(());
+    }
+    let joined = cmds.iter().map(|a| format!("{a:?}")).collect::<Vec<_>>().join(" ; ");
+    log::info!("exec {joined}");
+    thread::spawn(move || {
+        for argv in cmds {
+            let desc = format!("{argv:?}");
+            let mut c = Command::new(&argv[0]);
+            c.args(&argv[1..]).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).process_group(0);
+            match c.spawn() {
+                Ok(mut child) => {
+                    let _ = child.wait();
+                }
+                Err(e) => log::warn!("failed to start {desc}: {e}"),
+            }
+        }
+    });
     Ok(())
 }
 
@@ -252,5 +364,77 @@ mod tests {
     fn urls() {
         assert_eq!(normalize_url("omarchy.org"), "https://omarchy.org");
         assert_eq!(normalize_url("http://x"), "http://x");
+    }
+
+    use audio::Backend;
+
+    fn one(cmds: Vec<Vec<String>>) -> Vec<String> {
+        assert_eq!(cmds.len(), 1);
+        cmds.into_iter().next().unwrap()
+    }
+
+    #[test]
+    fn volume_command_omarchy4() {
+        assert_eq!(
+            one(volume_command(Backend::Omarchy4, AudioDevice::Output, 5, false, None)),
+            vec!["omarchy-audio-output-volume", "+5"]
+        );
+        assert_eq!(
+            one(volume_command(Backend::Omarchy4, AudioDevice::Output, -5, false, None)),
+            vec!["omarchy-audio-output-volume", "-5"]
+        );
+        assert_eq!(
+            one(volume_command(Backend::Omarchy4, AudioDevice::Output, 0, true, None)),
+            vec!["omarchy-audio-output-volume", "mute-toggle"]
+        );
+        assert_eq!(
+            one(volume_command(Backend::Omarchy4, AudioDevice::Input, 0, true, None)),
+            vec!["omarchy-audio-input-mute"]
+        );
+        // Mic volume has no Omarchy command: wpctl (the pop-up is added by run_volume).
+        assert_eq!(
+            one(volume_command(Backend::Omarchy4, AudioDevice::Input, 5, false, None)),
+            vec!["wpctl", "set-volume", "@DEFAULT_AUDIO_SOURCE@", "5%+"]
+        );
+    }
+
+    #[test]
+    fn volume_command_plain() {
+        assert_eq!(
+            one(volume_command(Backend::Plain, AudioDevice::Output, 5, false, None)),
+            vec!["wpctl", "set-volume", "-l", "1.0", "@DEFAULT_AUDIO_SINK@", "5%+"]
+        );
+        assert_eq!(
+            one(volume_command(Backend::Plain, AudioDevice::Output, -5, false, None)),
+            vec!["wpctl", "set-volume", "-l", "1.0", "@DEFAULT_AUDIO_SINK@", "5%-"]
+        );
+        assert_eq!(
+            one(volume_command(Backend::Plain, AudioDevice::Output, 0, true, None)),
+            vec!["wpctl", "set-mute", "@DEFAULT_AUDIO_SINK@", "toggle"]
+        );
+        assert_eq!(
+            one(volume_command(Backend::Plain, AudioDevice::Input, 5, false, None)),
+            vec!["wpctl", "set-volume", "-l", "1.0", "@DEFAULT_AUDIO_SOURCE@", "5%+"]
+        );
+    }
+
+    #[test]
+    fn volume_command_omarchy3() {
+        assert_eq!(
+            one(volume_command(Backend::Omarchy3, AudioDevice::Output, 5, false, Some("DP-1"))),
+            vec!["swayosd-client", "--monitor", "DP-1", "--output-volume", "+5"]
+        );
+        assert_eq!(
+            one(volume_command(Backend::Omarchy3, AudioDevice::Input, 0, true, Some("DP-1"))),
+            vec!["swayosd-client", "--monitor", "DP-1", "--input-volume", "mute-toggle"]
+        );
+    }
+
+    #[test]
+    fn volume_step_signs() {
+        assert_eq!(signed(5), "+5");
+        assert_eq!(signed(-5), "-5");
+        assert_eq!(wpctl_rel(5), "5%+");
+        assert_eq!(wpctl_rel(-5), "5%-");
     }
 }
