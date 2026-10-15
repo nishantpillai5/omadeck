@@ -3,13 +3,17 @@
 Personal working notes; not meant for upstream. Keep this file out of every PR
 (see Setup).
 
-## Status (as of the touch-strip PR)
+## Status (as of the volume PR)
 
 **Do NOT open any PRs right now. This is private work.** The feature branches
-(`feat/plus-input`, `feat/dial-actions`, `feat/touch-strip`) are pushed only to my own
-fork and are *not* opened as pull requests against upstream. Everything runs from my
-`daily` branch. Opening PRs is a later decision I make explicitly; don't open or
-prepare them unless I say so.
+(`feat/plus-input`, `feat/dial-actions`, `feat/touch-strip`, `feat/dial-volume`) are
+pushed only to my own fork and are *not* opened as pull requests against upstream.
+Everything runs from my `daily` branch. Opening PRs is a later decision I make
+explicitly; don't open or prepare them unless I say so.
+
+PRs 1–4 are done and on `daily`: the Plus's dials and strip are read, dials run
+actions, the strip is drawn, and dial 1 is a volume dial (turn ±5, press mutes) with
+a live $B1 panel on the strip. Next: PR 5, pages.
 
 ## Goal
 
@@ -136,23 +140,27 @@ What they share (crate facts, PR order, decisions to explain) is in
 before volume, so volume can show its level on the strip.
 
 ### PR 1: `feat/plus-input`: read dials and the touch strip
+- Done: `ffc6c54`, on `daily`.
 - The daemon reads the Plus's dial and touch-strip events, logs them, and publishes them
   on the hub. Nothing else changes yet.
 - `DeckInfo` reports the dials and the strip, so the GUI can draw them later.
 - Confirm on hardware that `connect()` picks up the Plus and that the 8 keys work today.
 
 ### PR 2: `feat/dial-actions`: dials in the config, running existing actions
+- Done: `e56a25c`, on `daily`.
 - Dial settings in the config, in the same style as `[[key]]`.
 - Turning and pushing run existing `Action`s, so any command, script or Hyprland
   dispatcher works with no new action types.
 - Old configs must still load (add a test).
 
 ### PR 3: `feat/dial-volume`: volume (the roadmap's own example)
+- Done: `4c1ec00`, on `daily` (landed after the strip, per the swap).
 - System output and input volume, plus mute on push, done the way omadeck already
   talks to PipeWire and the system.
 - Choose between a new `Action` variant and a dial-specific control, and note why.
 
 ### PR 4: `feat/touch-strip`: draw the touch strip
+- Done: `1676c66`, on `daily`.
 - First check what `elgato-streamdeck` offers for writing the strip; it may need a crate bump.
 - Drawing lives in `omadeck-core::render`, follows the theme, and shows in `snapshot`
   and the GUI preview.
