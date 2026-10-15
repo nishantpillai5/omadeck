@@ -14,8 +14,8 @@ decision I make explicitly; don't open or prepare them unless I say so.
 PRs 1–5 are done and on `daily`: the Plus's dials and strip are read, dials run
 actions, the strip is drawn, dial 1 is a volume dial (turn ±5, press mutes) with a
 live $B1 panel on the strip, and the deck has pages (a `page` action, per-page keys,
-and a strip flick to page through). Next: only the "later, only if wanted" items —
-folders, brightness, scrubbing.
+and a strip flick to page through). PR 6 (brightness, in [pr6-brightness.md](pr6-brightness.md))
+is in progress. After it: only the "later, only if wanted" items — folders, scrubbing.
 
 ## Goal
 
@@ -137,16 +137,21 @@ Elgato SDK for anything user-facing (see "Reference" above).
 PRs 1–4 are planned in detail, one file per PR:
 [pr1-plus-input.md](pr1-plus-input.md), [pr2-dial-actions.md](pr2-dial-actions.md),
 [pr3-touch-strip.md](pr3-touch-strip.md), [pr4-dial-volume.md](pr4-dial-volume.md).
-PR 5 is in [pr5-pages.md](pr5-pages.md). What PRs 1–4 share (crate facts, PR order,
-decisions to explain) is in [dials-and-strip.md](dials-and-strip.md). That plan swaps
-PR 3 and PR 4: the strip comes before volume, so volume can show its level on the
-strip.
+PR 5 is in [pr5-pages.md](pr5-pages.md); PR 6 in [pr6-brightness.md](pr6-brightness.md).
+What PRs 1–4 share (crate facts, PR order, decisions to explain) is in
+[dials-and-strip.md](dials-and-strip.md). That plan swaps PR 3 and PR 4: the strip comes
+before volume, so volume can show its level on the strip.
 
 ### PR 5: `feat/pages`: pages
 - Done: `b809d0f`, on `daily`.
 - Per-page keys, a `page` action (next/previous/go-to), and a strip flick that pages
   through on the Plus. Dials and the strip are page-independent, as in the Elgato app.
 - Folders are deliberately a later PR (they need a page *stack*).
+
+### PR 6: `feat/brightness`: the deck's brightness
+- In progress: a `brightness` action (change ±, or set absolute) for keys and dials,
+  a $B1 panel on the strip for a brightness dial, and the value persisted to the
+  config so it survives a restart.
 
 ### PR 1: `feat/plus-input`: read dials and the touch strip
 - Done: `ffc6c54`, on `daily`.

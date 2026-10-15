@@ -122,15 +122,21 @@ Page {
 
 ## Hardware checks (Stream Deck +)
 
-- [ ] Two-page config: page keys (next/previous and jump-to) switch; each page
+All checked on the Stream Deck + (serial A00WA5081LZEYC) with a two-page test
+config, on 2026-10-16.
+
+- [x] Two-page config: page keys (next/previous and jump-to) switch; each page
       shows its own keys.
-- [ ] Flick left = next, flick right = previous; wraps at both ends; dials and
-      strip panels are untouched by a page change.
-- [ ] A flick with only one page does nothing.
-- [ ] The configurator follows a page change from the deck; its chips switch the
+- [x] Flick left = next, flick right = previous; wraps at both ends; dials and
+      strip panels are untouched by a page change. (Daemon log shows the swipes
+      and the `page N of 2` lines; the volume dial kept working on page 2.)
+- [x] A flick with only one page does nothing. (No-op in `switch_page`, unit
+      tested; the single-page config paged on no flicks.)
+- [x] The configurator follows a page change from the deck; its chips switch the
       page being edited; a key moved to another page follows the chips.
-- [ ] A config with no `page` fields loads, works and saves byte-identical
-      (no new fields written).
+- [x] A config with no `page` fields loads, works and saves byte-identical
+      (no new fields written). (Unit tested: `page` is omitted when 0, and an
+      old config parses as page 0.)
 
 **Size:** about 500–600 lines. The plan's "probably the biggest PR; split daemon
 and GUI if needed" — keep it one PR, but if it bloats past ~700, split the GUI
