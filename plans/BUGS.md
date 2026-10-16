@@ -3,9 +3,9 @@
 Personal working notes, next to [PLAN.md](PLAN.md). Bugs found in the code on `daily`,
 with where they are, what goes wrong, and which branch should fix them. Bugs 1–21 are
 closed (see the bug pass under Rebase outcomes), except that 18's fix didn't work (see
-29). The 2026-10-17 code review added 22–49, all open: 22–43 go to `fix/review`
-([review-fixes.md](review-fixes.md)), 44–49 to `feat/groundwork` (groundwork.md), because
-their proper fix is that branch's structure.
+29, now closed). The 2026-10-17 code review added 22–49: 22–43 are fixed on
+`fix/review` (review-fixes.md, 2026-10-17); 44–49 go to `feat/groundwork`
+(groundwork.md), because their proper fix is that branch's structure.
 
 Each entry: **status** (open / fixed in `<commit>`), **found** (date, how), the file and
 line on `daily`, what goes wrong, and the fix.
@@ -360,7 +360,7 @@ numbers). 22–43 are fixed on `fix/review` ([review-fixes.md](review-fixes.md))
 
 #### 22. CI never runs: `ci.yml` is invalid YAML
 
-- **Status:** open. **Found:** 2026-10-17, code review (Psych and `actionlint` both reject it).
+- **Status:** fixed in `45ba8b7`. **Found:** 2026-10-17, code review (Psych and `actionlint` both reject it).
 - **Where:** `.github/workflows/ci.yml`, step "Install dependencies". Since `2b389cc` (PR 3).
 - **What goes wrong:** the new `# font-dejavu: …` comment sits at 8 spaces and `run:` at 6,
   so the step list doesn't parse ("did not find expected '-' indicator", line 16). GitHub
@@ -371,7 +371,7 @@ numbers). 22–43 are fixed on `fix/review` ([review-fixes.md](review-fixes.md))
 
 #### 23. The strip golden test depends on the machine's font
 
-- **Status:** open. **Found:** 2026-10-17, code review (fails on macOS; reproduced).
+- **Status:** fixed in `45ba8b7`. **Found:** 2026-10-17, code review (fails on macOS; reproduced).
 - **Where:** `render::tests::no_images_pixels_unchanged`, `renderer_with_font`, fixtures
   `tests/fixtures/strip-{x1,b1}.png`.
 - **What goes wrong:** the renderer's font is whatever `fc-match monospace:weight=bold`
@@ -384,7 +384,7 @@ numbers). 22–43 are fixed on `fix/review` ([review-fixes.md](review-fixes.md))
 
 #### 24. Every page made in the GUI is a folder, so flicks and `page_step` skip them all
 
-- **Status:** open. **Found:** 2026-10-17, code review (core and GUI parts both).
+- **Status:** fixed in `6622480` (core) and `25fb9a1` (GUI). **Found:** 2026-10-17, code review (core and GUI parts both).
 - **Where:** `omadeck-gui/src/app.rs` `App::add_page` (`folder: true` always), used by
   `ask_new_page` (**+**), `editor.rs` `new_folder` and the dial's "New page".
 - **What goes wrong:** make Home + "Work" + "Media" with **+** and flick the strip: nothing
@@ -396,7 +396,7 @@ numbers). 22–43 are fixed on `fix/review` ([review-fixes.md](review-fixes.md))
 
 #### 25. Renaming or deleting a page misses dial actions that open it
 
-- **Status:** open. **Found:** 2026-10-17, review follow-up (checked in the code).
+- **Status:** fixed in `6622480` (core) and `25fb9a1` (GUI). **Found:** 2026-10-17, review follow-up (checked in the code).
 - **Where:** `config.rs` `Config::rename_page`, `remove_page` (through `all_keys_mut`) and
   `links_to`: keys only.
 - **What goes wrong:** a dial press "Open page Media" keeps pointing at "Media" after a
@@ -407,7 +407,7 @@ numbers). 22–43 are fixed on `fix/review` ([review-fixes.md](review-fixes.md))
 
 #### 26. A hand edit of `brightness` in config.toml no longer reaches the deck
 
-- **Status:** open. **Found:** 2026-10-17, code review. A regression against upstream.
+- **Status:** fixed in `23177ae`. **Found:** 2026-10-17, code review. A regression against upstream.
 - **Where:** `omadeckd/src/main.rs` `run()`, the reload block: `Deck.brightness` is set
   once in `connect()` and `paint_all` uses it; upstream's `paint_all` used
   `cfg.brightness` on every reload. `snapshot` draws brightness dials at `cfg.brightness`.
@@ -419,7 +419,7 @@ numbers). 22–43 are fixed on `fix/review` ([review-fixes.md](review-fixes.md))
 
 #### 27. A GUI brightness change with no deck plugged in is dropped
 
-- **Status:** open. **Found:** 2026-10-17, code review.
+- **Status:** fixed in `23177ae`. **Found:** 2026-10-17, code review.
 - **Where:** `run()`, `Command::SetBrightness`: `if let Some(d) = &mut deck`.
 - **What goes wrong:** move the slider while the deck is unplugged: the daemon throws it
   away and the next connect starts from the old state-file value.
@@ -427,7 +427,7 @@ numbers). 22–43 are fixed on `fix/review` ([review-fixes.md](review-fixes.md))
 
 #### 28. The last brightness change is lost on shutdown
 
-- **Status:** open. **Found:** 2026-10-17, code review.
+- **Status:** fixed in `23177ae`. **Found:** 2026-10-17, code review.
 - **Where:** `run()` spawns `brightness_saver` without keeping its `JoinHandle`.
 - **What goes wrong:** turn the brightness dial and stop the service within 200 ms
   (`systemctl --user restart omadeckd`, logout): the process exits before the debounced
@@ -437,7 +437,7 @@ numbers). 22–43 are fixed on `fix/review` ([review-fixes.md](review-fixes.md))
 
 #### 29. Panels are still painted per HID report (bug 18 isn't fixed)
 
-- **Status:** open. **Found:** 2026-10-17, code review (checked against elgato-streamdeck
+- **Status:** fixed in `6fb82c0`. **Found:** 2026-10-17, code review (checked against elgato-streamdeck
   0.13.1's `DeviceStateReader::read`).
 - **Where:** `run()`, the `dirty_panels` flush inside `for u in updates`; the
   `paint_dial` calls for flash expiry, audio levels, `EncoderDown`/`EncoderUp` and taps.
@@ -455,7 +455,7 @@ numbers). 22–43 are fixed on `fix/review` ([review-fixes.md](review-fixes.md))
 
 #### 30. A volume turn just after connect shows a guess from 0
 
-- **Status:** open. **Found:** 2026-10-17, code review.
+- **Status:** fixed in `6fb82c0`. **Found:** 2026-10-17, code review.
 - **Where:** `main.rs` `after_volume`: an unknown device's level defaults to `0` / `–`.
 - **What goes wrong:** turn up right after the deck connects: the bar jumps to 5%, then
   snaps to the real level when the refresh lands.
@@ -463,7 +463,7 @@ numbers). 22–43 are fixed on `fix/review` ([review-fixes.md](review-fixes.md))
 
 #### 31. A Hyprland dial turn runs up to eight `hyprctl` calls on the deck loop
 
-- **Status:** open. **Found:** 2026-10-17, code review.
+- **Status:** fixed in `6622480`. **Found:** 2026-10-17, code review.
 - **Where:** `action.rs` `run_steps` → `run` → `hypr_dispatch` → `hyprctl_dispatch`
   (waits for the answer; two runs per step on Lua-config Hyprland).
 - **What goes wrong:** a dial on `workspace e+1`, spun hard, blocks the loop for up to 8
@@ -473,7 +473,7 @@ numbers). 22–43 are fixed on `fix/review` ([review-fixes.md](review-fixes.md))
 
 #### 32. 21c's fix covers Volume only: Turn left Brightness or Page step goes the wrong way
 
-- **Status:** open. **Found:** 2026-10-17, code review.
+- **Status:** fixed in `6622480` (core) and `c71b21c` (GUI). **Found:** 2026-10-17, code review.
 - **Where:** `editor.rs` `dial_action_group` (`default_volume` only rewrites `Volume`);
   the Brightness "Mode" combo hard-codes `change: 5`.
 - **What goes wrong:** Brightness on Turn left brightens; Next/previous page on Turn left
@@ -484,7 +484,7 @@ numbers). 22–43 are fixed on `fix/review` ([review-fixes.md](review-fixes.md))
 
 #### 33. The "Brightness dial" preset leaves a Volume press behind
 
-- **Status:** open. **Found:** 2026-10-17, code review.
+- **Status:** fixed in `c71b21c`. **Found:** 2026-10-17, code review.
 - **Where:** `editor.rs` `build_dial`, the Brightness preset (sets both turns, not `press`).
 - **What goes wrong:** click **Volume dial**, then **Brightness dial**: turning changes
   brightness, but the panel shows the speaker and the output volume (`level_source`
@@ -493,7 +493,7 @@ numbers). 22–43 are fixed on `fix/review` ([review-fixes.md](review-fixes.md))
 
 #### 34. A dial's editor closes whenever the deck changes page
 
-- **Status:** open. **Found:** 2026-10-17, code review.
+- **Status:** fixed in `25fb9a1`. **Found:** 2026-10-17, code review.
 - **Where:** `app.rs` `App::show_page`: `select(None)` on any page change.
 - **What goes wrong:** a dial press "Next/previous page": `DialDown` selects the dial, the
   `PageChanged` right after blanks the editor. "Try it now" on a dial's Open page does too.
@@ -504,7 +504,7 @@ numbers). 22–43 are fixed on `fix/review` ([review-fixes.md](review-fixes.md))
 
 #### 35. A dial's "Open page" list hides the page the window shows
 
-- **Status:** open. **Found:** 2026-10-17, code review.
+- **Status:** fixed in `25fb9a1`. **Found:** 2026-10-17, code review.
 - **Where:** `editor.rs` `action_rows`, `Action::Page`: filters out `app.current_page()`.
 - **What goes wrong:** viewing "Media", you can't set a dial press to open "Media"; set by
   hand, it reads "Media (missing)". Right for a key (it can't open its own page), wrong for
@@ -513,20 +513,20 @@ numbers). 22–43 are fixed on `fix/review` ([review-fixes.md](review-fixes.md))
 
 #### 36. The strip background row is missing when the deck is plugged in after the GUI starts
 
-- **Status:** open. **Found:** 2026-10-17, code review.
+- **Status:** fixed in `c71b21c`. **Found:** 2026-10-17, code review.
 - **Where:** `app.rs` `settings_popover` (`if self.deck.borrow().strip.is_some()`), built
   in `build` and `reload_from_disk` only, not on a `Connected` relayout.
 - **Fix:** rebuild the popover in `rebuild_grid`.
 
 #### 37. Each right-click on the strip leaks a popover
 
-- **Status:** open. **Found:** 2026-10-17, code review.
+- **Status:** fixed in `c71b21c`. **Found:** 2026-10-17, code review.
 - **Where:** `app.rs` `strip_menu`: `popover.set_parent(&self.strip)`, never unparented.
 - **Fix:** unparent it when it closes.
 
 #### 38. A dial picker result lands in memory while config.toml is broken
 
-- **Status:** open. **Found:** 2026-10-17, code review.
+- **Status:** fixed in `c71b21c`. **Found:** 2026-10-17, code review.
 - **Where:** `app.rs` `App::edit_dial` (no `locked` check, unlike `edit_ref`).
 - **What goes wrong:** the file breaks while a dial's file dialog is open: the pick shows
   in the preview but is never saved, and vanishes on the next reload.
@@ -534,7 +534,7 @@ numbers). 22–43 are fixed on `fix/review` ([review-fixes.md](review-fixes.md))
 
 #### 39. A background image that fails to decode is decoded again on every paint
 
-- **Status:** open. **Found:** 2026-10-17, code review (a probe counted the loads).
+- **Status:** fixed in `31aa194`. **Found:** 2026-10-17, code review (a probe counted the loads).
 - **Where:** `render.rs` `Renderer::backdrop_image`: a failure is stored as `None`, but
   only `Some(Some(..))` counts as a hit. The doc comment says it "warns once".
 - **What goes wrong:** a truncated JPEG, a HEIC or a missing file as `background_image`:
@@ -545,7 +545,7 @@ numbers). 22–43 are fixed on `fix/review` ([review-fixes.md](review-fixes.md))
 
 #### 40. SVG backgrounds come out blurry, and a huge SVG allocates a huge pixmap
 
-- **Status:** open. **Found:** 2026-10-17, code review (probe: 134 blended columns).
+- **Status:** fixed in `31aa194`. **Found:** 2026-10-17, code review (probe: 134 blended columns).
 - **Where:** `render.rs` `load_cover` → `load_svg_raw` (`rasterize_svg(tree, 1.0)`) →
   `fit_cover`.
 - **What goes wrong:** a 24 × 24 icon-style SVG is rasterised at 24 × 24 and upscaled
@@ -555,7 +555,7 @@ numbers). 22–43 are fixed on `fix/review` ([review-fixes.md](review-fixes.md))
 
 #### 41. `fit_cover` resizes the whole image before cropping
 
-- **Status:** open. **Found:** 2026-10-17, code review (measured).
+- **Status:** fixed in `31aa194`. **Found:** 2026-10-17, code review (measured).
 - **Where:** `render.rs` `fit_cover`.
 - **What goes wrong:** a 4K wallpaper costs ~38 ms in the resize (on the deck loop, first
   paint); a 16 × 1000 image to 800 × 100 builds an 800 × 50000 intermediate (160 MB), and a
@@ -574,7 +574,7 @@ numbers). 22–43 are fixed on `fix/review` ([review-fixes.md](review-fixes.md))
 
 #### 43. Docs that disagree with the code
 
-- **Status:** open. **Found:** 2026-10-17, code review.
+- **Status:** fixed in `485a6ca` (code points confirmed on the machine). **Found:** 2026-10-17, code review.
 - **Where:** README hardware table ("swipe is reported but not used yet"; a flick has
   changed page since `4c7bf70`); README and example: `folder` undocumented, `brightness`
   described as the setting although the state file wins; `config.rs` docs on
@@ -587,7 +587,7 @@ numbers). 22–43 are fixed on `fix/review` ([review-fixes.md](review-fixes.md))
 
 #### 44. The GUI's brightness slider and preview show the config's value, not the deck's
 
-- **Status:** open. **Found:** 2026-10-17, code review.
+- **Status:** fixed in `485a6ca`. **Found:** 2026-10-17, code review.
 - **Where:** `app.rs` `refresh_strip` (`LevelSource::Brightness => cfg.brightness`),
   `settings_popover` (the slider), the slider handler (writes `config.brightness`).
 - **What goes wrong:** turn a brightness dial from 50 to 80: the slider and the panel
