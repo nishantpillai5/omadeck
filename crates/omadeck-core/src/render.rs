@@ -87,7 +87,7 @@ const B1_VALUE_PX: f32 = 24.0;
 const OUTPUT_GLYPH: &str = "f057e"; // 󰕾 speaker
 const INPUT_GLYPH: &str = "f036c"; // 󰎬 microphone
 const MUTE_GLYPH: &str = "f075f"; // 󰝟 muted
-const BRIGHTNESS_GLYPH: &str = "f00de"; // 󀟎 brightness
+const BRIGHTNESS_GLYPH: &str = "f00de"; // 󰃞 brightness
 
 /// The glyph a volume dial's `$B1` panel shows when it has no icon: the mute glyph when
 /// muted, else the dial's own glyph, else a speaker (output) or a microphone (input).
@@ -127,7 +127,7 @@ pub struct Renderer {
     fallbacks: HashMap<char, Option<Arc<FontVec>>>,
     pub theme: Theme,
     icons: HashMap<(PathBuf, u32), Option<RgbaImage>>,
-    /// Fitted background images for the strip, at native size, with the file's mtime.
+    /// Fitted background images (strip and dial), each with the file's stamp at load.
     backdrops: HashMap<(PathBuf, u32, u32), Backdropped>,
     #[cfg(test)]
     pub decode_count: std::cell::Cell<u32>,
@@ -136,9 +136,18 @@ pub struct Renderer {
     pub load_attempts: std::cell::Cell<u32>,
 }
 
-/// A cached background image: the file's mtime when it was loaded, and the fitted image
-/// (`None` when the load failed).
-type Backdropped = (Option<std::time::SystemTime>, Option<RgbaImage>);
+/// A file's identity for the background cache: its mtime and length, `None` when it
+/// can't be stat'ed. Taken when an image is loaded and compared only on `clear_cache`.
+type Stamp = Option<(std::time::SystemTime, u64)>;
+
+/// A cached background image: the file's stamp when it was loaded, and the fitted image
+/// (`None` when the load failed), shared with every paint that uses it.
+type Backdropped = (Stamp, Option<Arc<RgbaImage>>);
+
+fn stamp(path: &Path) -> Stamp {
+    let m = fs::metadata(path).ok()?;
+    Some((m.modified().ok()?, m.len()))
+}
 
 impl Renderer {
     pub fn new(style: &Style) -> Self {
@@ -208,27 +217,25 @@ impl Renderer {
 
     /// Drop cached icons (call after the config changes; files may have been replaced).
     /// Backdrop images are expensive to decode, so entries whose file is unchanged
-    /// (same mtime) are kept; the rest are dropped and re-decoded on next use.
+    /// (same mtime and length) are kept; the rest are dropped and re-decoded on next use.
     pub fn clear_cache(&mut self) {
         self.icons.clear();
-        self.backdrops
-            .retain(|(path, _, _), (mtime, _)| fs::metadata(path).ok().and_then(|m| m.modified().ok()) == *mtime);
+        // The only place backdrop files are stat'ed: a paint never touches the disk.
+        self.backdrops.retain(|(path, _, _), (st, _)| stamp(path) == *st);
     }
 
-    /// A fitted background image (strip or dial), decoded once per file. A missing or
-    /// unreadable file is cached as `None` with its mtime, so it warns once and the layer
-    /// is skipped until the file changes.
-    fn backdrop_image(&mut self, path: &Path, w: u32, h: u32) -> Option<RgbaImage> {
+    /// A fitted background image (strip or dial), decoded once per file and shared. A
+    /// hit costs no file access; `clear_cache` (on reload) drops entries whose file
+    /// changed. A missing or unreadable file is cached as `None` too, so it warns once.
+    fn backdrop_image(&mut self, path: &Path, w: u32, h: u32) -> Option<Arc<RgbaImage>> {
         let k = (path.to_path_buf(), w, h);
-        let mtime = fs::metadata(path).ok().and_then(|m| m.modified().ok());
-        if let Some((mt, img)) = self.backdrops.get(&k)
-            && *mt == mtime
-        {
+        if let Some((_, img)) = self.backdrops.get(&k) {
             return img.clone();
         }
+        let st = stamp(path);
         #[cfg(test)]
         self.load_attempts.set(self.load_attempts.get() + 1);
-        let loaded = mtime.is_some().then(|| load_cover(path, w, h)).flatten();
+        let loaded = st.is_some().then(|| load_cover(path, w, h)).flatten().map(Arc::new);
         if loaded.is_none() {
             log::warn!("could not load background image {}", path.display());
         }
@@ -236,7 +243,7 @@ impl Renderer {
         if loaded.is_some() {
             self.decode_count.set(self.decode_count.get() + 1);
         }
-        self.backdrops.insert(k, (mtime, loaded.clone()));
+        self.backdrops.insert(k, (st, loaded.clone()));
         loaded
     }
 
@@ -348,7 +355,7 @@ impl Renderer {
             && let Some(full) = self.backdrop_image(&paths::resolve(src), PANEL_W * panels, PANEL_H)
             && (i as u32) < panels
         {
-            let slice = imageops::crop_imm(&full, i as u32 * PANEL_W, 0, PANEL_W, PANEL_H).to_image();
+            let slice = imageops::crop_imm(&*full, i as u32 * PANEL_W, 0, PANEL_W, PANEL_H).to_image();
             imageops::overlay(&mut img, &slice, 0, 0);
             has_image = true;
         }
@@ -361,7 +368,7 @@ impl Renderer {
             if let Some(src) = d.background_image.as_deref()
                 && let Some(image) = self.backdrop_image(&paths::resolve(src), PANEL_W, PANEL_H)
             {
-                imageops::overlay(&mut img, &image, 0, 0);
+                imageops::overlay(&mut img, &*image, 0, 0);
                 has_image = true;
             }
         }
@@ -391,8 +398,10 @@ impl Renderer {
 
         let want_label = face.show_label && !face.label.is_empty();
         // A pressed dial (or a tap, for a moment) turns the title into the accent colour,
-        // as the only feedback: the layout stays the same as the Elgato app's.
-        let fg = if st.pressed { self.theme.accent } else { self.label_color(Some(&face), style, tone) };
+        // as the only feedback: the layout stays the same as the Elgato app's. The value
+        // and the bar keep their colours.
+        let fg = self.label_color(Some(&face), style, tone);
+        let title = if st.pressed { self.theme.accent } else { fg };
         let glyph_color =
             face.label_color.and_then(Rgb::parse).unwrap_or(if style.follow_theme { self.theme.accent } else { fg });
 
@@ -405,7 +414,8 @@ impl Renderer {
                 }
                 LevelSource::Brightness => self.brightness_icon(&face, glyph_color),
             };
-            self.draw_b1(&mut img, &face, tone, fg, want_label, icon, st.panel.level);
+            let bar = B1Colors { title, value: fg, fill: fg, track: tone.mix(fg, 0.22) };
+            self.draw_b1(&mut img, &face, bar, want_label, icon, st.panel.level.as_ref());
             return img;
         }
 
@@ -421,7 +431,7 @@ impl Renderer {
             imageops::overlay(&mut img, &icon, x as i64, y as i64);
         }
         if want_label {
-            self.draw_text_in(&mut img, X1_TITLE, STRIP_TITLE_PX, Align::Left, face.label, fg, true);
+            self.draw_text_in(&mut img, X1_TITLE, STRIP_TITLE_PX, Align::Left, face.label, title, true);
         }
         img
     }
@@ -446,19 +456,17 @@ impl Renderer {
     }
 
     /// Draw the `$B1` "Indicator" layout: title (right), icon (left), value and groove bar.
-    #[allow(clippy::too_many_arguments)]
     fn draw_b1(
         &self,
         img: &mut RgbaImage,
         face: &Face,
-        bg: Rgb,
-        fg: Rgb,
+        colors: B1Colors,
         want_label: bool,
         icon: Option<RgbaImage>,
-        level: Option<Level>,
+        level: Option<&Level>,
     ) {
         if want_label {
-            self.draw_text_in(img, X1_TITLE, STRIP_TITLE_PX, Align::Left, face.label, fg, true);
+            self.draw_text_in(img, X1_TITLE, STRIP_TITLE_PX, Align::Left, face.label, colors.title, true);
         }
         if let Some(icon) = icon {
             let (x0, y0, w, h) = B1_ICON;
@@ -468,18 +476,12 @@ impl Renderer {
         }
         // Value text, right-aligned; a dash until the first level is known, so the panel
         // doesn't jump between layouts. Mute reads "Muted" and leaves the bar empty.
-        let (text, fill) = match &level {
+        let (text, value) = match level {
             Some(l) => (l.text.as_str(), if l.muted { 0.0 } else { l.value }),
             None => ("–", 0.0),
         };
-        self.draw_text_in(img, B1_VALUE, B1_VALUE_PX, Align::Right, text, fg, true);
-        let (bx, by, bw, bh) = B1_BAR;
-        let track = bg.mix(fg, 0.22);
-        fill_pill(img, bx as i64, by as i64, bw as i64, bh as i64, track);
-        if fill > 0.0 {
-            let fw = ((bw as f32 * fill).round() as i64).max(bh as i64);
-            fill_pill(img, bx as i64, by as i64, fw, bh as i64, fg);
-        }
+        self.draw_text_in(img, B1_VALUE, B1_VALUE_PX, Align::Right, text, colors.value, true);
+        draw_bar(img, B1_BAR, value, colors.fill, colors.track);
     }
 
     /// Pressed state: face shrinks inside an accent ring for tactile feedback.
@@ -723,6 +725,27 @@ fn solid(size: u32, c: Rgb) -> RgbaImage {
 
 fn solid_rect(w: u32, h: u32, c: Rgb) -> RgbaImage {
     RgbaImage::from_pixel(w, h, Rgba([c.0, c.1, c.2, 255]))
+}
+
+/// The colours of a `$B1` panel's parts, chosen by the caller.
+#[derive(Debug, Clone, Copy)]
+struct B1Colors {
+    title: Rgb,
+    value: Rgb,
+    fill: Rgb,
+    track: Rgb,
+}
+
+/// A groove bar in `rect` (x, y, w, h): the track, then the fill up to `value`, clamped
+/// to 0–1 here (a NaN draws no fill). A fill never shrinks below a round end cap.
+fn draw_bar(img: &mut RgbaImage, rect: (u32, u32, u32, u32), value: f32, fill: Rgb, track: Rgb) {
+    let (bx, by, bw, bh) = rect;
+    fill_pill(img, bx as i64, by as i64, bw as i64, bh as i64, track);
+    let value = if value.is_nan() { 0.0 } else { value.clamp(0.0, 1.0) };
+    if value > 0.0 {
+        let fw = ((bw as f32 * value).round() as i64).max(bh as i64);
+        fill_pill(img, bx as i64, by as i64, fw, bh as i64, fill);
+    }
 }
 
 /// Fill a horizontal pill (a rect with fully rounded ends) with `color`. Used for the
@@ -1040,6 +1063,24 @@ mod tests {
     }
 
     #[test]
+    fn pressed_b1_recolours_only_the_title() {
+        let mut r = renderer_with_font();
+        let mut cfg = Config { style: test_style(), ..Default::default() };
+        cfg.dials.push(DialConfig { glyph: Some("A".into()), ..volume_dial() });
+        let up = r.render_strip_panel(&cfg, 0, 4, level(0.5, false));
+        let down = r.render_strip_panel(&cfg, 0, 4, DialStatus { pressed: true, ..level(0.5, false) });
+        let mut title_changed = false;
+        for (x, y, p) in down.enumerate_pixels() {
+            if in_rect(x, y, X1_TITLE) {
+                title_changed |= p != up.get_pixel(x, y);
+            } else {
+                assert_eq!(p, up.get_pixel(x, y), "({x}, {y}) is outside the title");
+            }
+        }
+        assert!(title_changed, "the title turns accent");
+    }
+
+    #[test]
     fn strip_panel_isolation() {
         let mut r = Renderer::new(&test_style());
         let mut cfg = Config { style: test_style(), ..Default::default() };
@@ -1290,6 +1331,39 @@ mod tests {
         let img = r.backdrop_image(&path, 4, 2).unwrap();
         assert_eq!(r.decode_count.get(), decodes + 1, "a touched file is re-decoded");
         assert_eq!(*img.get_pixel(0, 0), Rgba([200, 1, 1, 255]));
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn draw_bar_clamps_its_value() {
+        let (fill, track) = (Rgb(255, 0, 0), Rgb(0, 0, 255));
+        let bar = |v: f32| {
+            let mut img = RgbaImage::new(200, 100);
+            super::draw_bar(&mut img, B1_BAR, v, fill, track);
+            img
+        };
+        assert_eq!(bar(1.7), bar(1.0), "above 1 is full");
+        assert_eq!(bar(-0.5), bar(0.0), "below 0 is empty");
+        assert_eq!(bar(f32::NAN), bar(0.0), "NaN is empty");
+        // Half full: red at a quarter of the bar, blue at three quarters.
+        let (bx, by, bw, bh) = B1_BAR;
+        let half = bar(0.5);
+        assert_eq!(half.get_pixel(bx + bw / 4, by + bh / 2).0[..3], [255, 0, 0]);
+        assert_eq!(half.get_pixel(bx + bw * 3 / 4, by + bh / 2).0[..3], [0, 0, 255]);
+    }
+
+    #[test]
+    fn backdrop_is_shared_and_only_rechecked_on_clear_cache() {
+        let mut r = Renderer::with_font_bytes(&test_style(), include_bytes!("../tests/fixtures/test-font.ttf"));
+        let path = tmp_image("stamp", &solid_img(4, 2, Rgba([9, 9, 9, 255])));
+        let first = r.backdrop_image(&path, 4, 2).unwrap();
+        // A bigger file under the same name: a paint doesn't look, so the cached one stays.
+        image::DynamicImage::ImageRgba8(RgbaImage::from_pixel(8, 4, Rgba([200, 1, 1, 255]))).save(&path).unwrap();
+        let again = r.backdrop_image(&path, 4, 2).unwrap();
+        assert!(std::sync::Arc::ptr_eq(&first, &again), "a hit shares the decoded image");
+        // A reload sees the new length and loads it.
+        r.clear_cache();
+        assert_eq!(*r.backdrop_image(&path, 4, 2).unwrap().get_pixel(0, 0), Rgba([200, 1, 1, 255]));
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 
