@@ -1012,6 +1012,8 @@ in Press gives mute, and the Brightness preset leaves no Volume press behind (th
 Volume preset was observed rewiring a dial live). The Mic dial's config glyph was
 updated from f057f to f036c (the default fix only covers dials without a glyph).
 
+The dial editor stays open when the deck changes page under it (34).
+
 Not exercised by hand (unit-test coverage only): 35 (a dial's Open-page list), 36
 (settings popover when the deck plugs in late), 38 (late picker result with a broken
 config).
