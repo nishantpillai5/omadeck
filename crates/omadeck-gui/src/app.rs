@@ -10,8 +10,8 @@ use gtk::{gdk, gio, glib};
 use omadeck_core::ipc::{self, Command as DaemonCommand, Event};
 use omadeck_core::paths::FileStamp;
 use omadeck_core::{
-    Action, AudioDevice, Config, DeckInfo, DialConfig, DialStatus, HOME, KeyConfig, Keys, Level, LevelSource, Page,
-    Renderer, device, paths, tap_to_dial,
+    Action, AudioDevice, Config, DeckInfo, DialConfig, DialStatus, HOME, KeyConfig, Keys, Level, LevelSource, Renderer,
+    device, paths, tap_to_dial,
 };
 
 use crate::{editor, media};
@@ -31,6 +31,13 @@ fn back_key() -> KeyConfig {
 pub struct KeyRef {
     page: Option<String>,
     index: u8,
+}
+
+impl KeyRef {
+    /// The page the key is on (`None` is Home).
+    pub fn page(&self) -> Option<&str> {
+        self.page.as_deref()
+    }
 }
 
 /// What an editor row is editing: a key on a page, a dial, or the touch strip. Work
@@ -72,6 +79,8 @@ pub struct App {
     page_list: gtk::StringList,
     page_dropdown: gtk::DropDown,
     page_actions: gtk::Box,
+    /// The page actions' "Folder" toggle: on, flicks and Next/previous page skip the page.
+    folder_toggle: gtk::ToggleButton,
     /// Set while the page dropdown is updated from code, so it doesn't count as a choice.
     syncing_pages: Cell<bool>,
     /// The page being edited: `None` is home.
@@ -164,7 +173,12 @@ impl App {
             gtk::Button::builder().icon_name("document-edit-symbolic").tooltip_text("Rename this page").build();
         let delete_page =
             gtk::Button::builder().icon_name("user-trash-symbolic").tooltip_text("Delete this page").build();
+        let folder_toggle = gtk::ToggleButton::builder()
+            .icon_name("folder-symbolic")
+            .tooltip_text("Folder: flicks and Next/previous page skip it")
+            .build();
         let page_actions = gtk::Box::builder().css_classes(["linked"]).visible(false).build();
+        page_actions.append(&folder_toggle);
         page_actions.append(&rename_page);
         page_actions.append(&delete_page);
         let page_bar = gtk::Box::builder().spacing(6).halign(gtk::Align::Center).build();
@@ -251,6 +265,7 @@ impl App {
             page_list,
             page_dropdown,
             page_actions,
+            folder_toggle,
             syncing_pages: Cell::new(false),
             page: RefCell::default(),
             daemon: RefCell::default(),
@@ -284,6 +299,16 @@ impl App {
                 n => app.config.borrow().pages.get(n as usize - 1).map(|p| p.name.clone()),
             };
             app.show_page(page, true);
+        });
+        let weak = Rc::downgrade(&app);
+        app.folder_toggle.connect_toggled(move |b| {
+            let Some(app) = weak.upgrade() else { return };
+            if app.syncing_pages.get() {
+                return;
+            }
+            let Some(page) = app.current_page() else { return };
+            app.config.borrow_mut().set_folder(&page, b.is_active());
+            app.schedule_save();
         });
         let weak = Rc::downgrade(&app);
         new_page.connect_clicked(move |_| {
@@ -911,7 +936,10 @@ impl App {
         *self.page.borrow_mut() = page.clone();
         if changed {
             self.sync_page_list();
-            self.select(None);
+            // Keys are per page, so a key's editor closes; dials aren't, so theirs stays.
+            if matches!(self.selected.get(), Some(Selection::Key(_))) {
+                self.select(None);
+            }
             self.refresh_all();
         }
         if tell_daemon {
@@ -931,15 +959,15 @@ impl App {
         let pos = page.as_deref().and_then(|p| names.iter().position(|n| n == p)).map(|n| n + 1).unwrap_or(0);
         self.page_dropdown.set_selected(pos as u32);
         self.page_actions.set_visible(page.is_some());
+        self.folder_toggle.set_active(page.as_deref().is_some_and(|p| cfg.is_folder(p)));
         self.syncing_pages.set(false);
     }
 
-    /// Add a page that starts with a Back key, so it works as a folder. Returns its name.
-    pub fn add_page(self: &Rc<Self>, name: &str) -> String {
-        let mut cfg = self.config.borrow_mut();
-        let name = cfg.unique_page_name(name);
-        cfg.pages.push(Page { name: name.clone(), keys: Keys(vec![back_key()]), folder: true });
-        drop(cfg);
+    /// Add a page that starts with a Back key. Returns its name. A `folder` is skipped by
+    /// flicks and Next/previous page: pages made for an Open-page action are folders,
+    /// pages made with **+** are not.
+    pub fn add_page(self: &Rc<Self>, name: &str, folder: bool) -> String {
+        let name = self.config.borrow_mut().add_page(name, folder, back_key());
         self.sync_page_list();
         self.schedule_save();
         name
@@ -990,7 +1018,7 @@ impl App {
     fn ask_new_page(self: &Rc<Self>) {
         let suggestion = self.config.borrow().unique_page_name("Page");
         self.page_name_dialog("New page", "Create", &suggestion, None, |app, name| {
-            let name = app.add_page(&name);
+            let name = app.add_page(&name, false);
             app.show_page(Some(name), true);
             app.toast("New page — give a key the “Open page” action to reach it from your deck");
         });
@@ -1017,8 +1045,12 @@ impl App {
         let links = self.config.borrow().links_to(&name);
         let body = match links {
             0 => "Its keys will be deleted too.".to_string(),
-            1 => "Its keys will be deleted too, and the key that opens it will stop doing anything.".to_string(),
-            n => format!("Its keys will be deleted too, and the {n} keys that open it will stop doing anything."),
+            1 => {
+                "Its keys will be deleted too, and the key or dial that opens it will stop doing anything.".to_string()
+            }
+            n => format!(
+                "Its keys will be deleted too, and the {n} keys or dials that open it will stop doing anything."
+            ),
         };
         let dialog = adw::AlertDialog::new(Some(&format!("Delete “{name}”?")), Some(&body));
         dialog.add_responses(&[("cancel", "Cancel"), ("delete", "Delete")]);

@@ -371,7 +371,7 @@ fn dial_action_group(
         },
         move |a| {
             let label = a.config.borrow().dial(i).map(|d| d.label.clone()).unwrap_or_default();
-            a.add_page(if label.trim().is_empty() { "Page" } else { &label })
+            a.add_page(if label.trim().is_empty() { "Page" } else { &label }, true)
         },
         None,
     );
@@ -645,9 +645,13 @@ fn action_rows(
         }
 
         Action::Page { page } => {
-            let current = app.current_page();
+            // A key can't open the page it's on; a dial isn't on a page, so it can open any.
+            let own = match target(app) {
+                Target::Key(k) => k.page().map(str::to_string),
+                _ => None,
+            };
             let names: Vec<String> =
-                app.config.borrow().page_names().into_iter().filter(|n| Some(n) != current.as_ref()).collect();
+                app.config.borrow().page_names().into_iter().filter(|n| Some(n) != own.as_ref()).collect();
             // A combo row always shows some item, so an unset or missing target gets a placeholder.
             let mut choices: Vec<Option<String>> = names.iter().cloned().map(Some).collect();
             if !names.contains(page) {
@@ -855,7 +859,7 @@ fn action_rows(
 /// Create a page for key `i` to open, and make the key look like a folder if it's plain.
 fn new_folder(app: &Rc<App>, i: u8) -> String {
     let label = app.key(i).map(|k| k.label).unwrap_or_default();
-    let name = app.add_page(if label.trim().is_empty() { "Page" } else { &label });
+    let name = app.add_page(if label.trim().is_empty() { "Page" } else { &label }, true);
     let n = name.clone();
     app.edit(i, |k| {
         if k.icon.is_none() && k.glyph.is_none() {
