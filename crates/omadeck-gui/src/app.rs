@@ -33,13 +33,15 @@ pub struct KeyRef {
     index: u8,
 }
 
-/// What an editor row is editing: a key on a page, or a dial. Work that finishes later
-/// (a picker, an icon fetch) holds one of these, so the result lands where it started
-/// even if the window has moved on since. Dials have no page, so they're always safe.
+/// What an editor row is editing: a key on a page, a dial, or the touch strip. Work
+/// that finishes later (a picker, an icon fetch) holds one of these, so the result lands
+/// where it started even if the window has moved on since. Dials and the strip have no
+/// page, so they're always safe.
 #[derive(Clone)]
 pub enum Target {
     Key(KeyRef),
     Dial(u8),
+    Strip,
 }
 
 enum Msg {
@@ -309,6 +311,16 @@ impl App {
             }
         });
         app.strip.add_controller(strip_click);
+        // Right-click opens the strip's background menu, as the Elgato app does.
+        let strip_menu = gtk::GestureClick::new();
+        strip_menu.set_button(gdk::BUTTON_SECONDARY);
+        let weak = Rc::downgrade(&app);
+        strip_menu.connect_pressed(move |_, _, _, _| {
+            if let Some(app) = weak.upgrade() {
+                app.strip_menu();
+            }
+        });
+        app.strip.add_controller(strip_menu);
         let weak = Rc::downgrade(&app);
         app.banner.connect_button_clicked(move |_| {
             if let Some(app) = weak.upgrade() {
@@ -487,6 +499,121 @@ impl App {
 
     /// Redraw the strip picture: one panel per dial, the same picture the daemon paints.
     /// Volume dials show their device's current level, read once per refresh.
+    /// The settings-popover row for the strip's background image. The popover is built
+    /// once, so the row updates its own subtitle and thumbnail after a change.
+    fn strip_background_row(self: &Rc<Self>) -> adw::ActionRow {
+        let current = self.config.borrow().strip.background_image.clone();
+        let subtitle_of = |cur: &Option<String>| -> String {
+            cur.as_deref()
+                .and_then(|p| paths::resolve(p).file_name().map(|n| n.to_string_lossy().into_owned()))
+                .unwrap_or_else(|| "None".into())
+        };
+        let row = adw::ActionRow::builder()
+            .title("Touch strip background")
+            .subtitle(subtitle_of(&current))
+            .use_markup(false)
+            .build();
+        let preview = gtk::Image::builder().pixel_size(40).css_classes(["icon-preview"]).build();
+        let show_preview = |preview: &gtk::Image, cur: &Option<String>| {
+            if let Some(img) = cur.as_deref().and_then(|p| omadeck_core::render::load_cover(&paths::resolve(p), 80, 40))
+            {
+                preview.set_paintable(Some(&media::texture(img)));
+            } else {
+                let none: Option<&gdk::Texture> = None;
+                preview.set_paintable(none);
+                preview.set_icon_name(Some("image-x-generic-symbolic"));
+            }
+        };
+        show_preview(&preview, &current);
+        row.add_prefix(&preview);
+
+        let refresh = {
+            let row = row.clone();
+            let preview = preview.clone();
+            move |app: &Rc<Self>| {
+                let cur = app.config.borrow().strip.background_image.clone();
+                row.set_subtitle(&subtitle_of(&cur));
+                show_preview(&preview, &cur);
+            }
+        };
+
+        let clear = gtk::Button::builder()
+            .icon_name("edit-clear-symbolic")
+            .tooltip_text("Remove strip background")
+            .valign(gtk::Align::Center)
+            .css_classes(["flat"])
+            .build();
+        clear.connect_clicked({
+            let a = self.clone();
+            let refresh = refresh.clone();
+            move |_| {
+                a.set_strip_background(None);
+                refresh(&a);
+            }
+        });
+        row.add_suffix(&clear);
+
+        let choose = gtk::Button::builder()
+            .label("Choose…")
+            .tooltip_text("800 × 100; fills the strip")
+            .valign(gtk::Align::Center)
+            .build();
+        choose.connect_clicked({
+            let a = self.clone();
+            move |_| {
+                let a2 = a.clone();
+                let refresh = refresh.clone();
+                let dialog = editor::file_dialog("Choose a strip background", Some(("Images", "image/*")));
+                glib::spawn_future_local(async move {
+                    let Ok(file) = dialog.open_future(Some(&a2.window)).await else { return };
+                    let Some(path) = file.path() else { return };
+                    match media::import_icon(&path) {
+                        Ok(rel) => {
+                            a2.set_strip_background(Some(rel));
+                            refresh(&a2);
+                        }
+                        Err(e) => a2.toast(&format!("{e:#}")),
+                    }
+                });
+            }
+        });
+        row.add_suffix(&choose);
+        row
+    }
+
+    /// Set (or clear) the strip's background image, then repaint and save.
+    pub fn set_strip_background(self: &Rc<Self>, image: Option<String>) {
+        self.config.borrow_mut().strip.background_image = image;
+        self.refresh_strip();
+        self.schedule_save();
+    }
+
+    /// Elgato's right-click on the touch strip: a small popover that sets or removes the
+    /// strip's background image.
+    pub fn strip_menu(self: &Rc<Self>) {
+        let popover = gtk::Popover::new();
+        let list = gtk::Box::builder().orientation(gtk::Orientation::Vertical).build();
+        let current = self.config.borrow().strip.background_image.clone();
+        let row = editor::image_row(
+            self,
+            "Strip background",
+            "800 × 100; fills the strip",
+            current.as_deref(),
+            current.as_deref().and_then(|p| omadeck_core::render::load_cover(&paths::resolve(p), 80, 40)),
+            |_| Target::Strip,
+            |a, t, v| {
+                if matches!(t, Target::Strip) {
+                    a.set_strip_background(v);
+                }
+            },
+        );
+        list.append(&row);
+        popover.set_child(Some(&list));
+        popover.set_parent(&self.strip);
+        popover.set_position(gtk::PositionType::Bottom);
+        popover.popup();
+    }
+
     pub fn refresh_strip(&self) {
         let Some((w, h)) = self.deck.borrow().strip else { return };
         let width = self.strip_width();
@@ -966,6 +1093,10 @@ impl App {
         let bright = adw::ActionRow::builder().title("Brightness").build();
         bright.add_suffix(&scale);
         list.append(&bright);
+
+        if self.deck.borrow().strip.is_some() {
+            list.append(&self.strip_background_row());
+        }
 
         let follow = adw::SwitchRow::builder()
             .title("Match Omarchy theme")
