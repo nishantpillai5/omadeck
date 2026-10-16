@@ -20,6 +20,7 @@ Stream Deck + support and pages, all on `daily`, each on its own `feat/*` branch
 | 4 | `feat/dial-volume` | `volume` action, live level on the strip, mic capped at 100% | [pr4](pr4-dial-volume.md) |
 | 5 | `feat/plus-pages` | The Plus's page parts on upstream's pages: strip flick, `page_step`, folder skipping | [rebase](rebase-on-upstream-pages.md) (replaces `feat/pages`) |
 | 6 | `feat/brightness` | `brightness` action, live level on the strip, persisted in the state file | [pr6](pr6-brightness.md) |
+| 7 | `feat/strip-backgrounds` | Background images: one across the strip, one per dial | [pr7](pr7-strip-backgrounds.md) |
 
 Known bugs (and the bug pass still to do) are in [BUGS.md](BUGS.md).
 
@@ -35,8 +36,8 @@ PRs 1–6 are rebuilt on `upstream/pages-and-folders` (`fb9052f`); `daily` is no
 (`feat/plus-pages`, `4c7bf70`). Upstream is still at `fb9052f` with no open PRs; the
 bugs U1–U9 in [BUGS.md](BUGS.md) are to go in the first message to the author.
 
-Next: **PR 7, strip backgrounds** (`feat/strip-backgrounds`, based on
-`feat/brightness`).
+Next: **PR 8, toggle keys** (`feat/toggle-keys`, based on
+`feat/strip-backgrounds`).
 
 Each feature gets its own `feat/*` branch, plan file and (later) PR. Work them in this
 order; the order is mine, not upstream's roadmap order.
@@ -76,9 +77,11 @@ needs it, and have the later PRs reuse it rather than grow a second copy:
   One dispatch that routes the actions the deck loop runs itself (Open page, Back, Page
   step, Brightness) for every input path, so keys, dials, strip taps, multi-actions and
   ctl all go through it.
-- **Strip layers** (PR 7, reused by 9, 10 and 14). `Renderer::panel_backdrop()` draws the
-  background layer under the panel layouts; later panels (live values, app volume, media)
-  draw their items on top of it unchanged.
+- **Strip layers** (built in PR 7, `7aa52c3`; reused by 9, 10 and 14).
+  `Renderer::panel_backdrop()` draws everything under a panel's layout (base colour,
+  strip image slice, dial colour, dial image) and returns a `Backdrop` with the mean
+  `tone` for contrast; later panels (live values, app volume, media) draw their items on
+  top unchanged.
 - **Audio streams** (PR 10, reused by 14). Per-app volume extends `audio.rs` from devices
   (sink/source) to streams (sink inputs), done the same Omarchy-first way.
 

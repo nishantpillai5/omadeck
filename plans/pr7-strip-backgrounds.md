@@ -384,29 +384,37 @@ retain entries whose file mtime still matches (one `stat` each) and drop the res
 
 ## Implementation steps
 
+**Done 2026-10-17.** Commits on `feat/strip-backgrounds` (based on `feat/brightness`
+`b949033`): fixtures `6380a11`, config `2385f6d`, pure render + cache `04bfa3c`, layers
++ daemon `7aa52c3`, GUI `c8ab283`, docs `0312a0a`. All `cargo test` / clippy / fmt
+green; `daily` = `feat/strip-backgrounds`. One deviation: `Backdrop` gained a
+`has_image` flag (a missing file must count as no image, so the empty-slot dimming and
+the `missing_image_falls_back_to_colour` test hold). The hardware checks below are still
+open on the Stream Deck +.
+
 Task sizes are ~150–300 lines including tests; each ends with its check.
 
-0. [ ] **Golden pixels (old code, before any change).** On `daily`, add a throwaway test
+0. [x] **Golden pixels (old code, before any change).** On `daily`, add a throwaway test
        that renders: (a) a `$X1` panel (label + glyph dial, no image), (b) a `$B1` volume
        panel (`Level { value: 0.4, text: "40%" }`), (c) an empty slot — each at 200 × 100
        — and writes them to `crates/omadeck-core/tests/fixtures/strip-{x1,b1,empty}.png`
        (`include_bytes!`-able). Run it, commit the three PNGs and delete the throwaway
        test. **Check:** `ls crates/omadeck-core/tests/fixtures/` shows the three PNGs;
        `cargo test -p omadeck-core` still green.
-1. [ ] **Task A — config.** `StripConfig`, `Config.strip` (after `style`),
+1. [x] **Task A — config.** `StripConfig`, `Config.strip` (after `style`),
        `DialConfig.background_image` + `new` + `is_blank`, `Face.background_image` in both
        `face()` impls. Tests: `strip_background_roundtrip`,
        `old_config_saves_without_strip`, `dial_background_image_roundtrip`,
        `dial_with_only_background_image_is_not_blank`. **Check:**
        `cargo test -p omadeck-core config` → all pass; `example_parses` green. Commit.
-2. [ ] **Task B — render, pure.** `fit_cover`, `load_svg_raw`, `load_cover`, the
+2. [x] **Task B — render, pure.** `fit_cover`, `load_svg_raw`, `load_cover`, the
        `backdrops` cache + `backdrop_image` + mtime-aware `clear_cache` + `decode_count`.
        Tests: `fit_cover_exact_size_is_identity`, `fit_cover_wide_crops_centre`,
        `fit_cover_tall_crops_centre`, `clear_cache_keeps_unchanged_backdrop`,
        `touched_file_is_reloaded` (temp dir, `filetime`-free: write, `clear_cache`, write
        again with a newer mtime via `fs::set_file_times`). **Check:**
        `cargo test -p omadeck-core render` → all pass. Commit.
-3. [ ] **Task C — render, layers.** `Backdrop`, `mean_rgb`, `panel_backdrop`,
+3. [x] **Task C — render, layers.** `Backdrop`, `mean_rgb`, `panel_backdrop`,
        `render_strip_panel(cfg, i, panels, st)` with `tone`, `render_strip` updated to pass
        `(cfg, i, panels)`; fix the in-crate test callers. Tests from the Tests section
        (layer tests + `no_images_pixels_unchanged` comparing against the Task 0 fixtures).
@@ -415,16 +423,16 @@ Task sizes are ~150–300 lines including tests; each ends with its check.
        expected; Task D fixes it. Commit with the daemon broken is **not** allowed:
        instead do Task D in the same commit as the call-site fixes, or fix
        `write_panel`/`snapshot` mechanically here and keep the knob-tone fix in Task D.
-4. [ ] **Task D — daemon.** `write_panel` calls
+4. [x] **Task D — daemon.** `write_panel` calls
        `render_strip_panel(cfg, i, d.info.dials as u32, dial_status(..))`; the snapshot
        knob uses `renderer.panel_backdrop(&cfg, i, n).tone` instead of
        `panel.get_pixel(2, 2)`. **Check:** `cargo build --workspace` and
        `cargo clippy --all-targets -- -D warnings` clean. Hardware checks below. Commit.
-5. [ ] **Task E — GUI.** `image_row` (generalised `icon_row`, wrapper kept), the dial
+5. [x] **Task E — GUI.** `image_row` (generalised `icon_row`, wrapper kept), the dial
        editor row, the strip right-click popover, the settings-popover row. **Check:**
        `cargo clippy --all-targets -- -D warnings` clean; manual: pick a dial image and a
        strip image, preview matches, right-click works. Commit.
-6. [ ] **Task F — docs.** README, `examples/config.toml` (`example_dial_parses` block
+6. [x] **Task F — docs.** README, `examples/config.toml` (`example_dial_parses` block
        count stays 3), CHANGELOG. **Check:** `cargo fmt && cargo clippy --all-targets
        -- -D warnings && cargo test` all green. Commit.
 
