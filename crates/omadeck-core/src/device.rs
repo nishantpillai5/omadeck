@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 pub use elgato_streamdeck::images::ImageRect;
 pub use elgato_streamdeck::info::Kind;
 pub use elgato_streamdeck::{
-    DeviceStateReader, DeviceStateUpdate, StreamDeck, list_devices, new_hidapi, refresh_device_list,
+    DeviceStateReader, DeviceStateUpdate, StreamDeck, StreamDeckError, list_devices, new_hidapi, refresh_device_list,
 };
 pub use hidapi::HidApi;
 
