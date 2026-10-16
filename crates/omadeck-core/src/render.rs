@@ -13,7 +13,7 @@ use image::Rgba;
 pub use image::RgbaImage;
 use image::imageops::{self, FilterType};
 
-use crate::config::{AudioDevice, Config, DialConfig, KeyConfig, LevelSource, Style};
+use crate::config::{AudioDevice, Config, KeyConfig, LevelSource, Style};
 use crate::paths;
 use crate::theme::{Rgb, Theme};
 
@@ -258,26 +258,68 @@ impl Renderer {
         let mut img = RgbaImage::new(native.0, native.1);
         for i in 0..panels {
             let panel =
-                self.render_strip_panel(cfg.dial(i as u8), &cfg.style, status.get(i).cloned().unwrap_or_default());
+                self.render_strip_panel(cfg, i as u8, panels as u32, status.get(i).cloned().unwrap_or_default());
             imageops::overlay(&mut img, &panel, (i as u32 * PANEL_W) as i64, 0);
         }
         if size == native { img } else { imageops::resize(&img, size.0, size.1, FilterType::Triangle) }
     }
 
+    /// Layers 1–4 for dial `i` of `panels`: the base colour, the strip image slice,
+    /// the dial colour and the dial image.
+    pub fn panel_backdrop(&mut self, cfg: &Config, i: u8, panels: u32) -> Backdrop {
+        let dial = cfg.dial(i).filter(|d| !d.is_blank());
+        let mut img = solid_rect(PANEL_W, PANEL_H, self.background(None, &cfg.style));
+        // Layer 2: the strip image, fitted once per file and sliced per panel.
+        let mut has_image = false;
+        if let Some(src) = cfg.strip.background_image.as_deref()
+            && let Some(full) = self.backdrop_image(&paths::resolve(src), PANEL_W * panels, PANEL_H)
+            && (i as u32) < panels
+        {
+            let slice = imageops::crop_imm(&full, i as u32 * PANEL_W, 0, PANEL_W, PANEL_H).to_image();
+            imageops::overlay(&mut img, &slice, 0, 0);
+            has_image = true;
+        }
+        if let Some(d) = &dial {
+            // Layer 3: the dial's own colour, over the strip image.
+            if let Some(c) = d.background.as_deref().and_then(Rgb::parse) {
+                imageops::overlay(&mut img, &solid_rect(PANEL_W, PANEL_H, c), 0, 0);
+            }
+            // Layer 4: the dial image, alpha-composited over everything under it.
+            if let Some(src) = d.background_image.as_deref()
+                && let Some(image) = self.backdrop_image(&paths::resolve(src), PANEL_W, PANEL_H)
+            {
+                imageops::overlay(&mut img, &image, 0, 0);
+                has_image = true;
+            }
+        }
+        let tone = mean_rgb(&img);
+        Backdrop { tone, img, has_image }
+    }
+
     /// Render one 200×100 dial panel at native size. A volume dial uses Elgato's `$B1`
     /// "Indicator" layout (icon left, value and groove bar right); everything else uses
-    /// `$X1` "Icon" (title left, icon centred).
-    pub fn render_strip_panel(&mut self, dial: Option<&DialConfig>, style: &Style, st: DialStatus) -> RgbaImage {
-        let dial = dial.filter(|d| !d.is_blank());
+    /// `$X1` "Icon" (title left, icon centred). `i` is the panel's index of `panels`,
+    /// needed to slice the strip image.
+    pub fn render_strip_panel(&mut self, cfg: &Config, i: u8, panels: u32, st: DialStatus) -> RgbaImage {
+        let style = &cfg.style;
+        let dial = cfg.dial(i).filter(|d| !d.is_blank());
         let face = dial.map(|d| d.face());
-        let bg = self.background(face.as_ref(), style);
-        let mut img = solid_rect(PANEL_W, PANEL_H, if face.is_none() { bg.mix(Rgb(0, 0, 0), 0.55) } else { bg });
+        let backdrop = self.panel_backdrop(cfg, i, panels);
+        let tone = backdrop.tone;
+        // An empty slot with no image is the dimmed base colour, as before; with an
+        // image the empty panels show their slice undimmed, so the picture stays
+        // continuous, as Elgato's strip background does.
+        let mut img = if face.is_none() && !backdrop.has_image {
+            solid_rect(PANEL_W, PANEL_H, self.background(None, style).mix(Rgb(0, 0, 0), 0.55))
+        } else {
+            backdrop.img
+        };
         let Some(face) = face else { return img };
 
         let want_label = face.show_label && !face.label.is_empty();
         // A pressed dial (or a tap, for a moment) turns the title into the accent colour,
         // as the only feedback: the layout stays the same as the Elgato app's.
-        let fg = if st.pressed { self.theme.accent } else { self.label_color(Some(&face), style, bg) };
+        let fg = if st.pressed { self.theme.accent } else { self.label_color(Some(&face), style, tone) };
         let glyph_color =
             face.label_color.and_then(Rgb::parse).unwrap_or(if style.follow_theme { self.theme.accent } else { fg });
 
@@ -290,7 +332,7 @@ impl Renderer {
                 }
                 LevelSource::Brightness => self.brightness_icon(&face, glyph_color),
             };
-            self.draw_b1(&mut img, &face, bg, fg, want_label, icon, st.level);
+            self.draw_b1(&mut img, &face, tone, fg, want_label, icon, st.level);
             return img;
         }
 
@@ -644,6 +686,28 @@ fn fill_pill(img: &mut RgbaImage, x: i64, y: i64, w: i64, h: i64, color: Rgb) {
     }
 }
 
+/// Everything under a strip panel's layout: the base colour, the strip image slice,
+/// the dial colour and the dial image (layers 1–4).
+pub struct Backdrop {
+    pub img: RgbaImage,
+    /// The colour layouts treat as "the background" for contrast: the mean of `img`.
+    pub tone: Rgb,
+    /// Whether a strip or dial image actually landed (a missing file counts as none).
+    pub has_image: bool,
+}
+
+/// The mean RGB of an image, alpha ignored.
+fn mean_rgb(img: &RgbaImage) -> Rgb {
+    let (mut r, mut g, mut b) = (0u64, 0u64, 0u64);
+    for px in img.pixels() {
+        r += u64::from(px[0]);
+        g += u64::from(px[1]);
+        b += u64::from(px[2]);
+    }
+    let n = u64::from(img.width() * img.height()).max(1);
+    Rgb((r / n) as u8, (g / n) as u8, (b / n) as u8)
+}
+
 /// Load a raster or SVG icon and fit it inside a `box_px` square, preserving aspect ratio.
 pub fn load_icon(path: &Path, box_px: u32) -> Option<RgbaImage> {
     let is_svg = path
@@ -846,7 +910,8 @@ mod tests {
     fn strip_empty_slot_matches_empty_key() {
         let mut r = Renderer::new(&test_style());
         let style = test_style();
-        let panel = r.render_strip_panel(None, &style, DialStatus::default());
+        let cfg = Config { style: test_style(), ..Default::default() };
+        let panel = r.render_strip_panel(&cfg, 0, 4, DialStatus::default());
         let key = r.render(None, &style, 100, false);
         assert_eq!(*panel.get_pixel(100, 50), *key.get_pixel(50, 50));
     }
@@ -899,25 +964,27 @@ mod tests {
     #[test]
     fn strip_volume_bar_fills_to_level() {
         let Some(mut r) = renderer_with_font() else { return };
-        let style = test_style();
         let dial = volume_dial();
         let (bx, by, _bw, bh) = B1_BAR;
         let mid_y = by + bh / 2;
         let x = bx + 90; // the right part of the bar
-        let full = r.render_strip_panel(Some(&dial), &style, level(1.0, false));
-        let empty = r.render_strip_panel(Some(&dial), &style, level(0.0, false));
+        let mut cfg = Config { style: test_style(), ..Default::default() };
+        cfg.dials.push(dial);
+        let full = r.render_strip_panel(&cfg, 0, 4, level(1.0, false));
+        let empty = r.render_strip_panel(&cfg, 0, 4, level(0.0, false));
         assert_ne!(full.get_pixel(x, mid_y), empty.get_pixel(x, mid_y), "the bar fill should change with the level");
     }
 
     #[test]
     fn strip_volume_muted_leaves_bar_empty() {
         let Some(mut r) = renderer_with_font() else { return };
-        let style = test_style();
         let dial = volume_dial();
         let (bx, by, _bw, bh) = B1_BAR;
         let mid_y = by + bh / 2;
-        let muted = r.render_strip_panel(Some(&dial), &style, level(0.8, true));
-        let empty = r.render_strip_panel(Some(&dial), &style, level(0.0, false));
+        let mut cfg = Config { style: test_style(), ..Default::default() };
+        cfg.dials.push(dial);
+        let muted = r.render_strip_panel(&cfg, 0, 4, level(0.8, true));
+        let empty = r.render_strip_panel(&cfg, 0, 4, level(0.0, false));
         // Muted: the bar is the empty track, the same as level 0.
         for x in bx..bx + 108 {
             assert_eq!(*muted.get_pixel(x, mid_y), *empty.get_pixel(x, mid_y), "muted bar should be empty at x = {x}");
@@ -929,9 +996,9 @@ mod tests {
         // Before the first poll (level None) the panel is still $B1, not $X1: it draws its
         // groove bar and does not draw the centred $X1 icon.
         let Some(mut r) = renderer_with_font() else { return };
-        let style = test_style();
-        let dial = volume_dial();
-        let panel = r.render_strip_panel(Some(&dial), &style, DialStatus::default());
+        let mut cfg = Config { style: test_style(), ..Default::default() };
+        cfg.dials.push(volume_dial());
+        let panel = r.render_strip_panel(&cfg, 0, 4, DialStatus::default());
         // No centred $X1 icon (x 76..124) in the icon's vertical band.
         let x1_icon_ink = (76..124).any(|x| (40..72).any(|y| panel.get_pixel(x, y)[0] > 120));
         assert!(!x1_icon_ink, "a $B1 panel should not draw the centred $X1 icon");
@@ -1002,19 +1069,23 @@ mod tests {
         assert_eq!(*out.get_pixel(5, 40), Rgba([0, 255, 0, 255]), "centre is green");
     }
 
-    /// A solid PNG in a per-test temp dir.
-    fn tmp_image(name: &str, w: u32, h: u32, color: Rgba<u8>) -> std::path::PathBuf {
+    /// A PNG in a per-test temp dir.
+    fn tmp_image(name: &str, img: &RgbaImage) -> std::path::PathBuf {
         let dir = std::env::temp_dir().join(format!("omadeck-cover-{name}-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("img.png");
-        image::DynamicImage::ImageRgba8(RgbaImage::from_pixel(w, h, color)).save(&path).unwrap();
+        image::DynamicImage::ImageRgba8(img.clone()).save(&path).unwrap();
         path
+    }
+
+    fn solid_img(w: u32, h: u32, c: Rgba<u8>) -> RgbaImage {
+        RgbaImage::from_pixel(w, h, c)
     }
 
     #[test]
     fn clear_cache_keeps_unchanged_backdrop() {
         let mut r = Renderer::new(&test_style());
-        let path = tmp_image("keep", 4, 2, Rgba([9, 9, 9, 255]));
+        let path = tmp_image("keep", &solid_img(4, 2, Rgba([9, 9, 9, 255])));
         assert!(r.backdrop_image(&path, 4, 2).is_some());
         let decodes = r.decode_count.get();
         r.clear_cache();
@@ -1026,7 +1097,7 @@ mod tests {
     #[test]
     fn touched_file_is_reloaded() {
         let mut r = Renderer::new(&test_style());
-        let path = tmp_image("touch", 4, 2, Rgba([9, 9, 9, 255]));
+        let path = tmp_image("touch", &solid_img(4, 2, Rgba([9, 9, 9, 255])));
         assert!(r.backdrop_image(&path, 4, 2).is_some());
         let decodes = r.decode_count.get();
         // Different pixels and a newer mtime; coarse filesystems may need a wait.
@@ -1043,5 +1114,164 @@ mod tests {
         assert_eq!(r.decode_count.get(), decodes + 1, "a touched file is re-decoded");
         assert_eq!(*img.get_pixel(0, 0), Rgba([200, 1, 1, 255]));
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    /// An 800 × 100 strip image in four vertical quarters, one colour each.
+    fn quarters_strip() -> RgbaImage {
+        let cols = [Rgba([255, 0, 0, 255]), Rgba([0, 255, 0, 255]), Rgba([0, 0, 255, 255]), Rgba([255, 255, 0, 255])];
+        let mut img = RgbaImage::new(800, 100);
+        for row in img.rows_mut() {
+            for (x, px) in row.enumerate() {
+                *px = cols[x / 200];
+            }
+        }
+        img
+    }
+
+    #[test]
+    fn strip_image_slices_per_panel() {
+        let mut r = Renderer::new(&test_style());
+        let path = tmp_image("quarters", &quarters_strip());
+        let mut cfg = Config { style: test_style(), ..Default::default() };
+        cfg.strip.background_image = Some(path.to_string_lossy().into());
+        let cols = [Rgba([255, 0, 0, 255]), Rgba([0, 255, 0, 255]), Rgba([0, 0, 255, 255]), Rgba([255, 255, 0, 255])];
+        for i in 0..4 {
+            let panel = r.render_strip_panel(&cfg, i, 4, DialStatus::default());
+            assert_eq!(*panel.get_pixel(5, 5), cols[i as usize], "panel {i} shows its quarter");
+        }
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn dial_image_wins_over_strip() {
+        let mut r = Renderer::new(&test_style());
+        let strip = tmp_image("win-strip", &quarters_strip());
+        let dial = tmp_image("win-dial", &solid_img(200, 100, Rgba([1, 2, 3, 255])));
+        let mut cfg = Config { style: test_style(), ..Default::default() };
+        cfg.strip.background_image = Some(strip.to_string_lossy().into());
+        cfg.dials.push(DialConfig { background_image: Some(dial.to_string_lossy().into()), ..DialConfig::new(1) });
+        assert_eq!(*r.render_strip_panel(&cfg, 1, 4, DialStatus::default()).get_pixel(5, 5), Rgba([1, 2, 3, 255]));
+        assert_eq!(*r.render_strip_panel(&cfg, 0, 4, DialStatus::default()).get_pixel(5, 5), Rgba([255, 0, 0, 255]));
+        let _ = std::fs::remove_dir_all(strip.parent().unwrap());
+    }
+
+    #[test]
+    fn transparent_dial_image_shows_strip() {
+        let mut r = Renderer::new(&test_style());
+        let strip = tmp_image("trans-strip", &quarters_strip());
+        let dial = tmp_image("trans-dial", &solid_img(200, 100, Rgba([0, 0, 0, 0])));
+        let mut cfg = Config { style: test_style(), ..Default::default() };
+        cfg.strip.background_image = Some(strip.to_string_lossy().into());
+        cfg.dials.push(DialConfig { background_image: Some(dial.to_string_lossy().into()), ..DialConfig::new(2) });
+        assert_eq!(*r.render_strip_panel(&cfg, 2, 4, DialStatus::default()).get_pixel(5, 5), Rgba([0, 0, 255, 255]));
+        let _ = std::fs::remove_dir_all(strip.parent().unwrap());
+    }
+
+    #[test]
+    fn dial_colour_covers_strip_image() {
+        let mut r = Renderer::new(&test_style());
+        let strip = tmp_image("colour-strip", &quarters_strip());
+        let mut cfg = Config { style: test_style(), ..Default::default() };
+        cfg.strip.background_image = Some(strip.to_string_lossy().into());
+        cfg.dials.push(DialConfig { background: Some("#0a0b0c".into()), ..DialConfig::new(3) });
+        assert_eq!(*r.render_strip_panel(&cfg, 3, 4, DialStatus::default()).get_pixel(5, 5), Rgba([10, 11, 12, 255]));
+        let _ = std::fs::remove_dir_all(strip.parent().unwrap());
+    }
+
+    #[test]
+    fn empty_slot_shows_strip_undimmed() {
+        let mut r = Renderer::new(&test_style());
+        let strip = tmp_image("empty-strip", &quarters_strip());
+        let mut cfg = Config { style: test_style(), ..Default::default() };
+        cfg.strip.background_image = Some(strip.to_string_lossy().into());
+        // No dial at all: the panel shows its quarter, not the dimmed base colour.
+        assert_eq!(*r.render_strip_panel(&cfg, 0, 4, DialStatus::default()).get_pixel(5, 5), Rgba([255, 0, 0, 255]));
+        let _ = std::fs::remove_dir_all(strip.parent().unwrap());
+    }
+
+    #[test]
+    fn missing_image_falls_back_to_colour() {
+        let mut r = Renderer::new(&test_style());
+        let mut cfg = Config { style: test_style(), ..Default::default() };
+        let with = r.render_strip_panel(&cfg, 0, 4, DialStatus::default());
+        cfg.strip.background_image = Some("/nonexistent/omadeck-strip-test.png".into());
+        let without = r.render_strip_panel(&cfg, 0, 4, DialStatus::default());
+        assert_eq!(with, without, "a missing image looks like no image");
+    }
+
+    #[test]
+    fn bright_image_flips_label_dark() {
+        let Some(mut r) = renderer_with_font() else { return };
+        let strip = tmp_image("bright", &solid_img(800, 100, Rgba([255, 255, 255, 255])));
+        let mut cfg = Config { style: test_style(), ..Default::default() };
+        cfg.strip.background_image = Some(strip.to_string_lossy().into());
+        cfg.dials.push(DialConfig { label: "Volume".into(), glyph: Some("A".into()), ..DialConfig::new(0) });
+        let panel = r.render_strip_panel(&cfg, 0, 4, DialStatus::default());
+        // The title ink (in X1_TITLE, text and its shadow) must be dark on the white
+        // image; on the old dark background the same title would be near-white.
+        let (x0, y0, w, h) = X1_TITLE;
+        let mut ink = Vec::new();
+        for dx in 0..w {
+            for dy in 0..h {
+                let p = *panel.get_pixel(x0 + dx, y0 + dy);
+                if p[0] < 200 {
+                    ink.push(p);
+                }
+            }
+        }
+        assert!(!ink.is_empty(), "no title ink");
+        // Antialiased edges blend toward white, so judge the ink by its mean.
+        let mean: u32 =
+            ink.iter().map(|p| p[0] as u32 + p[1] as u32 + p[2] as u32).sum::<u32>() / (3 * ink.len() as u32);
+        assert!(mean < 128, "the title must flip dark, mean was {mean}");
+        let _ = std::fs::remove_dir_all(strip.parent().unwrap());
+    }
+
+    #[test]
+    fn panel_isolation_with_strip_image() {
+        let mut r = Renderer::new(&test_style());
+        let strip = tmp_image("iso", &quarters_strip());
+        let mut cfg = Config { style: test_style(), ..Default::default() };
+        cfg.strip.background_image = Some(strip.to_string_lossy().into());
+        cfg.dials.push(DialConfig { label: "One".into(), ..DialConfig::new(0) });
+        cfg.dials.push(DialConfig { label: "Two".into(), ..DialConfig::new(2) });
+        let status = vec![DialStatus::default(); 4];
+        let before = r.render_strip(&cfg, &status, (800, 100));
+        cfg.dials[1].label = "Changed".into();
+        let after = r.render_strip(&cfg, &status, (800, 100));
+        for (x0, changed) in [(0u32, false), (200, false), (400, true), (600, false)] {
+            let same = (0..200).all(|dx| (0..100).all(|y| before.get_pixel(x0 + dx, y) == after.get_pixel(x0 + dx, y)));
+            assert_eq!(same, !changed, "panel at x = {x0} should {changed}have changed");
+        }
+        let _ = std::fs::remove_dir_all(strip.parent().unwrap());
+    }
+
+    /// The no-image panels must be pixel-identical to the fixtures captured before this
+    /// PR changed `render_strip_panel`'s signature and colours.
+    #[test]
+    fn no_images_pixels_unchanged() {
+        let Some(mut r) = renderer_with_font() else { return };
+        let load = |bytes: &[u8]| image::load_from_memory(bytes).unwrap().to_rgba8();
+        let cfg = Config { style: test_style(), ..Default::default() };
+        assert_eq!(
+            r.render_strip_panel(&cfg, 0, 4, DialStatus::default()),
+            load(include_bytes!("../tests/fixtures/strip-empty.png")),
+            "empty slot"
+        );
+        let mut cfg = Config { style: test_style(), ..Default::default() };
+        cfg.dials.push(DialConfig { label: "Volume".into(), glyph: Some("A".into()), ..DialConfig::new(0) });
+        assert_eq!(
+            r.render_strip_panel(&cfg, 0, 4, DialStatus::default()),
+            load(include_bytes!("../tests/fixtures/strip-x1.png")),
+            "$X1 panel"
+        );
+        let mut cfg = Config { style: test_style(), ..Default::default() };
+        cfg.dials.push(volume_dial());
+        let st = DialStatus { pressed: false, level: Some(Level { value: 0.4, text: "40%".into(), muted: false }) };
+        assert_eq!(
+            r.render_strip_panel(&cfg, 0, 4, st),
+            load(include_bytes!("../tests/fixtures/strip-b1.png")),
+            "$B1 panel"
+        );
     }
 }
