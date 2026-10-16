@@ -17,6 +17,7 @@ use omadeck_core::config::apply_brightness;
 use omadeck_core::device::{self, DeviceStateReader, DeviceStateUpdate, HidApi, ImageRect, Kind, StreamDeck};
 use omadeck_core::ipc::{Command, Event};
 use omadeck_core::paths::FileStamp;
+use omadeck_core::probe::{self, Values};
 use omadeck_core::state::State;
 use omadeck_core::{
     Action, AudioDevice, Config, DeckInfo, DialStatus, Level, LevelSource, PANEL_W, Renderer, action, audio, paths,
@@ -162,7 +163,10 @@ fn dial_status(d: &Deck, i: u8, now: Instant) -> DialStatus {
         }
         None => None,
     });
-    DialStatus { pressed: d.dial_pressed.get(n).copied().unwrap_or(false) || flashed, level }
+    DialStatus {
+        pressed: d.dial_pressed.get(n).copied().unwrap_or(false) || flashed,
+        panel: omadeck_core::PanelStatus { level },
+    }
 }
 
 fn main() {
@@ -953,8 +957,6 @@ fn snapshot(out: &Path, page: Option<&str>) -> Result<()> {
     let cfg = Config::load()?;
     let keys = cfg.page(page).with_context(|| format!("no page named {}", page.unwrap_or_default()))?;
     let info = device::detect().into_iter().next().unwrap_or_else(DeckInfo::fallback);
-    // The deck runs on the state file's brightness once it has run, as `connect` does.
-    let brightness = State::load().start_brightness(cfg.brightness);
     let mut renderer = Renderer::new(&cfg.style);
     let size = 144u32;
     let gap = 18u32;
@@ -973,19 +975,11 @@ fn snapshot(out: &Path, page: Option<&str>) -> Result<()> {
     }
     let mut y = grid_h + gap;
     if let Some((sw, sh)) = info.strip {
-        // Brightness dials show the live start value; volume dials show a dash, as their
-        // level is read by the running daemon.
-        let status: Vec<DialStatus> = (0..info.dials as usize)
-            .map(|i| {
-                let level = matches!(cfg.dial(i as u8).and_then(|d| d.level_source()), Some(LevelSource::Brightness))
-                    .then_some(Level {
-                        value: brightness as f32 / 100.0,
-                        text: format!("{}%", brightness),
-                        muted: false,
-                    });
-                DialStatus { pressed: false, level }
-            })
-            .collect();
+        // The deck runs on the state file's brightness once it has run, as `connect` does.
+        // Brightness dials show the brightness the deck runs at; volume dials show a dash,
+        // as their level is live and only the running daemon reads it.
+        let values = Values { brightness: State::load().start_brightness(cfg.brightness), ..Values::default() };
+        let status: Vec<_> = (0..info.dials).map(|i| probe::dial_status(cfg.dial(i), &values, false)).collect();
         let strip = renderer.render_strip(&cfg, &status, (w, w * sh / sw));
         image::imageops::overlay(&mut canvas, &strip, 0, y as i64);
         y += strip_h;
