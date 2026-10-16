@@ -892,7 +892,7 @@ fn paint(d: &Deck, cfg: &Config, page: Option<&str>, renderer: &mut Renderer, i:
 
 /// Queue one 200×100 dial panel for the next `flush`.
 fn write_panel(d: &Deck, cfg: &Config, renderer: &mut Renderer, i: u8) -> Result<()> {
-    let panel = renderer.render_strip_panel(cfg.dial(i), &cfg.style, dial_status(d, i, Instant::now()));
+    let panel = renderer.render_strip_panel(cfg, i, d.info.dials as u32, dial_status(d, i, Instant::now()));
     let rect = ImageRect::from_image(image::DynamicImage::ImageRgba8(panel))?;
     d.dev.write_lcd(i as u16 * PANEL_W as u16, 0, &rect)?;
     Ok(())
@@ -979,9 +979,10 @@ fn snapshot(out: &Path, page: Option<&str>) -> Result<()> {
     }
     if dial_r > 0 {
         for i in 0..info.dials {
-            // The panel's background colour, sampled from a corner (never icon or text).
-            let panel = renderer.render_strip_panel(cfg.dial(i), &cfg.style, DialStatus::default());
-            let col = *panel.get_pixel(2, 2);
+            // The panel's average colour (the backdrop's tone), so a background image
+            // tints the knob instead of a corner pixel deciding.
+            let tone = renderer.panel_backdrop(&cfg, i, info.dials as u32).tone;
+            let col = image::Rgba([tone.0, tone.1, tone.2, 255]);
             let cx = gap + (i as u32) * (size + gap) + size / 2;
             draw_circle(&mut canvas, cx, y + dial_r, dial_r, col);
         }
