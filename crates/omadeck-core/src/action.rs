@@ -15,6 +15,9 @@ use crate::config::{Action, AudioDevice};
 use crate::{paths, proc};
 
 pub fn run(action: &Action) -> Result<()> {
+    if action.is_deck_owned() {
+        bail!("{} only works on the deck", Action::KINDS[action.kind_index()]);
+    }
     match action {
         Action::None => Ok(()),
         Action::App { command } => launch_app(command),
@@ -22,10 +25,9 @@ pub fn run(action: &Action) -> Result<()> {
         Action::Sound { file, volume } => play_sound(&paths::resolve(file), *volume),
         Action::Url { url } => open_url(url),
         Action::Hyprland { dispatch } => hypr_dispatch(dispatch),
-        Action::Page { .. } | Action::Back | Action::PageStep { .. } => bail!("changing pages only works on the deck"),
         Action::Volume { device, change, mute } => run_volume(*device, *change, *mute),
-        // The daemon owns the panel brightness; it applies and persists it itself.
-        Action::Brightness { .. } => bail!("brightness actions are handled by the daemon, not run from here"),
+        // Refused above; the daemon runs these itself.
+        Action::Page { .. } | Action::Back | Action::PageStep { .. } | Action::Brightness { .. } => Ok(()),
     }
 }
 
@@ -386,6 +388,19 @@ mod tests {
         assert_eq!(folded_volume(25, 8), 100);
         assert_eq!(folded_volume(-25, 8), -100);
         assert_eq!(folded_volume(i8::MIN, 8), -100);
+    }
+
+    #[test]
+    fn run_refuses_exactly_the_deck_owned_kinds() {
+        for kind in 0..Action::KINDS.len() {
+            // Volume would really change the volume; it isn't deck-owned anyway.
+            if kind == 8 {
+                continue;
+            }
+            let a = Action::empty_of_kind(kind);
+            let refused = run(&a).is_err_and(|e| e.to_string().ends_with("only works on the deck"));
+            assert_eq!(refused, a.is_deck_owned(), "{a:?}");
+        }
     }
 
     #[test]
