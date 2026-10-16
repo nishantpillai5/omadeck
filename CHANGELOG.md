@@ -25,6 +25,12 @@ All notable changes to omadeck are documented here. The format follows
 - Volume and mic bars on the strip now update optimistically: a volume action moves
   the bar immediately, and the daemon's read-back a moment later corrects it. A
   config reload no longer blanks the bars of devices that are still shown.
+- Stream Deck +: background images on the touch strip. One image across the whole
+  strip (`[strip] background_image`) and one per dial (`background_image` on
+  `[[dial]]`, which covers the strip image for that panel); both fill the area and
+  are centre-cropped. The configurator picks them (right-clicking the strip preview
+  sets the strip's), labels flip dark on bright images, and the images are cached per
+  file, so a reload re-decodes only files that changed.
 - A `volume` action: change the output or input (microphone) volume, or toggle mute.
   It runs through Omarchy's own volume commands when they're installed (so its on-screen
   pop-up shows, just like the volume keys) and falls back to `wpctl` otherwise. A fast

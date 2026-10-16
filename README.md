@@ -45,7 +45,7 @@ Written in Rust: a tiny background daemon drives the hardware, and a GTK4/libadw
   - **Nerd Font glyphs**, drawn in your theme's accent colour.
   - Labels are rendered in your Omarchy font.
 - **Stream Deck + dials.** Each dial runs any of the action types on turn left, turn right and press — a workspace dial, a volume dial, a launch-on-press dial.
-- **Stream Deck + touch strip.** The strip shows each dial's label and icon in its own panel, in the theme's colours, following the same panel layouts as Elgato's own app. A volume dial shows its level and a groove bar in Elgato's `Indicator` layout, kept in sync when the volume changes elsewhere, and a brightness dial shows the panel's brightness. Tapping a panel presses its dial; the pressed panel highlights briefly. A flick pages through, like the Elgato app.
+- **Stream Deck + touch strip.** The strip shows each dial's label and icon in its own panel, in the theme's colours, following the same panel layouts as Elgato's own app. A volume dial shows its level and a groove bar in Elgato's `Indicator` layout, kept in sync when the volume changes elsewhere, and a brightness dial shows the panel's brightness. Tapping a panel presses its dial; the pressed panel highlights briefly. A flick pages through, like the Elgato app. The strip and each dial panel can have a background image, like the Elgato app.
 - **Theme aware.** Key backgrounds, labels, glyphs and the press highlight come from the active Omarchy theme. Run `omarchy theme set …` and the deck re-renders instantly.
 - **Live editing.** Changes land on the hardware as you type, and the deck shows whichever page you're editing. Drag keys to rearrange them. Press a physical key to jump to it in the editor.
 - **Robust.** Reconnects after unplug/replug, and a typo in a hand-edited config keeps the last good layout on the deck. Uses about 9 MB of RAM and 0% CPU at idle.
@@ -197,7 +197,7 @@ Action types:
 | `page_step` | `change` (± pages, default 1) |
 | `brightness` | `change` (±%) and/or `set` (absolute 0–100) |
 
-Per-key look overrides are `background`, `label_color` and `show_label`. Dials take the same fields (`icon`, `glyph`, `background`, `label_color`, `show_label`) for their panel on the touch strip.
+Per-key look overrides are `background`, `label_color` and `show_label`. Dials take the same fields (`icon`, `glyph`, `background`, `label_color`, `show_label`) for their panel on the touch strip, plus `background_image`: an image behind the panel (200 × 100), over the strip's image. The strip itself takes `[strip] background_image`, one image across all the panels (800 × 100 on a Plus). Images of any size fill their area and are centre-cropped; a dial's image shows through where it's transparent, and labels flip dark on bright images.
 
 On the Stream Deck +, dials are numbered left to right from 0. Each dial takes up to
 three actions; turns run once per detent:
@@ -266,6 +266,7 @@ Ideas, roughly in order. Want one sooner? Open an issue or a PR; see [CONTRIBUTI
 - [ ] **Toggle keys** with on/off faces (mute, night light, …) that reflect real state
 - [ ] **Multi-actions**: run several actions from one key, with optional delays
 - [x] **Stream Deck +**: value layouts on the strip — volume and brightness — and page switching on swipe
+- [x] **Stream Deck +**: background images on the touch strip — one across the strip, one per dial
 - [ ] **OBS** scene and recording keys via obs-websocket
 - [ ] **Live keys** that show a clock, CPU usage or the active workspace
 - [ ] **Multiple decks** with a layout per serial number
