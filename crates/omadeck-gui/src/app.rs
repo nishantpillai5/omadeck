@@ -12,8 +12,8 @@ use omadeck_core::ipc::{self, Command as DaemonCommand, Event};
 use omadeck_core::paths::FileStamp;
 use omadeck_core::probe::{self, Values};
 use omadeck_core::{
-    Action, Config, DeckInfo, DialConfig, DialStatus, HOME, KeyConfig, Keys, PanelStatus, Renderer, device, paths,
-    tap_to_dial,
+    Action, Config, DeckInfo, DialConfig, DialStatus, Direction, HOME, KeyConfig, Keys, PanelStatus, Renderer, device,
+    paths, tap_to_dial,
 };
 
 use crate::{editor, media};
@@ -43,6 +43,38 @@ impl KeyRef {
     /// The page the key is on (`None` is Home).
     pub fn page(&self) -> Option<&str> {
         self.page.as_deref()
+    }
+}
+
+/// Which action an editor edits, for work that finishes later (a picker, a file dialog, a
+/// fetch): the result lands on this action even if the window has moved on.
+#[derive(Clone)]
+pub enum ActionTarget {
+    /// A key's action.
+    Key(KeyRef),
+    DialTurnLeft(u8),
+    DialTurnRight(u8),
+    DialPress(u8),
+}
+
+impl ActionTarget {
+    /// The target for dial `i`'s slot `dir`.
+    pub fn dial(i: u8, dir: Direction) -> Self {
+        match dir {
+            Direction::Left => ActionTarget::DialTurnLeft(i),
+            Direction::Right => ActionTarget::DialTurnRight(i),
+            Direction::Press => ActionTarget::DialPress(i),
+        }
+    }
+
+    /// The dial and slot, for a dial's action.
+    pub fn dial_slot(&self) -> Option<(u8, Direction)> {
+        match self {
+            ActionTarget::Key(_) => None,
+            ActionTarget::DialTurnLeft(i) => Some((*i, Direction::Left)),
+            ActionTarget::DialTurnRight(i) => Some((*i, Direction::Right)),
+            ActionTarget::DialPress(i) => Some((*i, Direction::Press)),
+        }
     }
 }
 
@@ -676,6 +708,10 @@ impl App {
 
     /// Set (or clear) the strip's background image, then repaint and save.
     pub fn set_strip_background(self: &Rc<Self>, image: Option<String>) {
+        // Like `edit_dial`: a late pick is dropped while config.toml can't be parsed.
+        if self.locked.borrow().is_some() {
+            return;
+        }
         self.config.borrow_mut().strip.background_image = image;
         self.refresh_strip();
         self.schedule_save();
@@ -891,6 +927,34 @@ impl App {
         self.refresh_dial(i);
         self.refresh_strip();
         self.schedule_save();
+    }
+
+    /// The action `at` names; `None` if its page has gone.
+    pub fn action_at(&self, at: &ActionTarget) -> Option<Action> {
+        let cfg = self.config.borrow();
+        match at.dial_slot() {
+            Some((i, dir)) => Some(cfg.dial(i).map(|d| d.action(dir).clone()).unwrap_or_default()),
+            None => {
+                let ActionTarget::Key(k) = at else { return None };
+                cfg.page(k.page()).map(|keys| keys.get(k.index).map(|kc| kc.action.clone()).unwrap_or_default())
+            }
+        }
+    }
+
+    /// Replace the action `at` names. False when it can't: config.toml is broken (both
+    /// edit paths drop late results then) or the key's page has gone.
+    pub fn set_action_at(self: &Rc<Self>, at: &ActionTarget, act: Action) -> bool {
+        match at.dial_slot() {
+            Some((i, dir)) => {
+                let ok = self.locked.borrow().is_none();
+                self.edit_dial(i, |d| *d.action_mut(dir) = act);
+                ok
+            }
+            None => match at {
+                ActionTarget::Key(k) => self.edit_ref(k, |kc| kc.action = act),
+                _ => false,
+            },
+        }
     }
 
     pub fn clear_dial(self: &Rc<Self>, i: u8) {
