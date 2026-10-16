@@ -7,6 +7,7 @@ pub mod config;
 pub mod device;
 pub mod ipc;
 pub mod paths;
+pub mod proc;
 pub mod render;
 pub mod state;
 pub mod theme;
