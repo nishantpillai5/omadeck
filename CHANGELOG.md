@@ -7,6 +7,11 @@ All notable changes to omadeck are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- Stream Deck +: flicking the touch strip changes page (left is next, right is
+  previous, wrapping), and a `page_step` action moves to the next or previous page,
+  on a key or per dial turn. Folders are skipped, so a flick can't land inside one;
+  the configurator's folder button marks a page as one. Dials and the strip are the
+  same on every page.
 - A `volume` action: change the output or input (microphone) volume, or toggle mute.
   It runs through Omarchy's own volume commands when they're installed (so its on-screen
   pop-up shows, just like the volume keys) and falls back to `wpctl` otherwise. A fast

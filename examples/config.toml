@@ -63,6 +63,7 @@ page = "Media"               # the name of a [[page]] below
 
 [[page]]
 name = "Media"
+# folder = true                # skipped by flicks and page_step
 
 [[page.key]]
 index = 0
@@ -77,6 +78,14 @@ label = "Play/Pause"
 [page.key.action]
 type = "app"
 command = "playerctl play-pause"
+
+# [[key]]
+# index = 6
+# label = "Next page"
+# glyph = "f0054"              # right arrow
+# [key.action]
+# type = "page_step"
+# change = 1                   # next page; -1 is previous, folders are skipped
 
 # Dials (Stream Deck + only) are numbered left to right from 0. Each of
 # turn_left / turn_right runs once per detent; press runs when you click the dial.
