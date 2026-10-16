@@ -1,7 +1,7 @@
 //! Reading and changing the system volume, through Omarchy's own commands when they're
 //! installed (so its on-screen pop-up shows) and through `wpctl` otherwise.
 
-use std::process::{Command, Stdio};
+use std::process::Command;
 use std::sync::OnceLock;
 
 use crate::config::AudioDevice;
@@ -115,11 +115,11 @@ fn which(bin: &str) -> bool {
     std::env::var_os("PATH").map(|p| std::env::split_paths(&p).any(|d| d.join(bin).is_file())).unwrap_or(false)
 }
 
-/// Run a command and return its stdout, `None` if it is missing or fails.
+/// Run a command and return its stdout, `None` if it is missing, fails or hangs.
 fn capture(args: &[&str]) -> Option<String> {
     let mut cmd = Command::new(args[0]);
-    cmd.args(&args[1..]).env("LC_ALL", "C").stdin(Stdio::null());
-    let out = cmd.output().ok()?;
+    cmd.args(&args[1..]).env("LC_ALL", "C");
+    let out = crate::proc::output_timeout(&mut cmd, crate::proc::COMMAND_TIMEOUT)?;
     out.status.success().then(|| String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
