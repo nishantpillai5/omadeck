@@ -3,6 +3,7 @@ on:
   push:
     branches: [master, main]
   pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -15,7 +16,7 @@ jobs:
     steps:
       - name: Install dependencies
         # font-dejavu: the render tests draw text and need at least one installed font.
-      run: pacman -Syu --noconfirm --needed base-devel rust gtk4 libadwaita systemd-libs fontconfig font-dejavu git
+        run: pacman -Syu --noconfirm --needed base-devel rust gtk4 libadwaita systemd-libs fontconfig font-dejavu git
       - uses: actions/checkout@v7
       - uses: actions/cache@v6
         with:

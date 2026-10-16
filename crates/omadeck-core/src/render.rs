@@ -78,6 +78,20 @@ const INPUT_GLYPH: &str = "f057f"; // 󰕿 microphone
 const MUTE_GLYPH: &str = "f075f"; // 󰝟 muted
 const BRIGHTNESS_GLYPH: &str = "f00de"; // 󀟎 brightness
 
+/// The glyph a volume dial's `$B1` panel shows when it has no icon: the mute glyph when
+/// muted, else the dial's own glyph, else a speaker (output) or a microphone (input).
+fn volume_glyph<'a>(face: &Face<'a>, device: AudioDevice, muted: bool) -> &'a str {
+    if muted {
+        MUTE_GLYPH
+    } else if let Some(g) = face.glyph.filter(|g| !g.trim().is_empty()) {
+        g
+    } else if device.is_output() {
+        OUTPUT_GLYPH
+    } else {
+        INPUT_GLYPH
+    }
+}
+
 /// Which dial panel a touch at `x` falls in, for a strip `width` pixels wide with
 /// `dials` panels. Out of range (or no dials) is `None`.
 pub fn tap_to_dial(x: u32, width: u32, dials: usize) -> Option<usize> {
@@ -120,6 +134,20 @@ impl Renderer {
     }
 
     /// Re-resolve the font if the style asks for a different one.
+    /// A renderer that draws with this font file instead of fontconfig's choice, so pixel
+    /// tests give the same result on every machine. The theme is the built-in default.
+    #[cfg(test)]
+    pub(crate) fn with_font_bytes(style: &Style, data: &[u8]) -> Self {
+        Self {
+            font: Some(FontVec::try_from_vec(data.to_vec()).expect("a valid test font")),
+            font_pattern: style.font.clone(),
+            theme: Theme::default(),
+            icons: HashMap::new(),
+            backdrops: HashMap::new(),
+            decode_count: std::cell::Cell::new(0),
+        }
+    }
+
     pub fn update_style(&mut self, style: &Style) {
         if self.font.is_none() || self.font_pattern != style.font {
             self.font_pattern = style.font.clone();
@@ -353,22 +381,13 @@ impl Renderer {
         img
     }
 
-    /// The icon for a volume dial's `$B1` panel: the user's icon if set, else the mute
-    /// glyph when muted, else their glyph, else a default speaker (output) or mic (input).
+    /// The icon for a volume dial's `$B1` panel: the user's icon if set, else
+    /// [`volume_glyph`].
     fn volume_icon(&mut self, face: &Face, device: AudioDevice, muted: bool, color: Rgb) -> Option<RgbaImage> {
         if let Some(p) = face.icon {
             return self.icon(&paths::resolve(p), STRIP_ICON_PX);
         }
-        let glyph = if muted {
-            MUTE_GLYPH
-        } else if let Some(g) = face.glyph.filter(|g| !g.trim().is_empty()) {
-            g
-        } else if device.is_output() {
-            OUTPUT_GLYPH
-        } else {
-            INPUT_GLYPH
-        };
-        self.glyph(glyph, (STRIP_ICON_PX as f32 * 0.86) as u32, color)
+        self.glyph(volume_glyph(face, device, muted), (STRIP_ICON_PX as f32 * 0.86) as u32, color)
     }
 
     /// The icon for a brightness dial's `$B1` panel: the user's icon if set, else their
@@ -827,10 +846,22 @@ mod tests {
         Style { follow_theme: false, background: Some("#334455".into()), ..Default::default() }
     }
 
-    /// The renderer needs a font to draw ink; skip the pixel assertions without one.
-    fn renderer_with_font() -> Option<Renderer> {
-        let r = Renderer::new(&test_style());
-        r.font.is_some().then_some(r)
+    /// A renderer with the bundled test font (an OFL subset, `tests/fixtures/test-font.ttf`),
+    /// so text pixels don't depend on the machine's fonts. Never skips.
+    fn renderer_with_font() -> Renderer {
+        Renderer::with_font_bytes(&test_style(), include_bytes!("../tests/fixtures/test-font.ttf"))
+    }
+
+    /// Compare `img` with the golden PNG `name` in `tests/fixtures`, or rewrite the golden
+    /// when `OMADECK_UPDATE_GOLDEN=1` is set (then review the PNG diff before committing).
+    fn golden(img: &RgbaImage, name: &str) {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures").join(name);
+        if std::env::var_os("OMADECK_UPDATE_GOLDEN").is_some() {
+            img.save(&path).unwrap();
+            return;
+        }
+        let want = image::open(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display())).to_rgba8();
+        assert!(*img == want, "{name} differs; rerun with OMADECK_UPDATE_GOLDEN=1 and review the PNG diff");
     }
 
     fn in_rect(x: u32, y: u32, rect: (u32, u32, u32, u32)) -> bool {
@@ -840,7 +871,7 @@ mod tests {
 
     #[test]
     fn key_glyph_stays_in_its_box() {
-        let Some(mut r) = renderer_with_font() else { return };
+        let mut r = renderer_with_font();
         let style = test_style();
         let key = KeyConfig { label: String::new(), glyph: Some("A".into()), ..KeyConfig::new(0) };
         let img = r.render(Some(&key), &style, 72, false);
@@ -874,7 +905,7 @@ mod tests {
 
     #[test]
     fn strip_panel_layout() {
-        let Some(mut r) = renderer_with_font() else { return };
+        let mut r = renderer_with_font();
         let mut cfg = Config { style: test_style(), ..Default::default() };
         cfg.dials.push(DialConfig { label: "Workspace".into(), glyph: Some("A".into()), ..DialConfig::new(0) });
         let status = vec![DialStatus::default(); 4];
@@ -963,7 +994,7 @@ mod tests {
 
     #[test]
     fn strip_volume_bar_fills_to_level() {
-        let Some(mut r) = renderer_with_font() else { return };
+        let mut r = renderer_with_font();
         let dial = volume_dial();
         let (bx, by, _bw, bh) = B1_BAR;
         let mid_y = by + bh / 2;
@@ -977,7 +1008,7 @@ mod tests {
 
     #[test]
     fn strip_volume_muted_leaves_bar_empty() {
-        let Some(mut r) = renderer_with_font() else { return };
+        let mut r = renderer_with_font();
         let dial = volume_dial();
         let (bx, by, _bw, bh) = B1_BAR;
         let mid_y = by + bh / 2;
@@ -995,7 +1026,7 @@ mod tests {
     fn strip_volume_without_level_stays_b1() {
         // Before the first poll (level None) the panel is still $B1, not $X1: it draws its
         // groove bar and does not draw the centred $X1 icon.
-        let Some(mut r) = renderer_with_font() else { return };
+        let mut r = renderer_with_font();
         let mut cfg = Config { style: test_style(), ..Default::default() };
         cfg.dials.push(volume_dial());
         let panel = r.render_strip_panel(&cfg, 0, 4, DialStatus::default());
@@ -1201,7 +1232,7 @@ mod tests {
 
     #[test]
     fn bright_image_flips_label_dark() {
-        let Some(mut r) = renderer_with_font() else { return };
+        let mut r = renderer_with_font();
         let strip = tmp_image("bright", &solid_img(800, 100, Rgba([255, 255, 255, 255])));
         let mut cfg = Config { style: test_style(), ..Default::default() };
         cfg.strip.background_image = Some(strip.to_string_lossy().into());
@@ -1248,30 +1279,31 @@ mod tests {
 
     /// The no-image panels must be pixel-identical to the fixtures captured before this
     /// PR changed `render_strip_panel`'s signature and colours.
+    /// The no-image panels must be pixel-identical to the goldens. They use the bundled
+    /// font and the glyph "A", so they don't depend on the machine's fonts.
     #[test]
     fn no_images_pixels_unchanged() {
-        let Some(mut r) = renderer_with_font() else { return };
-        let load = |bytes: &[u8]| image::load_from_memory(bytes).unwrap().to_rgba8();
+        let mut r = renderer_with_font();
         let cfg = Config { style: test_style(), ..Default::default() };
-        assert_eq!(
-            r.render_strip_panel(&cfg, 0, 4, DialStatus::default()),
-            load(include_bytes!("../tests/fixtures/strip-empty.png")),
-            "empty slot"
-        );
+        golden(&r.render_strip_panel(&cfg, 0, 4, DialStatus::default()), "strip-empty.png");
         let mut cfg = Config { style: test_style(), ..Default::default() };
         cfg.dials.push(DialConfig { label: "Volume".into(), glyph: Some("A".into()), ..DialConfig::new(0) });
-        assert_eq!(
-            r.render_strip_panel(&cfg, 0, 4, DialStatus::default()),
-            load(include_bytes!("../tests/fixtures/strip-x1.png")),
-            "$X1 panel"
-        );
+        golden(&r.render_strip_panel(&cfg, 0, 4, DialStatus::default()), "strip-x1.png");
         let mut cfg = Config { style: test_style(), ..Default::default() };
-        cfg.dials.push(volume_dial());
+        cfg.dials.push(DialConfig { glyph: Some("A".into()), ..volume_dial() });
         let st = DialStatus { pressed: false, level: Some(Level { value: 0.4, text: "40%".into(), muted: false }) };
-        assert_eq!(
-            r.render_strip_panel(&cfg, 0, 4, st),
-            load(include_bytes!("../tests/fixtures/strip-b1.png")),
-            "$B1 panel"
-        );
+        golden(&r.render_strip_panel(&cfg, 0, 4, st), "strip-b1.png");
+    }
+
+    #[test]
+    fn volume_glyph_defaults() {
+        use super::{INPUT_GLYPH, MUTE_GLYPH, OUTPUT_GLYPH, volume_glyph};
+        let plain = volume_dial();
+        let face = plain.face();
+        assert_eq!(volume_glyph(&face, AudioDevice::Output, false), OUTPUT_GLYPH);
+        assert_eq!(volume_glyph(&face, AudioDevice::Input, false), INPUT_GLYPH);
+        assert_eq!(volume_glyph(&face, AudioDevice::Input, true), MUTE_GLYPH);
+        let own = DialConfig { glyph: Some("A".into()), ..volume_dial() };
+        assert_eq!(volume_glyph(&own.face(), AudioDevice::Output, false), "A");
     }
 }
