@@ -11,8 +11,8 @@ use omadeck_core::config::{self, RemovedPage};
 use omadeck_core::ipc::{self, Command as DaemonCommand, Event};
 use omadeck_core::paths::FileStamp;
 use omadeck_core::{
-    Action, AudioDevice, Config, DeckInfo, DialConfig, DialStatus, HOME, KeyConfig, Keys, Level, LevelSource, Renderer,
-    device, paths, tap_to_dial,
+    Action, AudioDevice, Config, DeckInfo, DialConfig, DialStatus, HOME, KeyConfig, Keys, Level, LevelSource,
+    PanelStatus, Renderer, device, paths, tap_to_dial,
 };
 
 use crate::{editor, media};
@@ -723,7 +723,7 @@ impl App {
                         muted: false,
                     }),
                 });
-                DialStatus { pressed: false, level }
+                DialStatus { pressed: false, panel: PanelStatus { level } }
             })
             .collect();
         let img = self.renderer.borrow_mut().render_strip(&cfg, &status, (width as u32, width as u32 * h / w));
