@@ -29,10 +29,14 @@ pub fn build_key(app: &Rc<App>, i: u8) -> gtk::Widget {
     let buttons = gtk::Box::new(gtk::Orientation::Horizontal, 6);
     let test = gtk::Button::builder()
         .icon_name("media-playback-start-symbolic")
-        .tooltip_text(if key.action == Action::Back { "Back only works on the deck" } else { "Try it now" })
+        .tooltip_text(match &key.action {
+            Action::Back => "Back only works on the deck",
+            Action::PageStep { .. } => "Page steps only work on the deck",
+            _ => "Try it now",
+        })
         .valign(gtk::Align::Center)
         .sensitive(match &key.action {
-            Action::None | Action::Back => false,
+            Action::None | Action::Back | Action::PageStep { .. } => false,
             Action::Page { page } => app.config.borrow().has_page(page),
             _ => true,
         })
@@ -265,10 +269,14 @@ fn dial_action_group(
     let act = app.config.borrow().dial(i).map(&get).unwrap_or_default();
     let test = gtk::Button::builder()
         .icon_name("media-playback-start-symbolic")
-        .tooltip_text(if act == Action::Back { "Back only works on the deck" } else { "Try it now" })
+        .tooltip_text(match &act {
+            Action::Back => "Back only works on the deck",
+            Action::PageStep { .. } => "Page steps only work on the deck",
+            _ => "Try it now",
+        })
         .valign(gtk::Align::Center)
         .sensitive(match &act {
-            Action::None | Action::Back => false,
+            Action::None | Action::Back | Action::PageStep { .. } => false,
             Action::Page { page } => app.config.borrow().has_page(page),
             _ => true,
         })
@@ -347,6 +355,7 @@ fn action_editor(
     match action {
         Action::Page { .. } => kind_row.set_subtitle("Shows another page of keys on the deck"),
         Action::Back => kind_row.set_subtitle("Returns to the page shown before this one, or Home"),
+        Action::PageStep { .. } => kind_row.set_subtitle("The next or previous page, for flicks and dial turns"),
         _ => {}
     }
     let a = app.clone();
@@ -626,6 +635,24 @@ fn action_rows(
             buttons.add_suffix(&open);
             buttons.set_activatable_widget(Some(&open));
             group.add(&buttons);
+        }
+
+        Action::PageStep { change } => {
+            let spin = adw::SpinRow::with_range(-5.0, 5.0, 1.0);
+            spin.set_title("Pages to move");
+            spin.set_value(*change as f64);
+            let a = app.clone();
+            let get = get.clone();
+            let edit = edit.clone();
+            spin.connect_value_notify(move |r| {
+                let change = r.value().round() as i8;
+                let mut act = get(&a);
+                if let Action::PageStep { change: c } = &mut act {
+                    *c = change;
+                }
+                edit(&a, act);
+            });
+            group.add(&spin);
         }
 
         Action::Volume { device, change, mute } => {

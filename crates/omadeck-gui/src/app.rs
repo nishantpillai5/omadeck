@@ -797,7 +797,7 @@ impl App {
     pub fn add_page(self: &Rc<Self>, name: &str) -> String {
         let mut cfg = self.config.borrow_mut();
         let name = cfg.unique_page_name(name);
-        cfg.pages.push(Page { name: name.clone(), keys: Keys(vec![back_key()]) });
+        cfg.pages.push(Page { name: name.clone(), keys: Keys(vec![back_key()]), folder: true });
         drop(cfg);
         self.sync_page_list();
         self.schedule_save();

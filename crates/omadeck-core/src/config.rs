@@ -46,6 +46,10 @@ pub struct Page {
     pub name: String,
     #[serde(default, rename = "key", skip_serializing_if = "Keys::is_empty")]
     pub keys: Keys,
+    /// A folder: opened from a key, with a Back key. Folders are skipped by page steps,
+    /// so a flick can't land inside one.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub folder: bool,
 }
 
 /// The keys on one page. Keys that aren't listed are blank.
@@ -111,6 +115,14 @@ fn is_true(b: &bool) -> bool {
 
 fn is_zero_i8(v: &i8) -> bool {
     *v == 0
+}
+
+fn default_step() -> i8 {
+    1
+}
+
+fn is_default_step(v: &i8) -> bool {
+    *v == 1
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -238,10 +250,16 @@ pub enum Action {
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         mute: bool,
     },
+    /// Move to the next or previous page; on a dial, per turn.
+    PageStep {
+        /// How many pages to move, signed. 1 is next.
+        #[serde(default = "default_step", skip_serializing_if = "is_default_step")]
+        change: i8,
+    },
 }
 
 impl Action {
-    pub const KINDS: [&'static str; 9] = [
+    pub const KINDS: [&'static str; 10] = [
         "Nothing",
         "Launch app",
         "Run script",
@@ -251,6 +269,7 @@ impl Action {
         "Open page",
         "Go back",
         "Volume",
+        "Next/previous page",
     ];
 
     pub fn kind_index(&self) -> usize {
@@ -264,12 +283,13 @@ impl Action {
             Action::Page { .. } => 6,
             Action::Back => 7,
             Action::Volume { .. } => 8,
+            Action::PageStep { .. } => 9,
         }
     }
 
-    /// Page navigation is handled by whoever owns the deck, not by `action::run`.
-    pub fn is_navigation(&self) -> bool {
-        matches!(self, Action::Page { .. } | Action::Back)
+    /// Handled by whoever owns the deck (page moves, later brightness), not by `action::run`.
+    pub fn is_deck_owned(&self) -> bool {
+        matches!(self, Action::Page { .. } | Action::Back | Action::PageStep { .. })
     }
 
     pub fn is_none(&self) -> bool {
@@ -286,6 +306,7 @@ impl Action {
             6 => Action::Page { page: String::new() },
             7 => Action::Back,
             8 => Action::Volume { device: AudioDevice::Output, change: 5, mute: false },
+            9 => Action::PageStep { change: 1 },
             _ => Action::None,
         }
     }
@@ -301,6 +322,12 @@ impl Action {
             Action::Page { page } => format!("Open page {page}"),
             Action::Back => "Go back".into(),
             Action::Volume { device, change, mute } => volume_summary(*device, *change, *mute),
+            Action::PageStep { change } => match *change {
+                1 => "Next page".into(),
+                -1 => "Previous page".into(),
+                c if c > 0 => format!("Page +{c}"),
+                c => format!("Page {c}"),
+            },
         }
     }
 }
@@ -488,6 +515,27 @@ impl Config {
         self.pages.iter().map(|p| p.name.clone()).collect()
     }
 
+    /// The pages a flick or `page_step` moves through: Home first, then the non-folder
+    /// pages in file order.
+    fn steppable_pages(&self) -> Vec<Option<String>> {
+        let mut pages = vec![None];
+        pages.extend(self.pages.iter().filter(|p| !p.folder).map(|p| Some(p.name.clone())));
+        pages
+    }
+
+    /// Step from `current` by `change` pages, wrapping both ways. `None` when there's
+    /// nothing to step through. A `current` that isn't steppable (a folder, or gone)
+    /// steps from Home.
+    pub fn step_page(&self, current: Option<&str>, change: i32) -> Option<Option<String>> {
+        let pages = self.steppable_pages();
+        if pages.len() < 2 {
+            return None;
+        }
+        let pos = current.and_then(|c| pages.iter().position(|p| p.as_deref() == Some(c))).unwrap_or(0);
+        let next = (pos as i32 + change).rem_euclid(pages.len() as i32) as usize;
+        Some(pages[next].clone())
+    }
+
     /// Why `name` can't be used for a new or renamed page, if it can't.
     pub fn page_name_problem(&self, name: &str) -> Option<&'static str> {
         let name = name.trim();
@@ -586,14 +634,64 @@ mod tests {
         c.keys.get_mut(3).action = Action::Sound { file: "~/a.wav".into(), volume: Some(0.5) };
         c.keys.get_mut(4).action = Action::Script { path: "x.sh".into(), terminal: true };
         c.keys.get_mut(5).action = Action::Page { page: "Media".into() };
-        let mut media = Page { name: "Media".into(), keys: Keys::default() };
+        let mut media = Page { name: "Media".into(), keys: Keys::default(), folder: false };
         media.keys.get_mut(0).action = Action::Back;
         media.keys.get_mut(1).label = "Play".into();
         c.pages.push(media);
-        c.pages.push(Page { name: "Empty".into(), keys: Keys::default() });
+        c.pages.push(Page { name: "Empty".into(), keys: Keys::default(), folder: false });
         let s = toml::to_string_pretty(&c).unwrap();
         let back: Config = toml::from_str(&s).unwrap();
         assert_eq!(c, back);
+    }
+
+    #[test]
+    fn step_page() {
+        let mut c = Config::default();
+        c.pages.push(Page { name: "A".into(), keys: Keys::default(), folder: false });
+        c.pages.push(Page { name: "F".into(), keys: Keys::default(), folder: true });
+        c.pages.push(Page { name: "B".into(), keys: Keys::default(), folder: false });
+
+        // Home, A, B: folders are skipped.
+        assert_eq!(c.step_page(None, 1), Some(Some("A".into())));
+        assert_eq!(c.step_page(Some("A"), 1), Some(Some("B".into())));
+        // Wraps both ways.
+        assert_eq!(c.step_page(Some("B"), 1), Some(None));
+        assert_eq!(c.step_page(None, -1), Some(Some("B".into())));
+        // Multi-step.
+        assert_eq!(c.step_page(None, 2), Some(Some("B".into())));
+        assert_eq!(c.step_page(Some("B"), -3), Some(Some("B".into())));
+        // A folder (or a gone page) steps from Home.
+        assert_eq!(c.step_page(Some("F"), 1), Some(Some("A".into())));
+        assert_eq!(c.step_page(Some("Gone"), -1), Some(Some("B".into())));
+
+        // Nothing to step through: Home only, or Home with only folders.
+        assert_eq!(Config::default().step_page(None, 1), None);
+        let only_folders =
+            Config { pages: vec![Page { name: "F".into(), keys: Keys::default(), folder: true }], ..Config::default() };
+        assert_eq!(only_folders.step_page(None, 1), None);
+    }
+
+    #[test]
+    fn page_step_roundtrip() {
+        let mut c = Config::default();
+        c.keys.get_mut(0).action = Action::PageStep { change: -2 };
+        c.keys.get_mut(1).action = Action::PageStep { change: 1 };
+        let s = toml::to_string_pretty(&c).unwrap();
+        assert!(s.contains(r#"type = "page_step""#));
+        assert!(!s.contains("change = 1"), "the default step is not written");
+        let back: Config = toml::from_str(&s).unwrap();
+        assert_eq!(c, back);
+        assert_eq!(Action::PageStep { change: 1 }.summary(), "Next page");
+        assert_eq!(Action::PageStep { change: -1 }.summary(), "Previous page");
+        assert_eq!(Action::PageStep { change: 3 }.summary(), "Page +3");
+    }
+
+    #[test]
+    fn folder_flag_is_optional() {
+        let c: Config = toml::from_str("[[page]]\nname = \"A\"").unwrap();
+        assert!(!c.pages[0].folder, "a hand-written page without the flag is a normal page");
+        let s = toml::to_string_pretty(&c).unwrap();
+        assert!(!s.contains("folder"), "the flag is not written when false");
     }
 
     #[test]
@@ -609,7 +707,7 @@ mod tests {
     #[test]
     fn pages() {
         let mut c = Config::default();
-        c.pages.push(Page { name: "Media".into(), keys: Keys::default() });
+        c.pages.push(Page { name: "Media".into(), keys: Keys::default(), folder: false });
         c.keys.get_mut(0).action = Action::Page { page: "Media".into() };
         c.page_mut(Some("Media")).unwrap().get_mut(2).action = Action::Page { page: "Media".into() };
         assert_eq!(c.links_to("Media"), 2);
@@ -638,7 +736,7 @@ mod tests {
         let mut c = Config::default();
         c.keys.get_mut(4).label = "b".into();
         c.keys.get_mut(1).label = "a".into();
-        c.pages.push(Page { name: "P".into(), keys: Keys::default() });
+        c.pages.push(Page { name: "P".into(), keys: Keys::default(), folder: false });
         c.page_mut(Some("P")).unwrap().get_mut(3);
         c.save_to(&path).unwrap();
         let back = Config::load_from(&path).unwrap();

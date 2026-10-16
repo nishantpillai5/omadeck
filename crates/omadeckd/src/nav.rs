@@ -33,6 +33,22 @@ impl Nav {
         true
     }
 
+    /// The page we came from, if any: where Back would go. `None` outside a page.
+    pub fn parent(&self) -> Option<Option<String>> {
+        self.history.last().cloned()
+    }
+
+    /// Move sideways to `page` (a flick or page step): replace the current page and clear
+    /// the trail, so Back doesn't undo a sideways move.
+    pub fn switch(&mut self, page: Option<&str>) -> bool {
+        if self.current.as_deref() == page {
+            return false;
+        }
+        self.current = page.map(str::to_string);
+        self.history.clear();
+        true
+    }
+
     /// Go to the previous page, or home if there is none. Returns whether anything changed.
     pub fn back(&mut self) -> bool {
         if self.current.is_none() {
@@ -64,7 +80,7 @@ mod tests {
     use omadeck_core::{Keys, Page};
 
     fn cfg(pages: &[&str]) -> Config {
-        let pages = pages.iter().map(|n| Page { name: n.to_string(), keys: Keys::default() }).collect();
+        let pages = pages.iter().map(|n| Page { name: n.to_string(), keys: Keys::default(), folder: false }).collect();
         Config { pages, ..Config::default() }
     }
 
@@ -91,6 +107,31 @@ mod tests {
         assert_eq!(n.history, [None, Some("A".to_string())]);
         n.go(None);
         assert!(n.history.is_empty());
+    }
+
+    #[test]
+    fn switch_clears_the_trail() {
+        let mut n = Nav::default();
+        n.go(Some("A"));
+        n.go(Some("B"));
+        assert!(n.switch(Some("C")));
+        assert_eq!(n.current(), Some("C"));
+        assert!(n.history.is_empty(), "a sideways move is not on the trail");
+        assert!(n.back(), "back goes home, not along the old trail");
+        assert_eq!(n.current(), None);
+        assert!(!n.switch(None), "switching home from home does nothing");
+        assert!(n.switch(Some("C")));
+        assert!(!n.switch(Some("C")), "switching to the current page does nothing");
+    }
+
+    #[test]
+    fn parent_is_where_back_would_go() {
+        let mut n = Nav::default();
+        assert_eq!(n.parent(), None);
+        n.go(Some("A"));
+        assert_eq!(n.parent(), Some(None));
+        n.go(Some("B"));
+        assert_eq!(n.parent(), Some(Some("A".into())));
     }
 
     #[test]
