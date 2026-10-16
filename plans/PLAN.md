@@ -44,22 +44,24 @@ bugs U1–U9 in [BUGS.md](BUGS.md) are to go in the first message to the author.
 as 29). It also showed most later plans had drifted from the code, so all of them (8–16)
 were rewritten against `d7bd448` and the two new steps below.
 
+**Done (2026-10-17): `fix/review`.** All of BUGS.md 22–43 fixed on `fix/review`
+(`87be396`, eight task commits), which is now `daily`. CI runs on the fork
+(`workflow_dispatch`); the goldens use a bundled OFL font subset. One plan typo fixed
+along the way: the Arch font package is `fonts-dejavu`.
+
 Next, in this order:
 
-1. **`fix/review`** ([review-fixes.md](review-fixes.md), base `fix/bugs`): BUGS.md 22–43.
-   CI (it has never run since PR 3), font-independent goldens, GUI pages no longer all
-   folders, brightness hand edits, the paint-per-report regression, image decode costs.
-2. **`feat/groundwork`** ([groundwork.md](groundwork.md), base `fix/review`): BUGS.md
+1. **`feat/groundwork`** ([groundwork.md](groundwork.md), base `fix/review`): BUGS.md
    44–49 plus the restructuring PRs 8–16 all need, built once (see Shared building blocks).
    Almost nothing changes for the user.
-3. Then the features, each based on the previous branch.
+2. Then the features, each based on the previous branch.
 
 Each feature gets its own `feat/*` branch, plan file and (later) PR. Work them in this
 order; the order is mine, not upstream's roadmap order.
 
 | # | Branch | Feature | Plan |
 |---|--------|---------|------|
-| – | `fix/review` | Bugs from the 2026-10-17 review | [review-fixes](review-fixes.md) |
+| – | `fix/review` | Bugs from the 2026-10-17 review — **done** (`87be396`) | [review-fixes](review-fixes.md) |
 | – | `feat/groundwork` | Daemon split, watcher, ordered volume, non-blocking hub, GUI mirrors the daemon, `ActionSlot` | [groundwork](groundwork.md) |
 | 8 | `feat/toggle-keys` | Keys with on/off faces that follow real state, plus a busy state with progress for slow toggles (e.g. a model server starting up) and for any key while its command runs | [pr8](pr8-toggle-keys.md) |
 | 9 | `feat/live-keys` | Keys that show a clock, CPU, workspace, … and update themselves; the Hyprland event listener | [pr9](pr9-live-keys.md) |
@@ -234,6 +236,7 @@ Useful pages (check they're still current when you use them):
 | `feat/*` | `upstream/master`, or the feature it depends on | One branch per PR. Small and self-contained. |
 | `daily` | `upstream/master` + every `feat/*` merged in | What I build and run. |
 | `fix/bugs` | `feat/strip-backgrounds` | The 2026-10-17 bug pass (all 21 bugs closed). |
+| `fix/review` | `fix/bugs` | The 2026-10-17 review fixes, BUGS.md 22–43 (`87be396`). |
 | `plans` | `upstream/master` | These notes only. Never merged anywhere. |
 
 New features from PR 7 on mostly touch the same files as PRs 1–6, so base each new branch
