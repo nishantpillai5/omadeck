@@ -6,7 +6,7 @@ use adw::prelude::*;
 use gtk::{gdk, gio, glib};
 use omadeck_core::{Action, HOME, KeyConfig, Rgb, action, paths};
 
-use crate::app::App;
+use crate::app::{App, KeyRef};
 use crate::{apps, media};
 
 pub fn build(app: &Rc<App>, i: u8) -> gtk::Widget {
@@ -169,6 +169,7 @@ fn action_rows(app: &Rc<App>, i: u8, key: &KeyConfig, group: &adw::PreferencesGr
             let a = app.clone();
             choose.connect_clicked(move |_| {
                 let a2 = a.clone();
+                let at = a.key_ref(i);
                 apps::pick(&a.window, move |info| {
                     let command = info
                         .id()
@@ -176,7 +177,7 @@ fn action_rows(app: &Rc<App>, i: u8, key: &KeyConfig, group: &adw::PreferencesGr
                         .unwrap_or_else(|| info.commandline().map(|c| c.to_string_lossy().into()).unwrap_or_default());
                     let icon = media::import_app_icon(&info);
                     let name = info.display_name().to_string();
-                    a2.edit(i, |k| {
+                    a2.edit_ref(&at, |k| {
                         k.action = Action::App { command };
                         k.label = name;
                         if icon.is_some() {
@@ -207,9 +208,9 @@ fn action_rows(app: &Rc<App>, i: u8, key: &KeyConfig, group: &adw::PreferencesGr
                 let path = e.text().to_string();
                 a.edit(i, |k| k.action = Action::Script { path, terminal: t });
             });
-            row.add_suffix(&browse_button(app, "Choose a script", None, move |a, p| {
+            row.add_suffix(&browse_button(app, i, "Choose a script", None, move |a, at, p| {
                 let path = paths::portable(&p);
-                a.edit(i, |k| k.action = Action::Script { path, terminal: t });
+                a.edit_ref(at, |k| k.action = Action::Script { path, terminal: t });
             }));
             group.add(&row);
 
@@ -239,9 +240,9 @@ fn action_rows(app: &Rc<App>, i: u8, key: &KeyConfig, group: &adw::PreferencesGr
                 let file = e.text().to_string();
                 a.edit(i, |k| k.action = Action::Sound { file, volume: v });
             });
-            row.add_suffix(&browse_button(app, "Choose a sound", Some(("Audio", "audio/*")), move |a, p| {
+            row.add_suffix(&browse_button(app, i, "Choose a sound", Some(("Audio", "audio/*")), move |a, at, p| {
                 let file = paths::portable(&p);
-                a.edit(i, |k| k.action = Action::Sound { file, volume: v });
+                a.edit_ref(at, |k| k.action = Action::Sound { file, volume: v });
             }));
             group.add(&row);
 
@@ -287,6 +288,7 @@ fn action_rows(app: &Rc<App>, i: u8, key: &KeyConfig, group: &adw::PreferencesGr
                 btn.set_label("Fetching…");
                 let a = a.clone();
                 let btn = btn.clone();
+                let at = a.key_ref(i);
                 glib::spawn_future_local(async move {
                     let u = url.clone();
                     let res = gio::spawn_blocking(move || media::fetch_favicon(&u)).await;
@@ -298,7 +300,7 @@ fn action_rows(app: &Rc<App>, i: u8, key: &KeyConfig, group: &adw::PreferencesGr
                                 a.toast("The site had no usable icon, so this one came from DuckDuckGo");
                             }
                             let name = media::host_of(&url).map(|h| site_name(&h)).unwrap_or_default();
-                            a.edit(i, |k| {
+                            a.edit_ref(&at, |k| {
                                 k.icon = Some(icon);
                                 if k.label.is_empty() {
                                     k.label = name;
@@ -439,12 +441,13 @@ fn icon_row(app: &Rc<App>, i: u8, key: &KeyConfig) -> adw::ActionRow {
     choose.connect_clicked(move |_| {
         let dialog = file_dialog("Choose an icon", Some(("Images", "image/*")));
         let a = a.clone();
+        let at = a.key_ref(i);
         glib::spawn_future_local(async move {
             let Ok(file) = dialog.open_future(Some(&a.window)).await else { return };
             let Some(path) = file.path() else { return };
             match media::import_icon(&path) {
                 Ok(rel) => {
-                    a.edit(i, |k| k.icon = Some(rel));
+                    a.edit_ref(&at, |k| k.icon = Some(rel));
                     a.rebuild_editor();
                 }
                 Err(e) => a.toast(&format!("{e:#}")),
@@ -509,9 +512,10 @@ fn file_dialog(title: &str, filter: Option<(&str, &str)>) -> gtk::FileDialog {
 
 fn browse_button(
     app: &Rc<App>,
+    i: u8,
     title: &'static str,
     filter: Option<(&'static str, &'static str)>,
-    on_file: impl Fn(&Rc<App>, std::path::PathBuf) + Clone + 'static,
+    on_file: impl Fn(&Rc<App>, &KeyRef, std::path::PathBuf) + Clone + 'static,
 ) -> gtk::Button {
     let btn = gtk::Button::builder()
         .icon_name("folder-open-symbolic")
@@ -524,11 +528,12 @@ fn browse_button(
         let dialog = file_dialog(title, filter);
         let a = a.clone();
         let on_file = on_file.clone();
+        let at = a.key_ref(i);
         glib::spawn_future_local(async move {
             if let Ok(file) = dialog.open_future(Some(&a.window)).await
                 && let Some(p) = file.path()
             {
-                on_file(&a, p);
+                on_file(&a, &at, p);
                 a.rebuild_editor();
             }
         });

@@ -10,6 +10,11 @@ pub struct Rgb(pub u8, pub u8, pub u8);
 impl Rgb {
     pub fn parse(s: &str) -> Option<Self> {
         let h = s.trim().trim_start_matches('#');
+        // Check the digits before slicing: a multi-byte character would make
+        // `&h[..6]` panic, and `from_str_radix` would accept a leading `+`.
+        if !h.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return None;
+        }
         let h = if h.len() == 8 { &h[..6] } else { h }; // ignore alpha
         if h.len() != 6 {
             return None;
@@ -96,5 +101,13 @@ mod tests {
         assert_eq!(Rgb::parse("7fd4e4ff"), Some(Rgb(0x7f, 0xd4, 0xe4)));
         assert_eq!(Rgb::parse("#zzz"), None);
         assert_eq!(Rgb(1, 2, 255).hex(), "#0102ff");
+    }
+
+    #[test]
+    fn parse_rejects_non_hex_without_panicking() {
+        assert_eq!(Rgb::parse("#aaaaaéa"), None); // 8 bytes, 'é' straddles byte 6
+        assert_eq!(Rgb::parse("ééééé"), None);
+        assert_eq!(Rgb::parse("+12345"), None);
+        assert_eq!(Rgb::parse(""), None);
     }
 }

@@ -14,6 +14,7 @@ use anyhow::{Context, Result};
 use notify::{RecursiveMode, Watcher};
 use omadeck_core::device::{self, DeviceStateReader, DeviceStateUpdate, HidApi, Kind, StreamDeck};
 use omadeck_core::ipc::{Command, Event};
+use omadeck_core::paths::FileStamp;
 use omadeck_core::{Action, Config, DeckInfo, Renderer, action, paths};
 
 use hub::Hub;
@@ -22,6 +23,8 @@ use nav::Nav;
 const SCAN_INTERVAL: Duration = Duration::from_secs(2);
 const READ_TIMEOUT: Duration = Duration::from_millis(100);
 const RELOAD_DEBOUNCE: Duration = Duration::from_millis(150);
+/// How often to double-check the config by stat, for changes inotify can't see.
+const STAMP_INTERVAL: Duration = Duration::from_secs(1);
 
 struct Deck {
     dev: Arc<StreamDeck>,
@@ -119,6 +122,9 @@ fn run() -> Result<()> {
         }
     })?;
     watcher.watch(&paths::config_dir(), RecursiveMode::NonRecursive)?;
+    let mut dir_stamp = FileStamp::of(&paths::config_dir());
+    let mut cfg_stamp = FileStamp::of(&paths::config_file());
+    let mut last_stamp_check = Instant::now();
     let omarchy = paths::omarchy_current_dir();
     if omarchy.is_dir() {
         watcher.watch(&omarchy, RecursiveMode::NonRecursive)?;
@@ -145,6 +151,30 @@ fn run() -> Result<()> {
         // Coalesce bursts of filesystem events into one reload.
         while rx.try_recv().is_ok() {
             reload_at = Some(Instant::now() + RELOAD_DEBOUNCE);
+        }
+        // inotify misses a symlinked config's target, and its watch dies with a config
+        // directory that's deleted and recreated (restoring a backup), so also compare stamps.
+        if last_stamp_check.elapsed() >= STAMP_INTERVAL {
+            last_stamp_check = Instant::now();
+            let d = FileStamp::of(&paths::config_dir());
+            // The directory's mtime moves on every save; only its identity matters here.
+            if !FileStamp::same_file(d, dir_stamp) {
+                dir_stamp = d;
+                let _ = watcher.unwatch(&paths::config_dir());
+                if d.is_some() {
+                    log::info!("config directory was replaced; watching the new one");
+                    let _ = watcher.watch(&paths::config_dir(), RecursiveMode::NonRecursive);
+                    if paths::icons_dir().is_dir() {
+                        let _ = watcher.unwatch(&paths::icons_dir());
+                        let _ = watcher.watch(&paths::icons_dir(), RecursiveMode::NonRecursive);
+                    }
+                }
+            }
+            let c = FileStamp::of(&paths::config_file());
+            if c != cfg_stamp {
+                cfg_stamp = c;
+                reload_at.get_or_insert(Instant::now());
+            }
         }
         if reload_at.is_some_and(|t| Instant::now() >= t) {
             reload_at = None;

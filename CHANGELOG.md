@@ -14,6 +14,21 @@ All notable changes to omadeck are documented here. The format follows
   follows page changes made on the deck.
 - `omadeckd press KEY [PAGE]` and `omadeckd snapshot FILE [PAGE]` take an optional page.
 
+### Fixed
+- A colour value with a non-ASCII character (in the config or the Omarchy theme) crashed the
+  daemon, and systemd restarted it into the same crash.
+- Websites, scripts and terminals opened from the deck ran inside the omadeckd service, so
+  restarting or upgrading it closed them. They now get their own scope (via `uwsm-app`, or
+  `systemd-run --scope` without it), like launched apps.
+- The configurator now picks up edits made to `config.toml` while it's open instead of
+  overwriting them on its next save.
+- A config the configurator can't parse is no longer renamed to `config.toml.broken` and
+  replaced with an empty one. The app shows the error and won't save until the file is fixed.
+- A site icon or file chosen for a key no longer lands on another page's key if you switch
+  pages before it finishes.
+- Live reload keeps working after the config folder is deleted and recreated, and with a
+  symlinked `config.toml`. Saving from the configurator keeps the symlink.
+
 ## [0.1.0] - 2026-10-02
 
 The first public release.

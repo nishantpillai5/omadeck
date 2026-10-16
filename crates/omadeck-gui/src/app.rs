@@ -8,6 +8,7 @@ use std::time::Duration;
 use adw::prelude::*;
 use gtk::{gdk, gio, glib};
 use omadeck_core::ipc::{self, Command as DaemonCommand, Event};
+use omadeck_core::paths::FileStamp;
 use omadeck_core::{Action, Config, DeckInfo, HOME, KeyConfig, Keys, Page, Renderer, device, paths};
 
 use crate::{editor, media};
@@ -18,6 +19,15 @@ const PREVIEW_PX: u32 = 192;
 /// The key a new page starts with, so a page opened from a key works like a folder.
 fn back_key() -> KeyConfig {
     KeyConfig { label: "Back".into(), glyph: Some("\u{f004d}".into()), action: Action::Back, ..KeyConfig::new(0) }
+}
+
+/// A key on a particular page. Work that finishes later (fetching an icon, a picker)
+/// holds one of these, so the result lands on the key it was started for even if the
+/// window has moved to another page since.
+#[derive(Clone)]
+pub struct KeyRef {
+    page: Option<String>,
+    index: u8,
 }
 
 enum Msg {
@@ -31,6 +41,9 @@ pub struct App {
     toasts: adw::ToastOverlay,
     title: adw::WindowTitle,
     banner: adw::Banner,
+    config_banner: adw::Banner,
+    body: gtk::Box,
+    settings_btn: gtk::MenuButton,
     grid: gtk::Grid,
     model_label: gtk::Label,
     page_list: gtk::StringList,
@@ -52,23 +65,33 @@ pub struct App {
     save_source: RefCell<Option<glib::SourceId>>,
     theme_css: gtk::CssProvider,
     theme_monitor: RefCell<Option<gio::FileMonitor>>,
+    /// config.toml as this window last read or wrote it (`None`: no file). Anything else
+    /// on disk was written by someone else, and is never overwritten.
+    disk: RefCell<Option<String>>,
+    stamp: Cell<Option<FileStamp>>,
+    /// Why config.toml couldn't be parsed. Saving is off until it's fixed.
+    locked: RefCell<Option<String>>,
 }
 
 impl App {
     pub fn build(application: &adw::Application) -> Rc<Self> {
-        let first_run = !paths::config_file().exists();
-        let (config, load_error) = match Config::load() {
-            Ok(_) if first_run => (crate::starter::layout(), None),
-            Ok(c) => (c, None),
-            Err(e) => {
-                // Keep the broken file around instead of silently overwriting the user's edits.
-                let backup = paths::config_file().with_extension("toml.broken");
-                let _ = std::fs::rename(paths::config_file(), &backup);
-                (Config::default(), Some(format!("{e:#} — moved it to {}", backup.display())))
-            }
+        let file = paths::config_file();
+        let stamp = FileStamp::of(&file);
+        let (config, mut disk, locked) = match std::fs::read_to_string(&file) {
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => (crate::starter::layout(), None, None),
+            // An unreadable or broken file is left exactly as it is; the window opens read-only.
+            Err(e) => (Config::default(), None, Some(format!("can't read it: {e}"))),
+            Ok(src) => match Config::parse(&src) {
+                Ok(c) => (c, Some(src), None),
+                Err(e) => (Config::default(), Some(src), Some(format!("{e:#}"))),
+            },
         };
-        if first_run && let Err(e) = config.save() {
-            log::warn!("saving starter layout: {e:#}");
+        let first_run = stamp.is_none() && locked.is_none();
+        if first_run {
+            match config.save() {
+                Ok(body) => disk = Some(body),
+                Err(e) => log::warn!("saving starter layout: {e:#}"),
+            }
         }
         let renderer = Renderer::new(&config.style);
         let deck = device::detect().into_iter().next().unwrap_or_else(DeckInfo::fallback);
@@ -93,6 +116,7 @@ impl App {
             .button_label("Start service")
             .revealed(false)
             .build();
+        let config_banner = adw::Banner::builder().button_label("Open folder").revealed(false).build();
 
         // --- deck ------------------------------------------------------------------------
         let grid = gtk::Grid::builder().row_spacing(14).column_spacing(14).build();
@@ -155,6 +179,7 @@ impl App {
         let view = adw::ToolbarView::new();
         view.add_top_bar(&header);
         view.add_top_bar(&banner);
+        view.add_top_bar(&config_banner);
         view.set_content(Some(&toasts));
 
         let window = adw::ApplicationWindow::builder()
@@ -184,6 +209,9 @@ impl App {
             toasts,
             title,
             banner,
+            config_banner,
+            body,
+            settings_btn,
             grid,
             model_label,
             page_list,
@@ -203,9 +231,12 @@ impl App {
             save_source: RefCell::default(),
             theme_css,
             theme_monitor: RefCell::default(),
+            disk: RefCell::new(disk),
+            stamp: Cell::new(FileStamp::of(&file)),
+            locked: RefCell::new(locked),
         });
 
-        settings_btn.set_popover(Some(&app.settings_popover()));
+        app.settings_btn.set_popover(Some(&app.settings_popover()));
         let weak = Rc::downgrade(&app);
         app.page_dropdown.connect_selected_notify(move |dd| {
             let Some(app) = weak.upgrade() else { return };
@@ -242,6 +273,10 @@ impl App {
                 app.start_daemon();
             }
         });
+        app.config_banner.connect_button_clicked(|_| {
+            let uri = gio::File::for_path(paths::config_dir()).uri();
+            let _ = gio::AppInfo::launch_default_for_uri(&uri, gio::AppLaunchContext::NONE);
+        });
         let weak = Rc::downgrade(&app);
         app.window.connect_close_request(move |_| {
             if let Some(app) = weak.upgrade() {
@@ -262,10 +297,9 @@ impl App {
         app.select(std::env::var("OMADECK_SELECT").ok().and_then(|v| v.parse().ok()));
         app.update_title();
         app.listen();
+        app.watch_config();
+        app.show_lock();
         app.window.present();
-        if let Some(e) = load_error {
-            app.toast(&format!("Couldn't read your config: {e}"));
-        }
         app
     }
 
@@ -430,6 +464,31 @@ impl App {
         self.schedule_save();
     }
 
+    /// The key `i` of the page being edited, to edit later with [`App::edit_ref`].
+    pub fn key_ref(&self, i: u8) -> KeyRef {
+        KeyRef { page: self.page.borrow().clone(), index: i }
+    }
+
+    /// Like [`App::edit`], for a key that may no longer be on screen. Returns false (and
+    /// says so) when its page has gone.
+    pub fn edit_ref(self: &Rc<Self>, at: &KeyRef, f: impl FnOnce(&mut KeyConfig)) -> bool {
+        if self.locked.borrow().is_some() {
+            return false;
+        }
+        match self.config.borrow_mut().page_mut(at.page.as_deref()) {
+            Some(keys) => f(keys.get_mut(at.index)),
+            None => {
+                self.toast("That key's page was deleted, so the change was dropped");
+                return false;
+            }
+        }
+        if *self.page.borrow() == at.page {
+            self.refresh_key(at.index);
+        }
+        self.schedule_save();
+        true
+    }
+
     pub fn clear_key(self: &Rc<Self>, i: u8) {
         self.with_page(|keys| keys.clear(i));
         self.refresh_key(i);
@@ -451,17 +510,107 @@ impl App {
         *self.save_source.borrow_mut() = Some(id);
     }
 
-    fn flush_save(&self) {
+    fn flush_save(self: &Rc<Self>) {
         if let Some(id) = self.save_source.borrow_mut().take() {
             id.remove();
             self.save_now();
         }
     }
 
-    fn save_now(&self) {
-        if let Err(e) = self.config.borrow().save() {
-            self.toast(&format!("Couldn't save: {e:#}"));
+    fn save_now(self: &Rc<Self>) {
+        if self.locked.borrow().is_some() {
+            return;
         }
+        // Someone edited config.toml since we last looked: theirs wins.
+        let on_disk = std::fs::read_to_string(paths::config_file()).ok();
+        let changed = on_disk != *self.disk.borrow();
+        if changed {
+            self.reload_from_disk(true);
+            return;
+        }
+        let saved = self.config.borrow().save();
+        match saved {
+            Ok(body) => {
+                *self.disk.borrow_mut() = Some(body);
+                self.stamp.set(FileStamp::of(&paths::config_file()));
+            }
+            Err(e) => self.toast(&format!("Couldn't save: {e:#}")),
+        }
+    }
+
+    // --- external edits -------------------------------------------------------------------
+
+    /// Pick up edits made to config.toml outside this window (a text editor, a dotfile
+    /// sync, a restored backup). Polling the file's stamp also covers symlinked configs.
+    fn watch_config(self: &Rc<Self>) {
+        let weak = Rc::downgrade(self);
+        glib::timeout_add_local(Duration::from_secs(1), move || {
+            let Some(app) = weak.upgrade() else { return glib::ControlFlow::Break };
+            let stamp = FileStamp::of(&paths::config_file());
+            if stamp != app.stamp.get() {
+                app.stamp.set(stamp);
+                let on_disk = std::fs::read_to_string(paths::config_file()).ok();
+                // A deleted file is left alone; the next edit here writes it back.
+                let changed = on_disk.is_some() && on_disk != *app.disk.borrow();
+                if changed {
+                    let pending = app.save_source.borrow().is_some();
+                    app.reload_from_disk(pending);
+                }
+            }
+            glib::ControlFlow::Continue
+        });
+    }
+
+    /// Replace the in-memory config with what's on disk. `dropping` says an unsaved edit
+    /// made here is being discarded in favour of the file.
+    fn reload_from_disk(self: &Rc<Self>, dropping: bool) {
+        if let Some(id) = self.save_source.borrow_mut().take() {
+            id.remove();
+        }
+        let file = paths::config_file();
+        self.stamp.set(FileStamp::of(&file));
+        let Ok(src) = std::fs::read_to_string(&file) else { return };
+        match Config::parse(&src) {
+            Ok(cfg) => {
+                {
+                    let mut r = self.renderer.borrow_mut();
+                    r.update_style(&cfg.style);
+                    r.clear_cache();
+                }
+                *self.config.borrow_mut() = cfg;
+                *self.locked.borrow_mut() = None;
+                let page = self.page.borrow().clone().filter(|p| self.config.borrow().has_page(p));
+                *self.page.borrow_mut() = page;
+                self.settings_btn.set_popover(Some(&self.settings_popover()));
+                self.sync_page_list();
+                self.refresh_all();
+                self.rebuild_editor();
+                self.toast(if dropping {
+                    "config.toml was changed outside omadeck, so your last change here was discarded"
+                } else {
+                    "Loaded changes made to config.toml outside omadeck"
+                });
+            }
+            Err(e) => *self.locked.borrow_mut() = Some(format!("{e:#}")),
+        }
+        *self.disk.borrow_mut() = Some(src);
+        self.show_lock();
+    }
+
+    /// While config.toml can't be parsed, say why and stop editing, so nothing here can
+    /// overwrite the user's file.
+    fn show_lock(&self) {
+        let locked = self.locked.borrow();
+        if let Some(e) = locked.as_deref() {
+            let first = e.lines().map(str::trim).find(|l| !l.is_empty()).unwrap_or(e);
+            self.config_banner.set_title(&glib::markup_escape_text(&format!(
+                "config.toml has a mistake ({first}). Fix it in a text editor; omadeck won't change it until then."
+            )));
+            log::warn!("config.toml can't be parsed, editing is off: {e}");
+        }
+        self.config_banner.set_revealed(locked.is_some());
+        self.body.set_sensitive(locked.is_none());
+        self.settings_btn.set_sensitive(locked.is_none());
     }
 
     // --- pages ----------------------------------------------------------------------------

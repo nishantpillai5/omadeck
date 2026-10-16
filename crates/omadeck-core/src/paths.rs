@@ -66,3 +66,28 @@ pub fn portable(path: &Path) -> String {
     }
     path.to_string_lossy().into_owned()
 }
+
+/// Identity and modification time of a file, following symlinks. Comparing two stamps tells
+/// whether the file was edited or replaced, even when no filesystem event arrived (a symlink
+/// to a file elsewhere, or a config directory that was deleted and recreated).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FileStamp {
+    dev: u64,
+    ino: u64,
+    len: u64,
+    mtime: (i64, i64),
+}
+
+impl FileStamp {
+    /// `None` when the file doesn't exist (or can't be read).
+    pub fn of(path: &Path) -> Option<Self> {
+        use std::os::unix::fs::MetadataExt;
+        let m = std::fs::metadata(path).ok()?;
+        Some(Self { dev: m.dev(), ino: m.ino(), len: m.len(), mtime: (m.mtime(), m.mtime_nsec()) })
+    }
+
+    /// Whether both stamps are of the same file, edited or not.
+    pub fn same_file(a: Option<Self>, b: Option<Self>) -> bool {
+        a.map(|s| (s.dev, s.ino)) == b.map(|s| (s.dev, s.ino))
+    }
+}

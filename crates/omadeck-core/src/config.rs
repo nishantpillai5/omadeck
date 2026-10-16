@@ -256,33 +256,47 @@ impl Config {
     /// Missing file → default config.
     pub fn load_from(path: &Path) -> Result<Self> {
         match fs::read_to_string(path) {
-            Ok(s) => toml::from_str(&s).with_context(|| format!("parsing {}", path.display())),
+            Ok(s) => Self::parse(&s).with_context(|| format!("parsing {}", path.display())),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Self::default()),
             Err(e) => Err(e).with_context(|| format!("reading {}", path.display())),
         }
     }
 
-    pub fn save(&self) -> Result<()> {
+    pub fn parse(src: &str) -> Result<Self> {
+        Ok(toml::from_str(src)?)
+    }
+
+    /// Saves and returns exactly what was written.
+    pub fn save(&self) -> Result<String> {
         self.save_to(&paths::config_file())
     }
 
     /// Atomic write (temp file + rename) so the daemon never reads a half-written file.
-    pub fn save_to(&self, path: &Path) -> Result<()> {
+    /// A symlinked config (dotfile managers) is written through, keeping the link.
+    pub fn save_to(&self, path: &Path) -> Result<String> {
         let mut clean = self.clone();
         clean.keys.tidy();
         for p in &mut clean.pages {
             p.keys.tidy();
         }
-        let body = toml::to_string_pretty(&clean)?;
+        let body = format!(
+            "# omadeck configuration - edit by hand or with the `omadeck` app.\n\n{}",
+            toml::to_string_pretty(&clean)?
+        );
+        let link = fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_symlink());
+        let path = if link {
+            fs::canonicalize(path).with_context(|| format!("following {}", path.display()))?
+        } else {
+            path.to_path_buf()
+        };
         let dir = path.parent().context("config path has no parent")?;
         fs::create_dir_all(dir)?;
         let tmp = dir.join(".config.toml.tmp");
         let mut f = fs::File::create(&tmp)?;
-        f.write_all(b"# omadeck configuration - edit by hand or with the `omadeck` app.\n\n")?;
         f.write_all(body.as_bytes())?;
         f.sync_all()?;
-        fs::rename(&tmp, path)?;
-        Ok(())
+        fs::rename(&tmp, &path)?;
+        Ok(body)
     }
 
     /// The keys of a page: `None` is the home page.
@@ -451,6 +465,24 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         assert_eq!(back.keys.iter().map(|k| k.index).collect::<Vec<_>>(), [1, 4]);
         assert!(back.page(Some("P")).unwrap().is_empty(), "blank keys are dropped, empty pages kept");
+    }
+
+    #[test]
+    fn save_keeps_a_symlinked_config() {
+        let dir = std::env::temp_dir().join(format!("omadeck-link-{}", std::process::id()));
+        let real = dir.join("dotfiles/omadeck.toml");
+        let link = dir.join("config.toml");
+        std::fs::create_dir_all(real.parent().unwrap()).unwrap();
+        std::fs::write(&real, "").unwrap();
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        let mut c = Config::default();
+        c.keys.get_mut(0).label = "via link".into();
+        c.save_to(&link).unwrap();
+        let still_link = std::fs::symlink_metadata(&link).unwrap().file_type().is_symlink();
+        let back = Config::load_from(&real).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(still_link);
+        assert_eq!(back.keys.iter().next().unwrap().label, "via link");
     }
 
     #[test]

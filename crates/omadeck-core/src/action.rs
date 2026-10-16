@@ -34,6 +34,29 @@ fn has_uwsm() -> bool {
     *HAS.get_or_init(|| which("uwsm-app"))
 }
 
+/// A command that outlives the daemon. Anything started directly would stay in
+/// omadeckd's cgroup, and systemd kills that whole cgroup when the service stops or
+/// restarts — taking browsers, terminals and scripts with it. So run it through
+/// uwsm-app (as Omarchy does) or, failing that, in a transient systemd scope.
+fn detached<S: AsRef<std::ffi::OsStr>>(argv: &[S]) -> Command {
+    static SCOPE: OnceLock<bool> = OnceLock::new();
+    let mut c = if has_uwsm() {
+        let mut c = Command::new("uwsm-app");
+        c.arg("--");
+        c
+    } else if *SCOPE.get_or_init(|| which("systemd-run")) {
+        let mut c = Command::new("systemd-run");
+        c.args(["--user", "--scope", "--collect", "--quiet", "--"]);
+        c
+    } else {
+        let mut c = Command::new(&argv[0]);
+        c.args(&argv[1..]);
+        return c;
+    };
+    c.args(argv);
+    c
+}
+
 /// Spawn in its own process group with no stdio, reaping it on a helper thread.
 fn spawn(mut cmd: Command) -> Result<()> {
     cmd.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).process_group(0);
@@ -58,28 +81,16 @@ fn launch_app(command: &str) -> Result<()> {
     // Desktop entry id, e.g. "org.gnome.Nautilus.desktop".
     if command.ends_with(".desktop") && !command.contains(char::is_whitespace) {
         if has_uwsm() {
-            let mut c = Command::new("uwsm-app");
-            c.args(["--", command]);
-            return spawn(c);
+            return spawn(detached(&[command]));
         }
-        let mut c = Command::new("gtk-launch");
-        c.arg(command.trim_end_matches(".desktop"));
-        return spawn(c);
+        return spawn(detached(&["gtk-launch", command.trim_end_matches(".desktop")]));
     }
     let argv: Vec<String> = if needs_shell(command) {
         vec!["sh".into(), "-c".into(), command.into()]
     } else {
         shell_words::split(command).context("could not parse command")?
     };
-    let mut c = if has_uwsm() {
-        let mut c = Command::new("uwsm-app");
-        c.arg("--").args(&argv);
-        c
-    } else {
-        let mut c = Command::new(&argv[0]);
-        c.args(&argv[1..]);
-        c
-    };
+    let mut c = detached(&argv);
     c.current_dir(std::env::var_os("HOME").unwrap_or_else(|| "/".into()));
     spawn(c)
 }
@@ -96,18 +107,11 @@ fn run_script(path: &str, terminal: bool) -> Result<()> {
     }
     argv.push(p.to_string_lossy().into_owned());
 
-    let mut c = if terminal {
-        let mut c = Command::new(if which("xdg-terminal-exec") { "xdg-terminal-exec" } else { "alacritty" });
-        if !which("xdg-terminal-exec") {
-            c.arg("-e");
-        }
-        c.args(&argv);
-        c
-    } else {
-        let mut c = Command::new(&argv[0]);
-        c.args(&argv[1..]);
-        c
-    };
+    if terminal {
+        let term: &[&str] = if which("xdg-terminal-exec") { &["xdg-terminal-exec"] } else { &["alacritty", "-e"] };
+        argv.splice(0..0, term.iter().map(|s| s.to_string()));
+    }
+    let mut c = detached(&argv);
     if let Some(dir) = p.parent() {
         c.current_dir(dir);
     }
@@ -150,9 +154,7 @@ fn open_url(url: &str) -> Result<()> {
     if url.trim().is_empty() {
         bail!("no URL set");
     }
-    let mut c = Command::new("xdg-open");
-    c.arg(normalize_url(url));
-    spawn(c)
+    spawn(detached(&["xdg-open".to_string(), normalize_url(url)]))
 }
 
 fn hypr_dispatch(dispatch: &str) -> Result<()> {
