@@ -32,6 +32,8 @@ const STAMP_INTERVAL: Duration = Duration::from_secs(1);
 const DIAL_FLASH: Duration = Duration::from_millis(150);
 /// The Plus's LCD can ignore the first writes right after connect; repaint once after this.
 const POST_CONNECT_REPAINT: Duration = Duration::from_secs(1);
+/// Minimum horizontal distance, in strip pixels, for a swipe to count as a flick.
+const FLICK_MIN_PX: i32 = 50;
 /// How often the audio worker re-reads a watched device's level.
 const AUDIO_POLL: Duration = Duration::from_millis(1000);
 /// Wait this long after our own volume change before re-reading, so the command finishes.
@@ -421,19 +423,9 @@ fn run() -> Result<()> {
                             hub.publish(Event::KeyDown { index: i, page: nav.current().map(str::to_string) });
                             let Some(k) = cfg.key(nav.current(), i) else { continue };
                             log::info!("key {i}: {}", k.action.summary());
-                            let moved = match &k.action {
-                                Action::Page { page } if cfg.has_page(page) => Ok(nav.go(Some(page))),
-                                Action::Page { page } => Err(anyhow::anyhow!("there's no page named “{page}”")),
-                                Action::Back => Ok(nav.back()),
-                                a => action::run(a).map(|_| false),
-                            };
-                            match moved {
-                                Ok(true) => show_page(Some(d), &cfg, &nav, &mut renderer, &hub),
-                                Ok(false) => {}
-                                Err(e) => {
-                                    log::warn!("key {i}: {e:#}");
-                                    hub.publish(Event::ActionFailed { index: i, message: format!("{e:#}") });
-                                }
+                            if let Err(e) = run_deck_action(d, &cfg, &mut nav, &mut renderer, &hub, &k.action, 1) {
+                                log::warn!("key {i}: {e:#}");
+                                hub.publish(Event::ActionFailed { index: i, message: format!("{e:#}") });
                             }
                         }
                         DeviceStateUpdate::ButtonUp(i) => {
@@ -443,13 +435,14 @@ fn run() -> Result<()> {
                         DeviceStateUpdate::EncoderTwist(i, delta) => {
                             log::debug!("dial {i} turned {delta}");
                             hub.publish(Event::DialTurn { index: i, delta });
-                            if let Some(d) = cfg.dial(i) {
+                            if let Some(dial) = cfg.dial(i) {
                                 let (act, dir) =
-                                    if delta >= 0 { (&d.turn_right, "right") } else { (&d.turn_left, "left") };
+                                    if delta >= 0 { (&dial.turn_right, "right") } else { (&dial.turn_left, "left") };
                                 let steps = delta.unsigned_abs().min(8);
                                 if !act.is_none() {
                                     log::info!("dial {i} turned {dir} x{steps}: {}", act.summary());
-                                    if let Err(e) = action::run_steps(act, steps) {
+                                    if let Err(e) = run_deck_action(d, &cfg, &mut nav, &mut renderer, &hub, act, steps)
+                                    {
                                         log::warn!("dial {i}: {e:#}");
                                         hub.publish(Event::DialActionFailed { index: i, message: format!("{e:#}") });
                                     }
@@ -470,7 +463,7 @@ fn run() -> Result<()> {
                                 && !dc.press.is_none()
                             {
                                 log::info!("dial {i}: {}", dc.press.summary());
-                                if let Err(e) = action::run(&dc.press) {
+                                if let Err(e) = run_deck_action(d, &cfg, &mut nav, &mut renderer, &hub, &dc.press, 1) {
                                     log::warn!("dial {i}: {e:#}");
                                     hub.publish(Event::DialActionFailed { index: i, message: format!("{e:#}") });
                                 }
@@ -506,7 +499,9 @@ fn run() -> Result<()> {
                                     && !dc.press.is_none()
                                 {
                                     log::info!("dial {i}: {}", dc.press.summary());
-                                    if let Err(e) = action::run(&dc.press) {
+                                    if let Err(e) =
+                                        run_deck_action(d, &cfg, &mut nav, &mut renderer, &hub, &dc.press, 1)
+                                    {
                                         log::warn!("dial {i}: {e:#}");
                                         hub.publish(Event::DialActionFailed {
                                             index: i as u8,
@@ -525,10 +520,17 @@ fn run() -> Result<()> {
                             hub.publish(Event::StripLongPress { x, y });
                         }
                         DeviceStateUpdate::TouchScreenSwipe(from, to) => {
-                            // Published for now; PR 5 uses it to change page, as the
-                            // Elgato app does.
                             log::info!("strip swipe {from:?} to {to:?}");
                             hub.publish(Event::StripSwipe { from, to });
+                            // As in the Elgato app: a horizontal flick pages through, left is
+                            // next, right is previous. Short or mostly vertical swipes don't.
+                            let (dx, dy) = (to.0 as i32 - from.0 as i32, to.1 as i32 - from.1 as i32);
+                            if dx.abs() >= FLICK_MIN_PX && dx.abs() > dy.abs() {
+                                let act = Action::PageStep { change: if dx < 0 { 1 } else { -1 } };
+                                if let Err(e) = run_deck_action(d, &cfg, &mut nav, &mut renderer, &hub, &act, 1) {
+                                    log::warn!("strip flick: {e:#}");
+                                }
+                            }
                         }
                         // Neo touch points; nothing reacts to them yet.
                         _ => {}
@@ -611,6 +613,44 @@ fn connect(hid: &mut HidApi, cfg: &Config, page: Option<&str>, renderer: &mut Re
         log::warn!("initial paint failed: {e}");
     }
     Some(deck)
+}
+
+/// Run an action from the deck: page moves move the deck, everything else goes to
+/// `action::run`. Returns whether the deck moved.
+fn dispatch(cfg: &Config, nav: &mut Nav, act: &Action, steps: u8) -> Result<bool> {
+    match act {
+        Action::Page { page } if cfg.has_page(page) => Ok(nav.go(Some(page))),
+        Action::Page { page } => Err(anyhow::anyhow!("there's no page named “{page}”")),
+        Action::Back => Ok(nav.back()),
+        Action::PageStep { change } => {
+            // From inside a folder, step from the folder's parent, leaving the folder.
+            let in_folder = cfg.pages.iter().any(|p| p.folder && nav.current().is_some_and(|c| p.name == c));
+            let origin = if in_folder { nav.parent().flatten() } else { nav.current().map(str::to_string) };
+            let by = i32::from(*change) * steps as i32;
+            match cfg.step_page(origin.as_deref(), by) {
+                Some(page) => Ok(nav.switch(page.as_deref())),
+                None => Ok(false),
+            }
+        }
+        a => action::run_steps(a, steps).map(|_| false),
+    }
+}
+
+/// Run `act` from the deck and repaint if it moved the page.
+fn run_deck_action(
+    d: &mut Deck,
+    cfg: &Config,
+    nav: &mut Nav,
+    renderer: &mut Renderer,
+    hub: &Hub,
+    act: &Action,
+    steps: u8,
+) -> Result<bool> {
+    let moved = dispatch(cfg, nav, act, steps)?;
+    if moved {
+        show_page(Some(d), cfg, nav, renderer, hub);
+    }
+    Ok(moved)
 }
 
 /// Repaint the deck after `nav` moved to another page, and tell the configurators.

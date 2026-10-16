@@ -22,7 +22,7 @@ pub fn run(action: &Action) -> Result<()> {
         Action::Sound { file, volume } => play_sound(&paths::resolve(file), *volume),
         Action::Url { url } => open_url(url),
         Action::Hyprland { dispatch } => hypr_dispatch(dispatch),
-        Action::Page { .. } | Action::Back => bail!("changing pages only works on the deck"),
+        Action::Page { .. } | Action::Back | Action::PageStep { .. } => bail!("changing pages only works on the deck"),
         Action::Volume { device, change, mute } => run_volume(*device, *change, *mute),
     }
 }
