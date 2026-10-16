@@ -1,6 +1,7 @@
 //! The daemon's state and everything the deck loop does with it: inputs, actions, page
 //! moves, brightness, values from the watcher, reloads and painting.
 
+use std::collections::HashMap;
 use std::fmt;
 use std::time::{Duration, Instant};
 
@@ -10,7 +11,7 @@ use omadeck_core::device::{DeviceStateUpdate, StreamDeckError};
 use omadeck_core::ipc::{Command, Event};
 use omadeck_core::probe::{self, Probe, Value, Values};
 use omadeck_core::state::State;
-use omadeck_core::{Action, AudioDevice, Config, LevelSource, Renderer, action, tap_to_dial};
+use omadeck_core::{Action, AudioDevice, Config, LevelSource, PanelStatus, Renderer, action, tap_to_dial};
 
 use crate::deck::{self, Deck};
 use crate::hub::Hub;
@@ -77,6 +78,8 @@ pub struct Daemon {
     pub saver: StateSaver,
     pub rt: Runtime,
     pub deck: Option<Deck>,
+    /// What was last published per strip panel (`Event::DialStatus`), so only changes go out.
+    published: HashMap<u8, PanelStatus>,
     pub reload_at: Option<Instant>,
     pub repaint_at: Option<Instant>,
 }
@@ -85,6 +88,7 @@ impl Daemon {
     pub fn new(cfg: Config, hub: Hub, watcher: Watcher, saver: StateSaver) -> Self {
         let renderer = Renderer::new(&cfg.style);
         let rt = Runtime::load(&cfg);
+        hub.publish(Event::Brightness { value: rt.values.brightness });
         Daemon {
             cfg,
             renderer,
@@ -95,6 +99,7 @@ impl Daemon {
             saver,
             rt,
             deck: None,
+            published: HashMap::new(),
             reload_at: None,
             repaint_at: None,
         }
@@ -109,6 +114,7 @@ impl Daemon {
         }
         self.hub.publish(Event::Connected { deck: d.info.clone() });
         self.deck = Some(d);
+        self.published.clear();
         self.repaint_at = Some(Instant::now() + POST_CONNECT_REPAINT);
         self.watch();
     }
@@ -118,6 +124,7 @@ impl Daemon {
         if let Some(d) = self.deck.take() {
             log::warn!("lost {} ({e}); waiting for it to come back", d.info.model);
         }
+        self.published.clear();
         self.repaint_at = None;
         let _ = self.watcher.cmd.send(WatchCmd::Watch(Vec::new()));
         self.hub.publish(Event::Disconnected);
@@ -423,6 +430,7 @@ impl Daemon {
         self.rt.values.brightness = next;
         self.rt.state.brightness = Some(next);
         self.saver.send(self.rt.state.clone());
+        self.hub.publish(Event::Brightness { value: next });
         if let Some(d) = &mut self.deck {
             if let Err(e) = d.dev.set_brightness(next) {
                 log::warn!("set_brightness: {e}");
@@ -461,6 +469,13 @@ impl Daemon {
     pub fn flush(&mut self) {
         let Some(d) = &mut self.deck else { return };
         deck::flush_dirty(d, &self.cfg, &mut self.renderer, &self.rt.values);
+        for i in 0..d.info.dials {
+            let status = probe::dial_status(self.cfg.dial(i), &self.rt.values, false).panel;
+            if self.published.get(&i) != Some(&status) {
+                self.published.insert(i, status.clone());
+                self.hub.publish(Event::DialStatus { index: i, status });
+            }
+        }
     }
 
     /// Hand the deck back to its logo, close the socket, write any pending state.
