@@ -6,13 +6,12 @@ use std::path::Path;
 use std::process::{Command, Stdio};
 use std::sync::OnceLock;
 use std::thread;
-use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 
 use crate::audio;
 use crate::config::{Action, AudioDevice};
-use crate::paths;
+use crate::{paths, proc};
 
 pub fn run(action: &Action) -> Result<()> {
     match action {
@@ -35,11 +34,7 @@ pub fn run_steps(action: &Action, steps: u8) -> Result<()> {
     // A fast spin folds into one volume command instead of `steps` processes: Omarchy 4's
     // script ignores a second mute within 250 ms, and one command is snappier.
     if let Action::Volume { device, change, mute } = action {
-        if *mute {
-            return run_volume(*device, 0, true);
-        }
-        let total = (*change as i32 * steps as i32).clamp(-100, 100) as i8;
-        return run_volume(*device, total, false);
+        return run_volume(*device, if *mute { 0 } else { folded_volume(*change, steps) }, *mute);
     }
     // `hyprctl dispatch` waits for Hyprland's answer, so a fast spin must not run several
     // on the caller's thread (the deck loop): more than one step runs in order on a helper
@@ -67,29 +62,45 @@ pub fn run_steps(action: &Action, steps: u8) -> Result<()> {
     Ok(())
 }
 
-/// Change the system volume. It goes through Omarchy's own commands when they're
-/// installed, so its on-screen pop-up shows just like the volume keys; otherwise it
-/// falls back to `wpctl`.
+/// The volume change `steps` detents of `change` make, as one command: clamped to ±100.
+pub fn folded_volume(change: i8, steps: u8) -> i8 {
+    (change as i32 * steps as i32).clamp(-100, 100) as i8
+}
+
+/// Change the system volume without waiting for it (`omadeckd press`, the configurator's
+/// "Try it now"). The daemon calls [`apply_volume`] on its watcher thread instead.
 fn run_volume(device: AudioDevice, change: i8, mute: bool) -> Result<()> {
-    let backend = audio::backend();
-    // The command is built on the helper thread, because Omarchy 3's pop-up needs the
-    // focused monitor and finding it runs `hyprctl`, which must not block the caller.
-    spawn_seq(move || {
-        let monitor = (backend == audio::Backend::Omarchy3).then(audio::focused_monitor).flatten();
-        volume_command(backend, device, change, mute, monitor.as_deref())
-    })?;
-    // Omarchy 4 has no command to change the mic's volume, so show its pop-up ourselves.
-    if backend == audio::Backend::Omarchy4 && device == AudioDevice::Input && !mute {
-        thread::spawn(|| {
-            std::thread::sleep(Duration::from_millis(80));
-            if let Some(lv) = audio::volume(AudioDevice::Input) {
-                let mut c = Command::new("omarchy-osd");
-                c.args(["-i", "microphone", "-p", &lv.percent.to_string()]);
-                let _ = spawn(c);
-            }
-        });
-    }
+    thread::Builder::new().name("volume".into()).spawn(move || apply_volume(device, change, mute))?;
     Ok(())
+}
+
+/// Change the system volume and wait until it's done. It goes through Omarchy's own
+/// commands when they're installed, so its on-screen pop-up shows just like the volume
+/// keys; otherwise it falls back to `wpctl`. Blocking: never call it on the deck loop.
+pub fn apply_volume(device: AudioDevice, change: i8, mute: bool) {
+    let backend = audio::backend();
+    // Omarchy 3's pop-up needs the focused monitor, which costs a `hyprctl` run.
+    let monitor = (backend == audio::Backend::Omarchy3).then(audio::focused_monitor).flatten();
+    let cmds = volume_command(backend, device, change, mute, monitor.as_deref());
+    log::info!("exec {}", cmds.iter().map(|a| format!("{a:?}")).collect::<Vec<_>>().join(" ; "));
+    for argv in cmds {
+        let mut c = Command::new(&argv[0]);
+        c.args(&argv[1..]).process_group(0);
+        if proc::output_timeout(&mut c, proc::COMMAND_TIMEOUT).is_none() {
+            log::warn!("{argv:?} failed to start or didn't finish");
+        }
+    }
+    // Omarchy 4 has no command to change the mic's volume, so show its pop-up ourselves.
+    // The change above has finished, so this reads the new level.
+    if backend == audio::Backend::Omarchy4
+        && device == AudioDevice::Input
+        && !mute
+        && let Some(lv) = audio::volume(AudioDevice::Input)
+    {
+        let mut c = Command::new("omarchy-osd");
+        c.args(["-i", "microphone", "-p", &lv.percent.to_string()]);
+        let _ = spawn(c);
+    }
 }
 
 /// The command(s) that apply a volume change, run in order. Pure, so every backend's
@@ -154,32 +165,6 @@ fn signed(n: i8) -> String {
 /// `unsigned_abs` so a hand-edited `-128` can't panic on `i8::abs`.
 fn wpctl_rel(n: i8) -> String {
     format!("{}%{}", n.unsigned_abs(), if n >= 0 { '+' } else { '-' })
-}
-
-/// Build and run a sequence of commands in order on one helper thread, so e.g. a volume
-/// change is applied before a follow-up reads the new value. `job` builds the commands
-/// there, so anything it runs stays off the caller's thread.
-fn spawn_seq(job: impl FnOnce() -> Vec<Vec<String>> + Send + 'static) -> Result<()> {
-    thread::spawn(move || {
-        let cmds = job();
-        if cmds.is_empty() {
-            return;
-        }
-        let joined = cmds.iter().map(|a| format!("{a:?}")).collect::<Vec<_>>().join(" ; ");
-        log::info!("exec {joined}");
-        for argv in cmds {
-            let desc = format!("{argv:?}");
-            let mut c = Command::new(&argv[0]);
-            c.args(&argv[1..]).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).process_group(0);
-            match c.spawn() {
-                Ok(mut child) => {
-                    let _ = child.wait();
-                }
-                Err(e) => log::warn!("failed to start {desc}: {e}"),
-            }
-        }
-    });
-    Ok(())
 }
 
 fn which(bin: &str) -> bool {
@@ -343,7 +328,10 @@ fn hypr_dispatch(dispatch: &str) -> Result<()> {
 /// Run `hyprctl dispatch …` and wait for its answer (it replies "ok" in a few ms).
 fn hyprctl_dispatch(args: &[String]) -> Result<()> {
     log::info!("exec hyprctl dispatch {}", args.join(" "));
-    let out = Command::new("hyprctl").arg("dispatch").args(args).stdin(Stdio::null()).output()?;
+    let mut c = Command::new("hyprctl");
+    c.arg("dispatch").args(args);
+    let out = proc::output_timeout(&mut c, proc::COMMAND_TIMEOUT)
+        .ok_or_else(|| anyhow::anyhow!("hyprctl didn't start or didn't answer"))?;
     let text = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
     let text = text.trim();
     if out.status.success() && (text.is_empty() || text == "ok") {
@@ -384,6 +372,15 @@ pub fn legacy_to_lua(dispatch: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn folded_volume_clamps() {
+        assert_eq!(folded_volume(5, 1), 5);
+        assert_eq!(folded_volume(-5, 3), -15);
+        assert_eq!(folded_volume(25, 8), 100);
+        assert_eq!(folded_volume(-25, 8), -100);
+        assert_eq!(folded_volume(i8::MIN, 8), -100);
+    }
 
     #[test]
     fn hypr_steps_check_before_the_thread() {
