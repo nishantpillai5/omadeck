@@ -11,7 +11,7 @@ use omadeck_core::device::{DeviceStateUpdate, StreamDeckError};
 use omadeck_core::ipc::{Command, Event};
 use omadeck_core::probe::{self, Probe, Value, Values};
 use omadeck_core::state::State;
-use omadeck_core::{Action, AudioDevice, Config, LevelSource, PanelStatus, Renderer, action, tap_to_dial};
+use omadeck_core::{Action, AudioDevice, Config, Level, LevelSource, PanelStatus, Renderer, action, tap_to_dial};
 
 use crate::deck::{self, Deck};
 use crate::hub::Hub;
@@ -81,6 +81,11 @@ pub struct Daemon {
     pub deck: Option<Deck>,
     /// What was last published per strip panel (`Event::DialStatus`), so only changes go out.
     published: HashMap<u8, PanelStatus>,
+    /// Volume changes sent to the watcher but not yet confirmed by its read-backs, per
+    /// device. The bar shows confirmed + in-flight, so it never drops to a value the
+    /// queued changes haven't reached yet (a fast spin would otherwise snap back as the
+    /// read-backs catch up).
+    in_flight: HashMap<AudioDevice, i32>,
     pub reload_at: Option<Instant>,
     pub repaint_at: Option<Instant>,
 }
@@ -101,6 +106,7 @@ impl Daemon {
             rt,
             deck: None,
             published: HashMap::new(),
+            in_flight: HashMap::new(),
             reload_at: None,
             repaint_at: None,
         }
@@ -127,6 +133,7 @@ impl Daemon {
         }
         self.published.clear();
         self.repaint_at = None;
+        self.in_flight.clear();
         let _ = self.watcher.cmd.send(WatchCmd::Watch(Vec::new()));
         self.hub.publish(Event::Disconnected);
     }
@@ -137,6 +144,8 @@ impl Daemon {
         let probes = probe::watched_probes(&self.cfg, self.nav.current(), dials);
         // Keep what is still shown, so a reload's repaint draws it as it is.
         self.rt.values.probes.retain(|p, _| probes.contains(p));
+        // The watch set changed: what was in flight is no longer accounted for.
+        self.in_flight.clear();
         let _ = self.watcher.cmd.send(WatchCmd::Watch(probes));
     }
 
@@ -202,14 +211,32 @@ impl Daemon {
 
     /// Take the watcher's new values.
     pub fn apply_values(&mut self) {
-        while let Ok((p, v)) = self.watcher.values.try_recv() {
-            self.apply_value(p, v);
+        while let Ok((p, v, applied)) = self.watcher.values.try_recv() {
+            self.apply_value(p, v, applied);
         }
     }
 
-    /// The one place a value lands, from the watcher or a guess: store it and mark what
-    /// shows it (today strip panels; PR 8 adds keys) for repainting at the end of the pass.
-    pub fn apply_value(&mut self, probe: Probe, value: Value) {
+    /// A read-back from the watcher: `applied` of what we sent is confirmed by this read.
+    /// What's still in flight hasn't happened yet, so it's shown on top of the read — the
+    /// bar only ever moves forward while a spin is in flight, and settles as the queue
+    /// drains, instead of snapping back to each stale read.
+    pub fn apply_value(&mut self, probe: Probe, mut value: Value, applied: i32) {
+        // PR 8 adds probes without in-flight volume; keep the guard for them.
+        #[allow(irrefutable_let_patterns)]
+        if let Probe::Volume(dev) = &probe
+            && let Value::Level(read) = &value
+        {
+            let f = self.in_flight.entry(*dev).or_insert(0);
+            let (nf, shown) = settle_volume(*f, applied, read);
+            *f = nf;
+            value = Value::Level(shown);
+        }
+        self.store_value(probe, value);
+    }
+
+    /// The one place a value is stored and what shows it (today strip panels; PR 8 adds
+    /// keys) marked for repainting at the end of the pass.
+    fn store_value(&mut self, probe: Probe, value: Value) {
         if let Some(d) = &mut self.deck {
             d.dirty_where(&self.cfg, |dial| probe::shows(dial, &probe));
         }
@@ -416,9 +443,15 @@ impl Daemon {
     /// The watcher's read right after the change corrects it. No guess before the first
     /// read: that read is moments away.
     fn guess_volume(&mut self, device: AudioDevice, change: i32, mute: bool) {
+        // The change goes to the watcher right after: it's in flight until a read-back
+        // confirms it. Clamped like the watcher's coalesce, so the two stay in step.
+        if !mute {
+            let f = self.in_flight.entry(device).or_insert(0);
+            *f = (*f + change).clamp(-100, 100);
+        }
         let Some(cur) = self.rt.values.level(device) else { return };
         let next = probe::guess_volume(cur, change, mute);
-        self.apply_value(Probe::Volume(device), Value::Level(next));
+        self.store_value(Probe::Volume(device), Value::Level(next));
     }
 
     /// Set or change the panel brightness: the deck (if any), the state file, the
@@ -494,6 +527,16 @@ impl Daemon {
 
 /// The new start brightness when `new` changes the config's `brightness` (a hand edit,
 /// or the configurator with no daemon), else `None`. (fix/review's, moved here.)
+/// A read-back confirms `applied` of the in-flight change: take it off the total, and
+/// show what's still in flight on top of the read, so the bar never drops to a value
+/// the queued changes haven't reached yet. The total stays clamped like the watcher's
+/// coalesce, so the two stay in step.
+fn settle_volume(f: i32, applied: i32, read: &Level) -> (i32, Level) {
+    let f = (f - applied).clamp(-100, 100);
+    let shown = if f != 0 { probe::guess_volume(read, f, false) } else { read.clone() };
+    (f, shown)
+}
+
 fn hand_edited_brightness(old: &Config, new: &Config) -> Option<u8> {
     (new.brightness != old.brightness).then_some(new.brightness)
 }
@@ -546,5 +589,30 @@ mod tests {
         assert_eq!(Source::Key(3).to_string(), "key 3");
         assert_eq!(Source::Turn(1).to_string(), "dial 1");
         assert_eq!(Source::Flick.to_string(), "strip flick");
+    }
+
+    fn level(percent: i32) -> Level {
+        Level { value: percent as f32 / 100.0, text: format!("{percent}%"), muted: false }
+    }
+
+    #[test]
+    fn fast_spin_does_not_snap_back() {
+        // Two turns of +5 are in flight (total 10). The watcher confirms them at once,
+        // coalesced: the bar stays where the turns put it, the total goes to zero.
+        let (f, shown) = settle_volume(10, 10, &level(60));
+        assert_eq!((f, shown.text.as_str()), (0, "60%"));
+        // Not coalesced: the first read-back confirms only 5. The bar must stay 60
+        // (55 read + 5 still in flight), not drop to the stale read.
+        let (f, shown) = settle_volume(10, 5, &level(55));
+        assert_eq!((f, shown.text.as_str()), (5, "60%"));
+        // A poll confirms nothing: the in-flight total is untouched.
+        let (f, shown) = settle_volume(10, 0, &level(55));
+        assert_eq!((f, shown.text.as_str()), (10, "65%"));
+        // The total stays clamped like the watcher's coalesce, so a spin past the
+        // boundary doesn't leave a stale total behind.
+        let (f, shown) = settle_volume(100, 100, &level(100));
+        assert_eq!((f, shown.text.as_str()), (0, "100%"));
+        let (f, shown) = settle_volume(-100, -100, &level(0));
+        assert_eq!((f, shown.text.as_str()), (0, "0%"));
     }
 }
