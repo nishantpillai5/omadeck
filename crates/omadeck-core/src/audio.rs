@@ -105,9 +105,10 @@ pub fn parse_pactl(volume_out: &str, mute_out: &str) -> Option<Level> {
         .next()?
         .split_whitespace()
         .find(|t| t.ends_with('%'))
-        .and_then(|t| t.trim_end_matches('%').parse::<u8>().ok())?;
+        .and_then(|t| t.trim_end_matches('%').parse::<u32>().ok())?;
+    // Clamped like `parse_wpctl`, so a level above 255% can't fail the whole read.
     let muted = mute_out.split_whitespace().last() == Some("yes");
-    Some(Level { percent, muted })
+    Some(Level { percent: percent.min(255) as u8, muted })
 }
 
 fn which(bin: &str) -> bool {
@@ -145,6 +146,9 @@ mod tests {
         assert_eq!(parse_pactl(vol, "Mute: no"), Some(Level { percent: 86, muted: false }));
         assert_eq!(parse_pactl(vol, "Mute: yes"), Some(Level { percent: 86, muted: true }));
         assert_eq!(parse_pactl("Volume: 100%\n", "Mute: no"), Some(Level { percent: 100, muted: false }));
+        // Above 100% parses (the old `u8` gave up at 256 and froze the bar).
+        assert_eq!(parse_pactl("Volume: 150%\n", "Mute: no"), Some(Level { percent: 150, muted: false }));
+        assert_eq!(parse_pactl("Volume: 260%\n", "Mute: no"), Some(Level { percent: 255, muted: false }));
         assert_eq!(parse_pactl("", "Mute: no"), None);
         assert_eq!(parse_pactl("no percent here", "Mute: no"), None);
     }

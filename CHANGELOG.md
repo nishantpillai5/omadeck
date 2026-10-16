@@ -48,6 +48,21 @@ All notable changes to omadeck are documented here. The format follows
   panel's look.
 
 ### Fixed
+- The optimistic volume bar now corrects itself when the real value didn't change (turning
+  while muted, the 0/100% clamp, a failed command).
+- A volume action no longer blocks the deck looking up the focused monitor (Omarchy 3), and
+  a fast dial spin coalesces strip-panel writes to one per loop pass.
+- The configurator's strip preview no longer spawns `pactl`/`wpctl` on the UI thread per
+  edit; the levels are polled on a background thread.
+- The volume editor's device row now shows for mute actions too, so a mic-mute key can be
+  set up.
+- Picking an app for a dial direction no longer renames the dial, and a new volume action
+  on “Turn left” starts at −5% instead of +5%.
+- The strip's tap highlight lasts 150 ms, not 300.
+- A hand-edited volume `change = -128` no longer crashes the daemon, and a level above
+  255% no longer freezes the strip's bar.
+- Replugging a smaller deck no longer leaves the configurator editing a key or dial the
+  hardware doesn't have.
 - A colour value with a non-ASCII character (in the config or the Omarchy theme) crashed the
   daemon, and systemd restarted it into the same crash.
 - Websites, scripts and terminals opened from the deck ran inside the omadeckd service, so

@@ -40,7 +40,7 @@ pub struct DialStatus {
 }
 
 /// A value for the `$B1` layout: a bar position plus the text next to it (e.g. `40%`).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Level {
     /// 0.0..=1.0, for the bar.
     pub value: f32,
