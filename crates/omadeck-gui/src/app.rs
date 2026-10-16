@@ -9,12 +9,17 @@ use adw::prelude::*;
 use gtk::{gdk, gio, glib};
 use omadeck_core::ipc::{self, Command as DaemonCommand, Event};
 use omadeck_core::paths::FileStamp;
+use omadeck_core::probe::{self, Values};
 use omadeck_core::{
-    Action, AudioDevice, Config, DeckInfo, DialConfig, DialStatus, HOME, KeyConfig, Keys, Level, LevelSource,
-    PanelStatus, Renderer, device, paths, tap_to_dial,
+    Action, Config, DeckInfo, DialConfig, DialStatus, HOME, KeyConfig, Keys, PanelStatus, Renderer, device, paths,
+    tap_to_dial,
 };
 
 use crate::{editor, media};
+
+/// After this long the brightness slider is considered the user's, and a late
+/// `Event::Brightness` won't move it back.
+const SLIDER_HOLD: Duration = Duration::from_millis(500);
 
 /// Previews are rendered larger than displayed so they stay crisp on HiDPI screens.
 const PREVIEW_PX: u32 = 192;
@@ -104,9 +109,17 @@ pub struct App {
     stamp: Cell<Option<FileStamp>>,
     /// Why config.toml couldn't be parsed. Saving is off until it's fixed.
     locked: RefCell<Option<String>>,
-    /// The strip's volume levels, read off the UI thread by the level poller, so the
-    /// strip preview never spawns `pactl`/`wpctl` while editing.
-    strip_levels: RefCell<std::collections::HashMap<AudioDevice, Option<Level>>>,
+    /// What the daemon last said each strip panel shows (`Event::DialStatus`). Empty with
+    /// no daemon or no deck; the preview then builds panels itself.
+    panel_status: RefCell<std::collections::HashMap<u8, PanelStatus>>,
+    /// The daemon's live brightness (`Event::Brightness`); `None` with no daemon.
+    live_brightness: Cell<Option<u8>>,
+    /// The settings slider, so `Event::Brightness` can move it.
+    brightness_scale: RefCell<Option<gtk::Scale>>,
+    /// Set while the slider is moved from code, so it doesn't send the value back.
+    syncing_brightness: Cell<bool>,
+    /// When the user last moved the slider: a late echo mustn't pull it back mid-drag.
+    slider_moved: Cell<Option<std::time::Instant>>,
 }
 
 impl App {
@@ -275,7 +288,11 @@ impl App {
             config: RefCell::new(config),
             renderer: RefCell::new(renderer),
             deck: RefCell::new(deck),
-            strip_levels: RefCell::new(std::collections::HashMap::new()),
+            panel_status: RefCell::default(),
+            live_brightness: Cell::new(None),
+            brightness_scale: RefCell::default(),
+            syncing_brightness: Cell::new(false),
+            slider_moved: Cell::new(None),
             connected: Cell::new(false),
             daemon_up: Cell::new(false),
             selected: Cell::new(None),
@@ -379,7 +396,6 @@ impl App {
         app.select(std::env::var("OMADECK_SELECT").ok().and_then(|v| v.parse().ok()).map(Selection::Key));
         app.update_title();
         app.listen();
-        app.listen_levels();
         app.watch_config();
         app.show_lock();
         app.window.present();
@@ -651,6 +667,7 @@ impl App {
         popover.popup();
     }
 
+    /// Redraw the strip picture: one panel per dial, the same picture the daemon paints.
     pub fn refresh_strip(&self) {
         let Some((w, h)) = self.deck.borrow().strip else { return };
         let width = self.strip_width();
@@ -658,26 +675,35 @@ impl App {
             return;
         }
         let cfg = self.config.borrow();
-        let n = self.deck.borrow().dials as usize;
-        let levels = self.strip_levels.borrow();
+        let n = self.deck.borrow().dials;
+        // Panels the daemon described show what the deck shows. The rest (no daemon, or
+        // it hasn't said yet) are built here: brightness from the daemon's value or the
+        // config's, volume as a dash. Only the daemon reads the system.
+        let values = Values { brightness: self.live_brightness.get().unwrap_or(cfg.brightness), ..Values::default() };
+        let mirrored = self.panel_status.borrow();
         let status: Vec<DialStatus> = (0..n)
-            .map(|i| {
-                // Volume shows the level the poller last read off the UI thread; brightness
-                // shows the config's value (the daemon's live value only differs right after
-                // a dial turn).
-                let level = cfg.dial(i as u8).and_then(|d| d.level_source()).and_then(|src| match src {
-                    LevelSource::Volume(dev) => levels.get(&dev).cloned().flatten(),
-                    LevelSource::Brightness => Some(Level {
-                        value: cfg.brightness as f32 / 100.0,
-                        text: format!("{}%", cfg.brightness),
-                        muted: false,
-                    }),
-                });
-                DialStatus { pressed: false, panel: PanelStatus { level } }
+            .map(|i| match mirrored.get(&i) {
+                Some(panel) => DialStatus { pressed: false, panel: panel.clone() },
+                None => probe::dial_status(cfg.dial(i), &values, false),
             })
             .collect();
         let img = self.renderer.borrow_mut().render_strip(&cfg, &status, (width as u32, width as u32 * h / w));
         self.strip.set_paintable(Some(&media::texture(img)));
+    }
+
+    /// Move the brightness slider to `value` without sending it back, unless the user
+    /// moved it a moment ago (then this is the echo of an older value).
+    fn sync_slider(&self, value: u8) {
+        if self.slider_moved.get().is_some_and(|t| t.elapsed() < SLIDER_HOLD) {
+            return;
+        }
+        // Cloned out, so no borrow is held while GTK runs the handler.
+        let scale = self.brightness_scale.borrow().clone();
+        if let Some(scale) = scale {
+            self.syncing_brightness.set(true);
+            scale.set_value(value as f64);
+            self.syncing_brightness.set(false);
+        }
     }
 
     pub fn refresh_dial(&self, i: u8) {
@@ -1127,20 +1153,29 @@ impl App {
         let list = gtk::ListBox::builder().selection_mode(gtk::SelectionMode::None).css_classes(["boxed-list"]).build();
 
         let scale = gtk::Scale::with_range(gtk::Orientation::Horizontal, 5.0, 100.0, 5.0);
-        scale.set_value(cfg.brightness as f64);
+        scale.set_value(self.live_brightness.get().unwrap_or(cfg.brightness) as f64);
         scale.set_hexpand(true);
         scale.set_width_request(170);
         let weak = Rc::downgrade(self);
         scale.connect_value_changed(move |s| {
-            if let Some(app) = weak.upgrade() {
-                let value = s.value().round() as u8;
-                // The daemon owns the live brightness (state file); the config's value is
-                // the start value for a fresh start.
+            let Some(app) = weak.upgrade() else { return };
+            if app.syncing_brightness.get() {
+                return;
+            }
+            let value = s.value().round() as u8;
+            app.slider_moved.set(Some(std::time::Instant::now()));
+            if app.daemon_up.get() {
+                // The daemon owns the brightness: it applies and saves it, and its
+                // `Event::Brightness` updates the preview. config.toml isn't touched.
+                app.send(DaemonCommand::SetBrightness { value });
+            } else {
+                // No daemon: the config's value is the start value, as upstream.
                 app.config.borrow_mut().brightness = value;
                 app.schedule_save();
-                app.send(DaemonCommand::SetBrightness { value });
+                app.refresh_strip();
             }
         });
+        *self.brightness_scale.borrow_mut() = Some(scale.clone());
         let bright = adw::ActionRow::builder().title("Brightness").build();
         bright.add_suffix(&scale);
         list.append(&bright);
@@ -1228,42 +1263,6 @@ impl App {
         }
     }
 
-    /// Keep the strip's volume levels fresh on a worker thread. The preview used to read
-    /// them itself, which spawned `pactl`/`wpctl` on the UI thread on every edit; now a
-    /// poller reads once a second and the preview just uses what it last sent.
-    fn listen_levels(self: &Rc<Self>) {
-        let (tx, rx) = async_channel::unbounded::<Vec<(AudioDevice, Option<Level>)>>();
-        std::thread::Builder::new()
-            .name("strip-levels".into())
-            .spawn(move || {
-                let mut last: Vec<(AudioDevice, Option<Level>)> = Vec::new();
-                loop {
-                    let mut cur = Vec::new();
-                    for dev in [AudioDevice::Output, AudioDevice::Input] {
-                        cur.push((dev, omadeck_core::audio::volume(dev).map(|lv| lv.to_panel())));
-                    }
-                    if cur != last || last.is_empty() {
-                        if tx.send_blocking(cur.clone()).is_err() {
-                            return;
-                        }
-                        last = cur;
-                    }
-                    std::thread::sleep(Duration::from_secs(1));
-                }
-            })
-            .expect("spawn strip-levels thread");
-        let weak = Rc::downgrade(self);
-        glib::spawn_future_local(async move {
-            while let Ok(levels) = rx.recv().await {
-                let Some(app) = weak.upgrade() else {
-                    break;
-                };
-                *app.strip_levels.borrow_mut() = levels.into_iter().collect();
-                app.refresh_strip();
-            }
-        });
-    }
-
     /// Follow the daemon's event feed on a worker thread.
     fn listen(self: &Rc<Self>) {
         let (tx, rx) = async_channel::unbounded::<Msg>();
@@ -1309,6 +1308,11 @@ impl App {
                 self.daemon_up.set(false);
                 self.connected.set(false);
                 self.banner.set_revealed(true);
+                self.live_brightness.set(None);
+                self.panel_status.borrow_mut().clear();
+                let b = self.config.borrow().brightness;
+                self.sync_slider(b);
+                self.refresh_strip();
             }
             Msg::Event(Event::Connected { deck }) => {
                 self.connected.set(true);
@@ -1331,7 +1335,12 @@ impl App {
                     self.select(None);
                 }
             }
-            Msg::Event(Event::Disconnected) => self.connected.set(false),
+            // The deck that showed the panels is gone: forget them and rebuild the preview.
+            Msg::Event(Event::Disconnected) => {
+                self.connected.set(false);
+                self.panel_status.borrow_mut().clear();
+                self.refresh_strip();
+            }
             // Follow the deck: pressing a page key there shows that page here too.
             Msg::Event(Event::PageChanged { page }) => self.show_page(page, false),
             Msg::Event(Event::KeyDown { index, page }) => {
@@ -1367,15 +1376,21 @@ impl App {
             Msg::Event(Event::DialActionFailed { index, message }) => {
                 self.toast(&format!("Dial {}: {message}", index + 1));
             }
-            // Dial turns, strip touches and the daemon's state: nothing in the configurator
-            // reacts to them yet (the state events are handled by the preview's poller still).
+            Msg::Event(Event::Brightness { value }) => {
+                self.live_brightness.set(Some(value));
+                self.sync_slider(value);
+                self.refresh_strip();
+            }
+            Msg::Event(Event::DialStatus { index, status }) => {
+                self.panel_status.borrow_mut().insert(index, status);
+                self.refresh_strip();
+            }
+            // Dial turns and strip touches: nothing in the configurator reacts to them yet.
             Msg::Event(
                 Event::DialTurn { .. }
                 | Event::StripTap { .. }
                 | Event::StripLongPress { .. }
-                | Event::StripSwipe { .. }
-                | Event::Brightness { .. }
-                | Event::DialStatus { .. },
+                | Event::StripSwipe { .. },
             ) => {}
         }
         self.update_title();
