@@ -228,6 +228,14 @@ impl AudioDevice {
     }
 }
 
+/// One of a dial's three action slots.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Direction {
+    Left,
+    Right,
+    Press,
+}
+
 /// What a dial's strip panel shows a value for, if anything.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LevelSource {
@@ -349,6 +357,22 @@ impl Action {
             9 => Action::PageStep { change: 1 },
             10 => Action::Brightness { change: 5, set: None },
             _ => Action::None,
+        }
+    }
+
+    /// The action a kind pick starts from in one of a dial's slots. Turning left gets
+    /// the opposite sign of turning right (lower the volume or brightness, the previous
+    /// page), and a Volume press mutes, as on Elgato's volume dial. Everything else is
+    /// `empty_of_kind`.
+    pub fn default_for(kind: usize, dir: Direction) -> Self {
+        match (Self::empty_of_kind(kind), dir) {
+            (Action::Volume { device, .. }, Direction::Press) => Action::Volume { device, change: 0, mute: true },
+            (Action::Volume { device, change, mute }, Direction::Left) => {
+                Action::Volume { device, change: -change, mute }
+            }
+            (Action::Brightness { change, set }, Direction::Left) => Action::Brightness { change: -change, set },
+            (Action::PageStep { change }, Direction::Left) => Action::PageStep { change: -change },
+            (act, _) => act,
         }
     }
 
@@ -630,20 +654,45 @@ impl Config {
             .unwrap()
     }
 
-    fn all_keys_mut(&mut self) -> impl Iterator<Item = &mut KeyConfig> {
-        self.keys.0.iter_mut().chain(self.pages.iter_mut().flat_map(|p| p.keys.0.iter_mut()))
+    /// Add a page named after `base` (made unique) that starts with `first`, and return
+    /// its name. A `folder` page is skipped by page steps and flicks; the configurator's
+    /// **+** makes normal pages, "New page" on an Open-page action makes folders.
+    pub fn add_page(&mut self, base: &str, folder: bool, first: KeyConfig) -> String {
+        let name = self.unique_page_name(base);
+        self.pages.push(Page { name: name.clone(), keys: Keys(vec![first]), folder });
+        name
     }
 
-    /// How many keys open the page `name`.
+    /// Whether the page `name` is a folder (skipped by page steps).
+    pub fn is_folder(&self, name: &str) -> bool {
+        self.pages.iter().any(|p| p.folder && p.name == name)
+    }
+
+    /// Mark the page `name` as a folder or a normal page.
+    pub fn set_folder(&mut self, name: &str, folder: bool) {
+        if let Some(p) = self.pages.iter_mut().find(|p| p.name == name) {
+            p.folder = folder;
+        }
+    }
+
+    /// Every action in the config: each key's, on every page, and each dial's three.
+    fn all_actions(&self) -> impl Iterator<Item = &Action> {
+        let keys = self.keys.iter().chain(self.pages.iter().flat_map(|p| p.keys.iter())).map(|k| &k.action);
+        keys.chain(self.dials.iter().flat_map(|d| [&d.turn_left, &d.turn_right, &d.press]))
+    }
+
+    fn all_actions_mut(&mut self) -> impl Iterator<Item = &mut Action> {
+        let keys = self.keys.0.iter_mut().chain(self.pages.iter_mut().flat_map(|p| p.keys.0.iter_mut()));
+        keys.map(|k| &mut k.action)
+            .chain(self.dials.iter_mut().flat_map(|d| [&mut d.turn_left, &mut d.turn_right, &mut d.press]))
+    }
+
+    /// How many actions (keys, and dial turns and presses) open the page `name`.
     pub fn links_to(&self, name: &str) -> usize {
-        self.keys
-            .iter()
-            .chain(self.pages.iter().flat_map(|p| p.keys.iter()))
-            .filter(|k| matches!(&k.action, Action::Page { page } if page == name))
-            .count()
+        self.all_actions().filter(|a| matches!(a, Action::Page { page } if page == name)).count()
     }
 
-    /// Rename a page and every key that opens it.
+    /// Rename a page and every action (key or dial) that opens it.
     pub fn rename_page(&mut self, old: &str, new: &str) {
         let new = new.trim();
         for p in &mut self.pages {
@@ -651,8 +700,8 @@ impl Config {
                 p.name = new.to_string();
             }
         }
-        for k in self.all_keys_mut() {
-            if let Action::Page { page } = &mut k.action
+        for a in self.all_actions_mut() {
+            if let Action::Page { page } = a
                 && page == old
             {
                 *page = new.to_string();
@@ -660,12 +709,13 @@ impl Config {
         }
     }
 
-    /// Delete a page. Keys that opened it keep their look but no longer do anything.
+    /// Delete a page. Keys and dials that opened it keep their look but no longer do
+    /// anything.
     pub fn remove_page(&mut self, name: &str) {
         self.pages.retain(|p| p.name != name);
-        for k in self.all_keys_mut() {
-            if matches!(&k.action, Action::Page { page } if page == name) {
-                k.action = Action::None;
+        for a in self.all_actions_mut() {
+            if matches!(a, Action::Page { page } if page == name) {
+                *a = Action::None;
             }
         }
     }
@@ -806,6 +856,57 @@ mod tests {
         c.remove_page("Music");
         assert!(c.pages.is_empty());
         assert_eq!(c.key(None, 0).unwrap().action, Action::None);
+    }
+
+    #[test]
+    fn page_links_include_dials() {
+        let mut c = Config::default();
+        c.add_page("Media", false, KeyConfig::new(0));
+        c.dials.push(DialConfig { press: Action::Page { page: "Media".into() }, ..DialConfig::new(0) });
+        c.dials.push(DialConfig { turn_left: Action::Page { page: "Media".into() }, ..DialConfig::new(1) });
+        assert_eq!(c.links_to("Media"), 2);
+        c.rename_page("Media", "Music");
+        assert_eq!(c.dial(0).unwrap().press, Action::Page { page: "Music".into() });
+        assert_eq!(c.dial(1).unwrap().turn_left, Action::Page { page: "Music".into() });
+        c.remove_page("Music");
+        assert_eq!(c.dial(0).unwrap().press, Action::None);
+        assert_eq!(c.links_to("Music"), 0);
+    }
+
+    #[test]
+    fn default_for_follows_direction() {
+        let volume = Action::Volume { device: AudioDevice::Output, change: 5, mute: false }.kind_index();
+        assert_eq!(
+            Action::default_for(volume, Direction::Left),
+            Action::Volume { device: AudioDevice::Output, change: -5, mute: false }
+        );
+        assert_eq!(
+            Action::default_for(volume, Direction::Right),
+            Action::Volume { device: AudioDevice::Output, change: 5, mute: false }
+        );
+        assert_eq!(
+            Action::default_for(volume, Direction::Press),
+            Action::Volume { device: AudioDevice::Output, change: 0, mute: true }
+        );
+        let step = Action::PageStep { change: 1 }.kind_index();
+        assert_eq!(Action::default_for(step, Direction::Left), Action::PageStep { change: -1 });
+        let bright = Action::Brightness { change: 5, set: None }.kind_index();
+        assert_eq!(Action::default_for(bright, Direction::Left), Action::Brightness { change: -5, set: None });
+        for kind in 0..Action::KINDS.len() {
+            assert_eq!(Action::default_for(kind, Direction::Right), Action::empty_of_kind(kind));
+        }
+    }
+
+    #[test]
+    fn added_pages_step_unless_folder() {
+        let mut c = Config::default();
+        assert_eq!(c.add_page("Work", false, KeyConfig::new(0)), "Work");
+        assert_eq!(c.add_page("Work", true, KeyConfig::new(0)), "Work 2");
+        assert!(c.is_folder("Work 2") && !c.is_folder("Work"));
+        assert_eq!(c.step_page(None, 1), Some(Some("Work".into())));
+        assert_eq!(c.step_page(Some("Work"), 1), Some(None), "the folder is skipped");
+        c.set_folder("Work 2", false);
+        assert_eq!(c.step_page(Some("Work"), 1), Some(Some("Work 2".into())));
     }
 
     #[test]
