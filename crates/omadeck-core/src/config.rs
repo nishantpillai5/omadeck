@@ -319,6 +319,13 @@ impl Action {
         "Brightness",
     ];
 
+    /// Run by the daemon itself (page moves and the panel brightness), never by
+    /// `action::run`. The one list: `action::run` refuses exactly these, and the
+    /// configurator's "Try it now" is off for them.
+    pub fn is_deck_owned(&self) -> bool {
+        matches!(self, Action::Page { .. } | Action::Back | Action::PageStep { .. } | Action::Brightness { .. })
+    }
+
     pub fn kind_index(&self) -> usize {
         match self {
             Action::None => 0,
@@ -333,11 +340,6 @@ impl Action {
             Action::PageStep { .. } => 9,
             Action::Brightness { .. } => 10,
         }
-    }
-
-    /// Handled by whoever owns the deck (page moves, later brightness), not by `action::run`.
-    pub fn is_deck_owned(&self) -> bool {
-        matches!(self, Action::Page { .. } | Action::Back | Action::PageStep { .. })
     }
 
     pub fn is_none(&self) -> bool {
@@ -485,6 +487,23 @@ impl DialConfig {
             LevelSource::Volume(dev) => Some(dev),
             LevelSource::Brightness => None,
         })
+    }
+
+    /// The action in slot `dir`.
+    pub fn action(&self, dir: Direction) -> &Action {
+        match dir {
+            Direction::Left => &self.turn_left,
+            Direction::Right => &self.turn_right,
+            Direction::Press => &self.press,
+        }
+    }
+
+    pub fn action_mut(&mut self, dir: Direction) -> &mut Action {
+        match dir {
+            Direction::Left => &mut self.turn_left,
+            Direction::Right => &mut self.turn_right,
+            Direction::Press => &mut self.press,
+        }
     }
 
     /// What this dial's strip panel shows: the first `Volume` action's device (which
@@ -754,6 +773,24 @@ pub fn apply_brightness(current: u8, set: Option<u8>, change: i32) -> u8 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn deck_owned_kinds() {
+        let owned: Vec<usize> =
+            (0..Action::KINDS.len()).filter(|&k| Action::empty_of_kind(k).is_deck_owned()).collect();
+        assert_eq!(owned, vec![6, 7, 9, 10]); // Open page, Go back, Next/previous page, Brightness
+    }
+
+    #[test]
+    fn dial_action_by_direction() {
+        let mut d = DialConfig::new(0);
+        *d.action_mut(Direction::Left) = Action::Back;
+        *d.action_mut(Direction::Press) = Action::PageStep { change: 1 };
+        assert_eq!(d.turn_left, Action::Back);
+        assert_eq!(d.action(Direction::Left), &Action::Back);
+        assert_eq!(d.action(Direction::Right), &Action::None);
+        assert_eq!(d.action(Direction::Press), &d.press);
+    }
 
     #[test]
     fn roundtrip() {
