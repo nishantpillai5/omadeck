@@ -35,12 +35,23 @@ pub struct Face<'a> {
 pub struct DialStatus {
     /// The dial is pressed (or a tap is still flashing).
     pub pressed: bool,
-    /// A value to show in the `$B1` panel layout (volume or brightness).
+    /// What the panel shows, as the daemon tells the configurator.
+    pub panel: PanelStatus,
+}
+
+/// What a dial's panel shows, apart from being pressed: the part the daemon sends the
+/// configurator in `Event::DialStatus`. PR 9 adds `live`, PR 10 `app`, PR 14 `media`,
+/// each `#[serde(default, skip_serializing_if = ...)]`.
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct PanelStatus {
+    /// A value for the `$B1` layout (volume, brightness); `None` before the first read.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub level: Option<Level>,
 }
 
 /// A value for the `$B1` layout: a bar position plus the text next to it (e.g. `40%`).
-#[derive(Debug, Clone, PartialEq)]
+/// Sent to the configurator in `Event::DialStatus`.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Level {
     /// 0.0..=1.0, for the bar.
     pub value: f32,
@@ -366,12 +377,12 @@ impl Renderer {
         if let Some(src) = dial.and_then(|d| d.level_source()) {
             let icon = match src {
                 LevelSource::Volume(device) => {
-                    let muted = st.level.as_ref().is_some_and(|l| l.muted);
+                    let muted = st.panel.level.as_ref().is_some_and(|l| l.muted);
                     self.volume_icon(&face, device, muted, glyph_color)
                 }
                 LevelSource::Brightness => self.brightness_icon(&face, glyph_color),
             };
-            self.draw_b1(&mut img, &face, tone, fg, want_label, icon, st.level);
+            self.draw_b1(&mut img, &face, tone, fg, want_label, icon, st.panel.level);
             return img;
         }
 
@@ -858,8 +869,8 @@ fn load_font(pattern: &str) -> Option<FontVec> {
 #[cfg(test)]
 mod tests {
     use super::{
-        B1_BAR, DialStatus, Level, Renderer, RgbaImage, X1_ICON, X1_TITLE, fit_cover, glyph_char, load_cover,
-        tap_to_dial,
+        B1_BAR, DialStatus, Level, PanelStatus, Renderer, RgbaImage, X1_ICON, X1_TITLE, fit_cover, glyph_char,
+        load_cover, tap_to_dial,
     };
     use crate::config::{Action, AudioDevice, Config, DialConfig, KeyConfig, Style};
     use crate::theme::Rgb;
@@ -1022,7 +1033,9 @@ mod tests {
     fn level(v: f32, muted: bool) -> DialStatus {
         DialStatus {
             pressed: false,
-            level: Some(Level { value: v, text: if muted { "Muted".into() } else { "50%".into() }, muted }),
+            panel: PanelStatus {
+                level: Some(Level { value: v, text: if muted { "Muted".into() } else { "50%".into() }, muted }),
+            },
         }
     }
 
@@ -1375,7 +1388,10 @@ mod tests {
         golden(&r.render_strip_panel(&cfg, 0, 4, DialStatus::default()), "strip-x1.png");
         let mut cfg = Config { style: test_style(), ..Default::default() };
         cfg.dials.push(DialConfig { glyph: Some("A".into()), ..volume_dial() });
-        let st = DialStatus { pressed: false, level: Some(Level { value: 0.4, text: "40%".into(), muted: false }) };
+        let st = DialStatus {
+            pressed: false,
+            panel: PanelStatus { level: Some(Level { value: 0.4, text: "40%".into(), muted: false }) },
+        };
         golden(&r.render_strip_panel(&cfg, 0, 4, st), "strip-b1.png");
     }
 
