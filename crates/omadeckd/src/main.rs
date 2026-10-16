@@ -3,6 +3,7 @@
 
 mod hub;
 mod nav;
+mod saver;
 mod worker;
 
 use std::collections::HashMap;
@@ -28,9 +29,6 @@ use omadeck_core::{
 use hub::Hub;
 use nav::Nav;
 use worker::Worker;
-
-/// The config's `brightness` as the daemon last read it, saved with the brightness.
-static CONFIG_BRIGHTNESS: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
 
 const SCAN_INTERVAL: Duration = Duration::from_secs(2);
 const READ_TIMEOUT: Duration = Duration::from_millis(100);
@@ -316,11 +314,8 @@ fn run() -> Result<()> {
 
     let mut hid = device::new_hidapi().context("initialising hidapi")?;
     let audio = start_audio_worker();
-    let (brightness_tx, brightness_rx) = mpsc::channel::<u8>();
-    let saver = std::thread::Builder::new()
-        .name("brightness".into())
-        .spawn(move || brightness_saver(brightness_rx, save_brightness))
-        .expect("spawning the brightness saver");
+    let saver = saver::start_saver();
+    let mut state = State::load();
     let mut deck: Option<Deck> = None;
     let mut last_scan: Option<Instant> = None;
     let mut reload_at: Option<Instant> = None;
@@ -368,7 +363,6 @@ fn run() -> Result<()> {
             match Config::load() {
                 Ok(new_cfg) => {
                     hand_edit = hand_edited_brightness(&cfg, &new_cfg);
-                    CONFIG_BRIGHTNESS.store(new_cfg.brightness, std::sync::atomic::Ordering::Relaxed);
                     cfg = new_cfg;
                 }
                 Err(e) => log::error!("{e:#}; keeping the previous config"),
@@ -396,7 +390,7 @@ fn run() -> Result<()> {
             // A hand edit of `brightness` in config.toml wins over the state file, like
             // any other hot-reloaded field (it is also saved there).
             if let Some(v) = hand_edit {
-                set_brightness(deck.as_mut(), &brightness_tx, v);
+                set_brightness(deck.as_mut(), &saver, &mut state, v);
             }
             if let Some(d) = &deck
                 && let Err(e) = paint_all(d, &cfg, nav.current(), &mut renderer)
@@ -416,7 +410,7 @@ fn run() -> Result<()> {
             }
         }
         if let Some(v) = bright {
-            set_brightness(deck.as_mut(), &brightness_tx, v);
+            set_brightness(deck.as_mut(), &saver, &mut state, v);
         }
         if let Some(page) = show {
             wanted_page = None;
@@ -438,7 +432,7 @@ fn run() -> Result<()> {
         let Some(d) = &mut deck else {
             if last_scan.is_none_or(|t| t.elapsed() >= SCAN_INTERVAL) {
                 last_scan = Some(Instant::now());
-                deck = connect(&mut hid, &cfg, nav.current(), &mut renderer);
+                deck = connect(&mut hid, &cfg, nav.current(), &mut renderer, &state);
                 hub.publish(match &deck {
                     Some(d) => Event::Connected { deck: d.info.clone() },
                     None => Event::Disconnected,
@@ -510,9 +504,17 @@ fn run() -> Result<()> {
                             // hyprctl waits for Hyprland's answer; the deck shouldn't.
                             if let Action::Hyprland { .. } = &k.action {
                                 worker.run(i, k.action.clone());
-                            } else if let Err(e) =
-                                run_deck_action(d, &cfg, &mut nav, &mut renderer, &hub, &brightness_tx, &k.action, 1)
-                            {
+                            } else if let Err(e) = run_deck_action(
+                                d,
+                                &cfg,
+                                &mut nav,
+                                &mut renderer,
+                                &hub,
+                                &saver,
+                                &mut state,
+                                &k.action,
+                                1,
+                            ) {
                                 log::warn!("key {i}: {e:#}");
                                 hub.publish(Event::ActionFailed { index: i, message: format!("{e:#}") });
                             }
@@ -537,7 +539,8 @@ fn run() -> Result<()> {
                                         &mut nav,
                                         &mut renderer,
                                         &hub,
-                                        &brightness_tx,
+                                        &saver,
+                                        &mut state,
                                         act,
                                         steps,
                                     ) {
@@ -565,7 +568,8 @@ fn run() -> Result<()> {
                                     &mut nav,
                                     &mut renderer,
                                     &hub,
-                                    &brightness_tx,
+                                    &saver,
+                                    &mut state,
                                     &dc.press,
                                     1,
                                 ) {
@@ -608,7 +612,8 @@ fn run() -> Result<()> {
                                         &mut nav,
                                         &mut renderer,
                                         &hub,
-                                        &brightness_tx,
+                                        &saver,
+                                        &mut state,
                                         &dc.press,
                                         1,
                                     ) {
@@ -635,7 +640,7 @@ fn run() -> Result<()> {
                             if dx.abs() >= FLICK_MIN_PX && dx.abs() > dy.abs() {
                                 let act = Action::PageStep { change: if dx < 0 { 1 } else { -1 } };
                                 if let Err(e) =
-                                    run_deck_action(d, &cfg, &mut nav, &mut renderer, &hub, &brightness_tx, &act, 1)
+                                    run_deck_action(d, &cfg, &mut nav, &mut renderer, &hub, &saver, &mut state, &act, 1)
                                 {
                                     log::warn!("strip flick: {e:#}");
                                 }
@@ -669,9 +674,8 @@ fn run() -> Result<()> {
         let _ = d.dev.reset();
     }
     hub.shutdown();
-    // Let the saver write a brightness that is still settling.
-    drop(brightness_tx);
-    let _ = saver.join();
+    // Let the saver write a state that is still settling.
+    saver.finish();
     Ok(())
 }
 
@@ -695,8 +699,7 @@ fn load_config() -> Config {
 
 // elgato-streamdeck hands out its reader via `Arc<Self>`; everything stays on this thread.
 #[allow(clippy::arc_with_non_send_sync)]
-fn connect(hid: &mut HidApi, cfg: &Config, page: Option<&str>, renderer: &mut Renderer) -> Option<Deck> {
-    CONFIG_BRIGHTNESS.store(cfg.brightness, std::sync::atomic::Ordering::Relaxed);
+fn connect(hid: &mut HidApi, cfg: &Config, page: Option<&str>, renderer: &mut Renderer, state: &State) -> Option<Deck> {
     if let Err(e) = device::refresh_device_list(hid) {
         log::warn!("hidapi refresh: {e}");
         return None;
@@ -723,7 +726,7 @@ fn connect(hid: &mut HidApi, cfg: &Config, page: Option<&str>, renderer: &mut Re
         device_levels: HashMap::new(),
         dirty_panels: vec![false; n_dials],
         // The state file wins over the config's start value once the deck has run.
-        brightness: State::load().start_brightness(cfg.brightness),
+        brightness: state.brightness.unwrap_or(cfg.brightness),
     };
     log::info!(
         "connected {} (serial {}, firmware {})",
@@ -743,7 +746,8 @@ fn dispatch(
     d: &mut Deck,
     cfg: &Config,
     nav: &mut Nav,
-    brightness: &mpsc::Sender<u8>,
+    saver: &saver::StateSaver,
+    state: &mut State,
     act: &Action,
     steps: u8,
 ) -> Result<bool> {
@@ -764,7 +768,7 @@ fn dispatch(
         Action::Brightness { change, set } => {
             // A relative turn changes the brightness per detent; `set` applies once.
             let change = if set.is_none() { i32::from(*change) * steps as i32 } else { 0 };
-            do_brightness(d, brightness, *set, change);
+            do_brightness(d, saver, state, *set, change);
             Ok(false)
         }
         a => action::run_steps(a, steps).map(|_| false),
@@ -779,18 +783,19 @@ fn hand_edited_brightness(old: &Config, new: &Config) -> Option<u8> {
 
 /// Set the brightness from outside the deck's own input (the configurator's slider, a
 /// config edit). With no deck it is only saved, and the next connect starts from it.
-fn set_brightness(deck: Option<&mut Deck>, saver: &mpsc::Sender<u8>, value: u8) {
+fn set_brightness(deck: Option<&mut Deck>, saver: &saver::StateSaver, state: &mut State, value: u8) {
     match deck {
-        Some(d) => do_brightness(d, saver, Some(value), 0),
+        Some(d) => do_brightness(d, saver, state, Some(value), 0),
         None => {
-            let _ = saver.send(value.min(100));
+            state.brightness = Some(value.min(100));
+            saver.send(state.clone());
         }
     }
 }
 
 /// Apply a brightness action: set the panel, remember it in the state file (so it
 /// survives a restart, as in the Elgato app), and repaint the brightness dials' panels.
-fn do_brightness(d: &mut Deck, brightness: &mpsc::Sender<u8>, set: Option<u8>, change: i32) {
+fn do_brightness(d: &mut Deck, saver: &saver::StateSaver, state: &mut State, set: Option<u8>, change: i32) {
     let next = apply_brightness(d.brightness, set, change);
     if next == d.brightness {
         return;
@@ -800,7 +805,8 @@ fn do_brightness(d: &mut Deck, brightness: &mpsc::Sender<u8>, set: Option<u8>, c
     if let Err(e) = d.dev.set_brightness(next) {
         log::warn!("set_brightness: {e}");
     }
-    let _ = brightness.send(next);
+    state.brightness = Some(next);
+    saver.send(state.clone());
     for (i, src) in d.dial_levels.iter().enumerate().take(d.info.dials as usize) {
         if *src == Some(LevelSource::Brightness) {
             d.dirty_panels[i] = true;
@@ -839,31 +845,6 @@ fn after_volume(d: &mut Deck, audio: &AudioWorker, act: &Action, steps: u8) {
     let _ = audio.cmd.send(AudioCmd::Refresh(*device));
 }
 
-/// Write the brightness to the state file, debounced: one write per burst of turns,
-/// off the deck loop, so a hard spin doesn't serialize the file on every detent. The
-/// user's config.toml is never touched.
-fn brightness_saver(rx: mpsc::Receiver<u8>, save: impl Fn(u8)) {
-    let settle = Duration::from_millis(200);
-    let mut pending = rx.recv().ok();
-    while let Some(first) = pending {
-        // A hard spin sends several in a row; take the last of the burst.
-        let mut v = first;
-        while let Ok(next) = rx.recv_timeout(settle) {
-            v = next;
-        }
-        save(v);
-        // Blocks for the next turn; ends when the daemon drops the sender.
-        pending = rx.recv().ok();
-    }
-}
-
-fn save_brightness(v: u8) {
-    let seen = CONFIG_BRIGHTNESS.load(std::sync::atomic::Ordering::Relaxed);
-    if let Err(e) = (State { brightness: Some(v), config_brightness: Some(seen) }).save() {
-        log::warn!("saving brightness: {e:#}");
-    }
-}
-
 /// Run `act` from the deck and repaint if it moved the page.
 #[allow(clippy::too_many_arguments)]
 fn run_deck_action(
@@ -872,11 +853,12 @@ fn run_deck_action(
     nav: &mut Nav,
     renderer: &mut Renderer,
     hub: &Hub,
-    brightness: &mpsc::Sender<u8>,
+    saver: &saver::StateSaver,
+    state: &mut State,
     act: &Action,
     steps: u8,
 ) -> Result<bool> {
-    let moved = dispatch(d, cfg, nav, brightness, act, steps)?;
+    let moved = dispatch(d, cfg, nav, saver, state, act, steps)?;
     if moved {
         show_page(Some(d), cfg, nav, renderer, hub);
     }
@@ -989,7 +971,7 @@ fn snapshot(out: &Path, page: Option<&str>) -> Result<()> {
         // The deck runs on the state file's brightness once it has run, as `connect` does.
         // Brightness dials show the brightness the deck runs at; volume dials show a dash,
         // as their level is live and only the running daemon reads it.
-        let values = Values { brightness: State::load().start_brightness(cfg.brightness), ..Values::default() };
+        let values = Values { brightness: State::load().brightness.unwrap_or(cfg.brightness), ..Values::default() };
         let status: Vec<_> = (0..info.dials).map(|i| probe::dial_status(cfg.dial(i), &values, false)).collect();
         let strip = renderer.render_strip(&cfg, &status, (w, w * sh / sw));
         image::imageops::overlay(&mut canvas, &strip, 0, y as i64);
@@ -1025,22 +1007,6 @@ fn draw_circle(img: &mut image::RgbaImage, cx: u32, cy: u32, r: u32, c: image::R
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Arc;
-
-    #[test]
-    fn saver_writes_the_last_value_when_dropped() {
-        let saved = Arc::new(std::sync::Mutex::new(Vec::new()));
-        let (tx, rx) = mpsc::channel::<u8>();
-        let out = saved.clone();
-        let saver = std::thread::spawn(move || brightness_saver(rx, move |v| out.lock().unwrap().push(v)));
-        for v in [30, 40, 50] {
-            tx.send(v).unwrap();
-        }
-        // Shutdown: drop the sender and join, as `run` does; the burst is saved once.
-        drop(tx);
-        saver.join().unwrap();
-        assert_eq!(*saved.lock().unwrap(), vec![50]);
-    }
 
     #[test]
     fn hand_edit_is_a_changed_brightness() {
