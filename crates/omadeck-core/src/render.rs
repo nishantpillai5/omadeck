@@ -25,6 +25,8 @@ pub struct Face<'a> {
     pub icon: Option<&'a str>,
     pub glyph: Option<&'a str>,
     pub background: Option<&'a str>,
+    /// A background image (dials only; keys pass `None`).
+    pub background_image: Option<&'a str>,
     pub label_color: Option<&'a str>,
 }
 

@@ -17,6 +17,9 @@ pub struct Config {
     /// Global look; per-key settings override it.
     #[serde(default)]
     pub style: Style,
+    /// The Stream Deck + touch strip as a whole.
+    #[serde(default, skip_serializing_if = "StripConfig::is_default")]
+    pub strip: StripConfig,
     /// The home page: what the deck shows at startup.
     #[serde(default, rename = "key", skip_serializing_if = "Keys::is_empty")]
     pub keys: Keys,
@@ -33,10 +36,26 @@ impl Default for Config {
         Self {
             brightness: default_brightness(),
             style: Style::default(),
+            strip: StripConfig::default(),
             keys: Keys::default(),
             pages: Vec::new(),
             dials: Vec::new(),
         }
+    }
+}
+
+/// The Stream Deck + touch strip as a whole (`[strip]`).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct StripConfig {
+    /// An image across the whole strip (800 × 100 on a Plus). Any size: it fills the
+    /// strip and is centre-cropped. Relative paths resolve against the config dir.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub background_image: Option<String>,
+}
+
+impl StripConfig {
+    pub fn is_default(&self) -> bool {
+        *self == Self::default()
     }
 }
 
@@ -411,6 +430,10 @@ pub struct DialConfig {
     pub glyph: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub background: Option<String>,
+    /// An image behind this dial's panel (200 × 100), over the strip image. Fills the
+    /// panel and is centre-cropped. Relative paths resolve against the config dir.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub background_image: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub label_color: Option<String>,
     /// Runs once per detent when the dial is turned left.
@@ -433,6 +456,7 @@ impl DialConfig {
             icon: None,
             glyph: None,
             background: None,
+            background_image: None,
             label_color: None,
             turn_left: Action::None,
             turn_right: Action::None,
@@ -447,6 +471,7 @@ impl DialConfig {
             && self.icon.is_none()
             && self.glyph.is_none()
             && self.background.is_none()
+            && self.background_image.is_none()
             && self.label_color.is_none()
             && self.turn_left.is_none()
             && self.turn_right.is_none()
@@ -483,6 +508,7 @@ impl DialConfig {
             icon: self.icon.as_deref(),
             glyph: self.glyph.as_deref(),
             background: self.background.as_deref(),
+            background_image: self.background_image.as_deref(),
             label_color: self.label_color.as_deref(),
         }
     }
@@ -497,6 +523,7 @@ impl KeyConfig {
             icon: self.icon.as_deref(),
             glyph: self.glyph.as_deref(),
             background: self.background.as_deref(),
+            background_image: None,
             label_color: self.label_color.as_deref(),
         }
     }
@@ -1053,6 +1080,43 @@ mod tests {
         let d = DialConfig::new(0);
         assert_eq!(d.level_source(), None);
     }
+    #[test]
+    fn strip_background_roundtrip() {
+        let mut c = Config::default();
+        c.strip.background_image = Some("icons/aurora-strip.png".into());
+        let s = toml::to_string_pretty(&c).unwrap();
+        assert!(s.contains("[strip]"), "{s}");
+        assert!(s.contains("background_image = \"icons/aurora-strip.png\""), "{s}");
+        assert_eq!(toml::from_str::<Config>(&s).unwrap(), c);
+    }
+
+    #[test]
+    fn old_config_saves_without_strip() {
+        let mut c = Config::default();
+        c.keys.get_mut(0).label = "Term".into();
+        let s = toml::to_string_pretty(&c).unwrap();
+        assert!(!s.contains("[strip]"), "{s}");
+        assert!(!s.contains("background_image"), "{s}");
+        // Load, then save, is byte-identical for a config written before this field.
+        let back: Config = toml::from_str(&s).unwrap();
+        assert_eq!(toml::to_string_pretty(&back).unwrap(), s);
+    }
+
+    #[test]
+    fn dial_background_image_roundtrip() {
+        let d = DialConfig { background_image: Some("icons/waves.png".into()), ..DialConfig::new(1) };
+        let s = toml::to_string_pretty(&d).unwrap();
+        assert!(s.contains("background_image = \"icons/waves.png\""), "{s}");
+        assert_eq!(toml::from_str::<DialConfig>(&s).unwrap(), d);
+    }
+
+    #[test]
+    fn dial_with_only_background_image_is_not_blank() {
+        let d = DialConfig { background_image: Some("icons/waves.png".into()), ..DialConfig::new(0) };
+        assert!(!d.is_blank());
+        assert!(DialConfig::new(0).is_blank());
+    }
+
     #[test]
     fn example_parses() {
         let s = include_str!("../../../examples/config.toml");
