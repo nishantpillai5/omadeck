@@ -1,7 +1,9 @@
 //! The watcher: one thread that reads system state off the deck loop (today the volume
 //! levels; PR 8 adds state commands, PR 9 clocks and meters, …) and runs the volume
 //! changes the deck asks for, in order, each followed by a fresh read. It sends back only
-//! values that changed, or that the deck asked for again.
+//! values that changed, or that the deck asked for again. Each read-back carries the change
+//! the watcher just applied (0 for a poll), so the deck can tell how much of what it sent
+//! is still in flight and keep the bar from snapping back to a stale read.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::mpsc::{self, RecvTimeoutError, TryRecvError};
@@ -31,7 +33,10 @@ pub enum WatchCmd {
 
 pub struct Watcher {
     pub cmd: mpsc::Sender<WatchCmd>,
-    pub values: mpsc::Receiver<(Probe, Value)>,
+    /// `(probe, value, applied)`: `applied` is the change the read-back confirms (0 for a
+    /// poll). The deck adds what's still in flight on top, so the bar never drops to a
+    /// value the queued changes haven't reached yet.
+    pub values: mpsc::Receiver<(Probe, Value, i32)>,
     thread: thread::JoinHandle<()>,
 }
 
@@ -84,7 +89,7 @@ impl Default for Poller {
 
 impl Poller {
     /// Act on one command; values to send go to `out`. `Stop` is the thread loop's.
-    fn handle(&mut self, cmd: WatchCmd, now: Instant, out: &mut Vec<(Probe, Value)>) {
+    fn handle(&mut self, cmd: WatchCmd, now: Instant, out: &mut Vec<(Probe, Value, i32)>) {
         match cmd {
             WatchCmd::Watch(set) => {
                 let mut set_d: Vec<Probe> = Vec::new();
@@ -113,13 +118,14 @@ impl Poller {
             }
             WatchCmd::Volume { device, change, mute } => {
                 // Runs here, in order: a change never races the one before it, and the
-                // read right after sees it applied.
+                // read right after sees it applied. The read-back confirms this much of
+                // what the deck sent (a mute changes no level).
                 (self.change_volume)(device, change, mute);
                 let p = Probe::Volume(device);
                 if self.watched.contains(&p) {
                     self.forced.insert(p.clone());
                     if let Some(v) = (self.read_volume)(device) {
-                        self.record(p, v, now, out);
+                        self.record(p, v, now, out, if mute { 0 } else { change });
                     }
                 }
             }
@@ -128,7 +134,7 @@ impl Poller {
     }
 
     /// Read every probe that is due.
-    fn run_due(&mut self, now: Instant, out: &mut Vec<(Probe, Value)>) {
+    fn run_due(&mut self, now: Instant, out: &mut Vec<(Probe, Value, i32)>) {
         for p in self.watched.clone() {
             if self.next_due.get(&p).is_some_and(|t| *t > now) {
                 continue;
@@ -137,7 +143,8 @@ impl Poller {
                 Probe::Volume(dev) => (self.read_volume)(*dev),
             };
             match read {
-                Some(v) => self.record(p, v, now, out),
+                // A poll confirms nothing: the deck's in-flight total is untouched.
+                Some(v) => self.record(p, v, now, out, 0),
                 // No `wpctl`, or it timed out: send nothing, try again next interval.
                 None => {
                     let next = now + p.interval();
@@ -148,12 +155,13 @@ impl Poller {
     }
 
     /// A read came back: send it if it changed (or was asked for), and schedule the next.
-    fn record(&mut self, p: Probe, v: Value, now: Instant, out: &mut Vec<(Probe, Value)>) {
+    /// `applied` is the change this read confirms (0 for a poll).
+    fn record(&mut self, p: Probe, v: Value, now: Instant, out: &mut Vec<(Probe, Value, i32)>, applied: i32) {
         let forced = self.forced.remove(&p);
         self.next_due.insert(p.clone(), now + p.interval());
         if forced || self.last.get(&p) != Some(&v) {
             self.last.insert(p.clone(), v.clone());
-            out.push((p, v));
+            out.push((p, v, applied));
         }
     }
 
@@ -166,7 +174,7 @@ impl Poller {
 /// Start the watcher thread.
 pub fn start() -> Watcher {
     let (cmd_tx, cmd_rx) = mpsc::channel::<WatchCmd>();
-    let (val_tx, val_rx) = mpsc::channel::<(Probe, Value)>();
+    let (val_tx, val_rx) = mpsc::channel::<(Probe, Value, i32)>();
     let thread = thread::Builder::new()
         .name("watch".into())
         .spawn(move || run(&cmd_rx, &val_tx, Poller::default()))
@@ -174,7 +182,7 @@ pub fn start() -> Watcher {
     Watcher { cmd: cmd_tx, values: val_rx, thread }
 }
 
-fn run(cmd_rx: &mpsc::Receiver<WatchCmd>, val_tx: &mpsc::Sender<(Probe, Value)>, mut poller: Poller) {
+fn run(cmd_rx: &mpsc::Receiver<WatchCmd>, val_tx: &mpsc::Sender<(Probe, Value, i32)>, mut poller: Poller) {
     let mut out = Vec::new();
     loop {
         // Sleep until a command comes or a read is due; with nothing watched, until a
@@ -263,20 +271,20 @@ mod tests {
         let mut out = Vec::new();
         p.handle(WatchCmd::Watch(vec![out_dev.clone()]), now, &mut out);
         p.run_due(now, &mut out);
-        assert_eq!(out, vec![(out_dev.clone(), level(50))]);
+        assert_eq!(out, vec![(out_dev.clone(), level(50), 0)]);
         out.clear();
-        // Each change is read back right after it, in order.
+        // Each change is read back right after it, in order, confirming the change.
         for _ in 0..2 {
             p.handle(WatchCmd::Volume { device: AudioDevice::Output, change: 5, mute: false }, now, &mut out);
         }
-        assert_eq!(out, vec![(out_dev.clone(), level(55)), (out_dev.clone(), level(60))]);
+        assert_eq!(out, vec![(out_dev.clone(), level(55), 5), (out_dev.clone(), level(60), 5)]);
         out.clear();
         // Not due again before the interval.
         p.run_due(now + Duration::from_millis(500), &mut out);
         assert!(out.is_empty());
         // A change that leaves the level as it was is still sent: the deck shows a guess.
         p.handle(WatchCmd::Volume { device: AudioDevice::Output, change: 0, mute: false }, now, &mut out);
-        assert_eq!(out, vec![(out_dev, level(60))]);
+        assert_eq!(out, vec![(out_dev, level(60), 0)]);
     }
 
     #[test]
