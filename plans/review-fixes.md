@@ -152,11 +152,11 @@ strip-b1.png}`. Do capture step 1 first.
    ```
    ```yaml
          - name: Install dependencies
-           # fonts-dejavu: the render tests draw text and need at least one installed font.
-           run: pacman -Syu --noconfirm --needed base-devel rust gtk4 libadwaita systemd-libs fontconfig fonts-dejavu git
+           # ttf-dejavu: the render tests draw text and need at least one installed font.
+           run: pacman -Syu --noconfirm --needed base-devel rust gtk4 libadwaita systemd-libs fontconfig ttf-dejavu git
    ```
-   Keep `fonts-dejavu` (the Arch package name; `font-dejavu` doesn't exist — the first CI
-   run failed on it): `Renderer::new` in the other tests still asks fontconfig.
+   Keep `ttf-dejavu` (the Arch package name; `font-dejavu` and `fonts-dejavu`
+   don't exist — the first two CI runs failed on the names): `Renderer::new` in the other tests still asks fontconfig.
 2. `render.rs`, in `impl Renderer`, before `update_style`:
    ```rust
    /// A renderer that draws with this font file instead of fontconfig's choice, so pixel
