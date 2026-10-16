@@ -22,7 +22,7 @@ Stream Deck + support and pages, all on `daily`, each on its own `feat/*` branch
 | 6 | `feat/brightness` | `brightness` action, live level on the strip, persisted in the state file | [pr6](pr6-brightness.md) |
 | 7 | `feat/strip-backgrounds` | Background images: one across the strip, one per dial | [pr7](pr7-strip-backgrounds.md) |
 
-Known bugs (and the bug pass still to do) are in [BUGS.md](BUGS.md).
+Known bugs are in [BUGS.md](BUGS.md); 22–49 are open (from the 2026-10-17 review).
 
 Shared facts and the decisions to explain for PRs 1–4 are in
 [dials-and-strip.md](dials-and-strip.md). Hardware checks still open on PRs 1–4 and 6 are
@@ -36,56 +36,88 @@ PRs 1–6 are rebuilt on `upstream/pages-and-folders` (`fb9052f`); `daily` is no
 (`feat/plus-pages`, `4c7bf70`). Upstream is still at `fb9052f` with no open PRs; the
 bugs U1–U9 in [BUGS.md](BUGS.md) are to go in the first message to the author.
 
-Next: **PR 8, toggle keys** (`feat/toggle-keys`, based on
-`fix/bugs`).
-
 **Done (2026-10-17): bug pass.** All 21 recorded bugs closed; the fixes live on
 `fix/bugs` (`d7bd448`, based on `feat/strip-backgrounds`), which is now `daily`.
+
+**Done (2026-10-17): code review of everything on `daily`.** Summary and ranking in
+[review-2026-10-17.md](review-2026-10-17.md); the bugs are BUGS.md 22–49 (bug 18 reopened
+as 29). It also showed most later plans had drifted from the code, so all of them (8–16)
+were rewritten against `d7bd448` and the two new steps below.
+
+Next, in this order:
+
+1. **`fix/review`** ([review-fixes.md](review-fixes.md), base `fix/bugs`): BUGS.md 22–43.
+   CI (it has never run since PR 3), font-independent goldens, GUI pages no longer all
+   folders, brightness hand edits, the paint-per-report regression, image decode costs.
+2. **`feat/groundwork`** ([groundwork.md](groundwork.md), base `fix/review`): BUGS.md
+   44–49 plus the restructuring PRs 8–16 all need, built once (see Shared building blocks).
+   Almost nothing changes for the user.
+3. Then the features, each based on the previous branch.
 
 Each feature gets its own `feat/*` branch, plan file and (later) PR. Work them in this
 order; the order is mine, not upstream's roadmap order.
 
 | # | Branch | Feature | Plan |
 |---|--------|---------|------|
-| 7 | `feat/strip-backgrounds` | Background images for the whole strip and per dial | [pr7](pr7-strip-backgrounds.md) |
+| – | `fix/review` | Bugs from the 2026-10-17 review | [review-fixes](review-fixes.md) |
+| – | `feat/groundwork` | Daemon split, watcher, ordered volume, non-blocking hub, GUI mirrors the daemon, `ActionSlot` | [groundwork](groundwork.md) |
 | 8 | `feat/toggle-keys` | Keys with on/off faces that follow real state, plus a busy state with progress for slow toggles (e.g. a model server starting up) and for any key while its command runs | [pr8](pr8-toggle-keys.md) |
-| 9 | `feat/live-keys` | Keys that show a clock, CPU, workspace, … and update themselves | [pr9](pr9-live-keys.md) |
+| 9 | `feat/live-keys` | Keys that show a clock, CPU, workspace, … and update themselves; the Hyprland event listener | [pr9](pr9-live-keys.md) |
 | 10 | `feat/app-volume` | Per-app volume: a dial for a chosen app, or for the focused app | [pr10](pr10-app-volume.md) |
 | 11 | `feat/ctl` | Drive the running daemon from the shell (`omadeckd page next`, `brightness 30`, …) | [pr11](pr11-ctl.md) |
 | 12 | `feat/multi-actions` | One key runs several actions, with optional delays | [pr12](pr12-multi-actions.md) |
-| 13 | `feat/folders` | A key opens a sub-page with a Back key (finishes "Pages and folders") | [pr13](pr13-folders.md) |
+| 13 | `feat/folders` | Folder gestures: hold Back for Home, page steps from nested folders, double-click a folder in the configurator (upstream already has folders) | [pr13](pr13-folders.md) |
 | 14 | `feat/media-dial` | Media dial: scrub, play/pause, track and progress on the strip | [pr14](pr14-media-dial.md) |
-| 15 | `feat/app-pages` | Switch page automatically when an app is focused | [pr15](pr15-app-pages.md) |
-| 16 | `feat/strip-long-press` | Hold a strip panel for a second action per dial (Elgato's "long touch") | [pr16](pr16-strip-long-press.md) |
+| 15 | `feat/app-pages` | Pages follow the focused app (`apps` on `[[page]]`, Elgato's Smart Profiles) | [pr15](pr15-app-pages.md) |
+| 16 | `feat/strip-long-press` | Hold a strip panel for a second action per dial (Elgato's "long touch"). Needs PR 11's `tap_dial`/`try_input`, so it can move up to right after PR 11 | [pr16](pr16-strip-long-press.md) |
 
 ### Shared building blocks
 
 Several features need the same machinery. Build each piece once, in the first PR that
 needs it, and have the later PRs reuse it rather than grow a second copy:
 
-- **State watcher** (PR 8, reused by 9, 10, 14). `Probe`/`Value` types in core
-  (`state.rs`), a daemon worker thread (`watch.rs`) that replaces today's audio worker: the main loop sends it what to watch, it polls or listens off the
-  deck loop and sends back only *changes*, and the loop repaints only the keys or panels
-  that show them. Toggle keys introduce it (state from a command); live keys add built-in
-  sources; per-app volume and the media dial feed it audio-stream and player state.
+- **Daemon structure** (groundwork). `Daemon` owns config, renderer, nav, hub, watcher,
+  saver and a `Runtime { values, state }` that survives a replug; `Deck` holds only
+  hardware state. Every input path goes through `Daemon::run_input(Source, &Action, steps)`
+  (PR 11 adds `try_input` for replies, and `Source::Ctl`; PR 12 `Source::Step`; PR 16
+  `Source::LongTap`). The loop reads HID with a timeout up to `next_deadline()`, drains
+  further reports at once, and flushes dirty panels once per pass. No HID reader thread:
+  the device handle can't be split across threads.
+- **State watcher** (groundwork, extended by 8, 9, 10, 14). Core `probe.rs` has
+  `Probe`/`Value`/`Values` and the one `dial_status` builder (`state.rs` stays the saved
+  `State`). Daemon `watch.rs` replaces the audio worker: the loop sends it what to watch,
+  it reads off the deck loop and sends back only *changes*. It also runs volume changes,
+  in order, each followed by a read. Every child process goes through
+  `proc::output_timeout`. PR 8 adds command probes (on runner threads), PR 9 built-in
+  sources, PR 10 app streams, PR 14 the player.
+- **Only the daemon reads system state** (groundwork). The GUI mirrors it from
+  `Event::Brightness`, `Event::DialStatus { index, status: PanelStatus }` and, from PR 8,
+  `Event::KeyState`. The hub replays the latest to new clients and never blocks the loop
+  (per-client writer threads).
+- **State file** (groundwork). The daemon owns the whole `State` and sends it to one
+  `StateSaver`, which is joined at shutdown. Later PRs that persist something add a field.
+- **Action editors** (groundwork). `action_editor(ActionSlot)` with `Rc<dyn Fn>` closures
+  and an `ActionTarget` saying which action it edits. PR 8 (on-action), PR 12 (steps) and
+  PR 16 (long press) add targets; recursion works.
 - **Hyprland event listener** (PR 9, reused by 10 and 15). One thread on Hyprland's
   `.socket2.sock` that turns `workspace>>`, `activewindow>>`, … into messages for the main
   loop. Live keys need it for the active workspace, per-app volume for the focused app,
   app pages for the focused app. Falls back to doing nothing outside Hyprland.
-- **Daemon control socket** (PR 11). Today the hub only *publishes* events. PR 11 adds
-  commands in the other direction on the same socket (`Command`/`Reply` in `ipc.rs`), and
-  `omadeckd press`/`dial` go through the daemon when it runs. Features before it don't
-  depend on it.
+- **Daemon control socket** (PR 11). Upstream's socket already carries GUI commands
+  (`Command::ShowPage`, `SetBrightness`, tagged `"command"`). PR 11 adds more commands
+  and a `Reply`, and `omadeckd press`/`dial` go through the daemon when it runs. Features
+  before it don't depend on it.
 - **Daemon-owned actions** (built in the rebase, `4c7bf70`; reused by 11, 12 and 16).
   One dispatch that routes the actions the deck loop runs itself (Open page, Back, Page
-  step, Brightness) for every input path, so keys, dials, strip taps, multi-actions and
-  ctl all go through it.
+  step, Brightness) for every input path. `Action::is_deck_owned()` is the single list of
+  them (groundwork).
 - **Strip layers** (built in PR 7, `7aa52c3`; reused by 9, 10 and 14).
   `Renderer::panel_backdrop()` draws everything under a panel's layout (base colour,
   strip image slice, dial colour, dial image) and returns a `Backdrop` with the mean
   `tone` for contrast; later panels (live values, app volume, media) draw their items on
-  top unchanged.
-- **Audio streams** (PR 10, reused by 14). Per-app volume extends `audio.rs` from devices
+  top unchanged. Groundwork adds `draw_bar` (clamps) and separate title/value colours;
+  PR 10 adds `Backdrop::tone_in(rect)` for contrast under each item.
+- **Audio streams** (PR 10). Per-app volume extends `audio.rs` from devices
   (sink/source) to streams (sink inputs), done the same Omarchy-first way.
 
 New action kinds land in this order, so `KINDS` indices are fixed. After the rebase onto
@@ -117,11 +149,12 @@ reconcile contradictions, so a plan is ready only when:
 Work the model can't do well: the rebase itself (conflict resolution), and GUI layout
 judgement. Do those yourself, or with a stronger model.
 
-Each plan has a **Before handing this to the local model** list near the top with what
-the 2026-10-16 review found in it.
-
-Each plan ends with **Open decisions**: the choices it made a default for. Settle them when
-that PR's turn comes, before building it.
+The 2026-10-17 rewrite settled every open decision as "Decided: …". What's genuinely my
+call is in each plan's **Ask before building** list (at most three); hardware facts still
+to collect are in **Capture on the machine first**, with exact commands. Each plan opens
+with what it takes from the plan before it. Plans after groundwork were written before
+their base exists, so check those names against the branch first (each plan says how);
+the branch wins.
 
 ### Later, only if wanted
 

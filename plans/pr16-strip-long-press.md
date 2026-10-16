@@ -1,67 +1,121 @@
 # PR 16: `feat/strip-long-press`: long press on a strip panel as its own action
 
-Part of [PLAN.md](PLAN.md). Base: `feat/app-pages` (PR 15) for a clean merge order, but
-nothing from PRs 7–15 is used; it only needs PRs 2–3 (dials, strip), so it can move earlier
-in the order without changes. If it lands after PR 12, use PR 12's `dispatch()` instead of
-the small helper below.
+Part of [PLAN.md](PLAN.md). Base: `feat/app-pages` (PR 15) for a clean merge order.
+It needs groundwork (`Source`, D3; `ActionSlot` and `ActionTarget`, D10) and PR 11's
+`Daemon::try_input` (where the failure event is published since PR 11) and
+`Daemon::tap_dial`. Nothing from PRs 8–10 or 12–15 is used.
 
-**Before handing this to the local model** (from the 2026-10-16 review; do these when
-rewriting the plan after the previous feature lands, then delete this list):
+**Outcome:** each dial can have a `long_press` action that runs when you press and hold
+its panel on the touch strip (Elgato's "long touch"). A dial with no `long_press` does on
+a hold what it does on a tap: it runs the dial's `press`. Today a hold does nothing on the
+deck; the daemon only publishes `StripLongPress`.
 
-- [ ] Don't build `run_dial_action`: rebase step 2 owns the one dispatch (it also fixes bug #6). Call it for `long_press_action()`. If it is built before the rebase, keep the helper below (it routes `Page` and `Brightness`); after the rebase it must also route `Back` and `PageStep`, which the shared dispatch does.
-- [ ] Test a pure `fn route(act: &Action) -> Route { Deck, Spawn }` instead of the helper, which takes `Deck`, `Renderer` and `Hub`.
-- [ ] Name the worker parameter for its base: `&AudioWorker` before PR 8, the watcher after.
-- [ ] Decided by default unless changed: a dial without `long_press` falls back to `press`.
-- [ ] Add the check per step: `cargo test -p omadeck-core <filter>` and `cargo clippy --all-targets -- -D warnings`.
-- [ ] Small and accurate otherwise; a good early task for the local model.
+The old plan also fixed BUGS.md #6 (a dial press or strip tap running `page` or
+`brightness` failed). The rebase's one `dispatch` fixed that, so it's gone from here.
 
-**Outcome:** each dial can have a `long_press` action that runs when you press and hold its
-panel on the touch strip. A dial with no `long_press` keeps today's behaviour: a long
-press does what a tap does (runs the dial's press). On the way, it fixes [BUGS.md](BUGS.md)
-#6 (called #4 before BUGS.md was renumbered): a dial press or strip tap whose action is `page` or `brightness` fails today.
+## How the Elgato app does it (researched 2026-10-16, trimmed)
 
-## How the Elgato app does it (researched 2026-10-16)
-
-- The Stream Deck + firmware classifies touches itself: tap, long press ("hold") and flick
-  are separate HID reports; the host never measures the hold time. The `elgato-streamdeck`
-  crate passes them on as `TouchScreenPress`, `TouchScreenLongPress` and
-  `TouchScreenSwipe`.
-- In the SDK a long press is **not a separate event**: it is a `touchTap` whose payload has
-  `hold: true` ("Determines whether the tap was considered "held""), plus `tapPos` relative
-  to the action's panel
+- The Stream Deck + firmware classifies touches itself: tap, long press and flick are
+  separate HID reports, and the host never times the hold. `elgato-streamdeck` passes
+  them on as `TouchScreenPress`, `TouchScreenLongPress` and `TouchScreenSwipe`.
+- In the SDK a long press is a `touchTap` with `hold: true`
   ([plugin WebSocket reference](https://docs.elgato.com/streamdeck/sdk/references/websocket/plugin)).
-  The action under the touch decides what a held tap does. An action that ignores `hold`
-  treats it as a tap.
-- Elgato's name for it is **"long touch"**: `setTriggerDescription` has a `longTouch` field
-  next to `push`, `rotate` and `touch`, and the manifest's `TriggerDescription` example
-  uses `"LongTouch": "Skip Track"`. Those are text the Elgato app shows to describe the
-  gesture, not on the device
+  The action under the touch decides what a held tap does; one that ignores `hold` treats
+  it as a tap.
+- Elgato calls it **"long touch"** (`setTriggerDescription`'s `longTouch`, the manifest's
+  `"LongTouch": "Skip Track"`), text the app shows to describe the gesture
   ([dials guide](https://docs.elgato.com/streamdeck/sdk/guides/dials)).
-- There is no long press of the **dial** itself (pushing and holding the knob): only
-  `dialDown`/`dialUp`, and plugins time it themselves if they want one. Out of scope here.
-- **Unconfirmed:** the firmware's hold threshold, and what Elgato's own built-in actions do
-  on a long touch (e.g. whether the Volume action does anything different from a tap).
+- There is no long push of the **dial** itself, only `dialDown`/`dialUp`. Out of scope.
+- **Unconfirmed:** the firmware's hold threshold, and whether a hold also sends a tap.
 
-## Config
+## Decided
+
+- **Decided: an unset `long_press` falls back to `press`,** as an Elgato action that
+  ignores `hold` does. Holding is then never a dead gesture.
+- **Decided: `Source::LongTap(u8)` through `Daemon::try_input`** (D3, PR 11). No new dispatch.
+  Failures publish `DialActionFailed`, like `Source::Tap`.
+- **Decided: tap and long press share one `strip_touch(x, long)` and PR 11's
+  `tap_dial(i, long)`,** so the panel mapping, flash and logging exist once.
+- **Decided: the firmware decides what a long press is.** No timer of our own.
+- **Decided: per dial, not per page** (dials are device-level, PR 5).
+- **Decided: `long_press`, not `long_touch`** in the TOML: omadeck's word, matching the
+  crate's event and the existing `StripLongPress` IPC event. The README names Elgato's.
+- **Decided: `long_press` counts for the panel's level.** `level_source()` looks at it
+  last, after turn right, turn left and press, so a dial whose only volume action is a
+  long-press mute still shows the volume.
+- **Decided: no ctl.** `omadeckd dial N long-press` is Later; PR 11's dial command isn't
+  touched.
+- **Decided: no new IPC.** `StripLongPress { x, y }` exists; failures reuse
+  `DialActionFailed`.
+
+## Ask before building
+
+1. Unset `long_press` falls back to `press` (planned), or should a hold do nothing?
+2. Keep it last (planned)? Building it earlier means writing the long press into
+   groundwork's tap arm instead of PR 11's `tap_dial`.
+
+## Before building: check against the base
+
+Groundwork wasn't merged when this plan was written. Check on `feat/app-pages` and use
+the branch's names if they differ:
+
+```bash
+grep -n "enum Source\|fn try_input\|fn run_input\|fn tap_dial\|Source::Tap\|TouchScreenPress\|TouchScreenLongPress" crates/omadeckd/src/*.rs
+grep -n "struct ActionSlot\|enum ActionTarget\|fn action_editor\|fn dial_action_group\|Direction::" crates/omadeck-gui/src/*.rs
+grep -n "fn default_for\|enum Direction\|fn level_source" crates/omadeck-core/src/config.rs
+grep -rn "DialConfig {$" crates
+```
+
+Expected (groundwork, PRs 8, 11, 12): `daemon.rs`: `enum Source { Key(u8), Turn(u8),
+Press(u8), Tap(u8), Flick, Ctl, Step }`, `fn Daemon::try_input(&mut self, src: Source,
+act: &Action, steps: u8) -> Result<()>` (logs, dispatches, routes volume to the watcher,
+publishes the failure event for `src`) with `fn Daemon::run_input(..) -> bool` as its
+wrapper, and PR 11's `fn tap_dial(&mut self, i: u8) -> Result<()>` (flash, mark dirty,
+run `press` with `Source::Tap(i)`), which the `TouchScreenPress` arm (after
+`tap_to_dial`) and ctl's `Dial { input: Press }` call. GUI: `pub(crate) struct ActionSlot
+{ target: ActionTarget, dir: Option<Direction>, get: Rc<dyn Fn(&Rc<App>) -> Action>,
+set: Rc<dyn Fn(&Rc<App>, Action)>, … }`, `ActionSlot::dial(i, dir)`, `enum ActionTarget
+{ Key(KeyRef), DialTurnLeft(u8), DialTurnRight(u8), DialPress(u8), KeyOn(KeyRef),
+Step(Box<ActionTarget>, usize) }` with `dial_slot()`, `App::action_at`,
+`App::set_action_at`; core `Action::default_for(kind: usize, dir: Direction) -> Action`.
+
+## Code as merged (verbatim, `d7bd448`)
 
 ```rust
-// DialConfig, after `press`
-/// Runs when the dial's strip panel is pressed and held. Unset: a long press does what a
-/// tap does (runs `press`).
-#[serde(default, skip_serializing_if = "Action::is_none")]
-pub long_press: Action,
+// crates/omadeck-core/src/config.rs, DialConfig
+    /// Runs when the dial is pressed down.
+    #[serde(default, skip_serializing_if = "Action::is_none")]
+    pub press: Action,
+}
+pub fn new(index: u8) -> Self;          // every action Action::None
+pub fn is_blank(&self) -> bool;         // … && self.press.is_none()
+pub fn level_source(&self) -> Option<LevelSource> {
+    let actions = [&self.turn_right, &self.turn_left, &self.press];
+    …
+}
 ```
+
+```rust
+// crates/omadeckd/src/daemon.rs, Daemon::handle_update (groundwork): the long-press arm
+DeviceStateUpdate::TouchScreenLongPress(x, y) => {
+    // Published for now; PR 16's long press uses it.
+    log::info!("strip long press at ({x}, {y})");
+    self.hub.publish(Event::StripLongPress { x, y });
+}
+```
+
+The tap arm (`TouchScreenPress(x, y)`) publishes `StripTap`, maps `x` with
+`tap_to_dial(x as u32, w, d.info.dials as usize)` and calls PR 11's `tap_dial(i)`, which
+sets `flash_until[i] = Some(Instant::now())` (the **tap time**, not a deadline: bug 15's
+convention), marks the panel dirty and runs `press` through
+`try_input(Source::Tap(i), …)`.
+
+## Config
 
 ```toml
 [[dial]]
 index = 3
 label = "Brightness"
-[dial.turn_left]
-type = "brightness"
-change = -5
-[dial.turn_right]
-type = "brightness"
-change = 5
 [dial.press]                   # tap the panel or push the dial: dim to 20%
 type = "brightness"
 set = 20
@@ -70,110 +124,172 @@ type = "brightness"
 set = 100
 ```
 
-- `DialConfig::long_press_action() -> &Action`: `long_press` if set, else `press`.
-- `DialConfig::is_blank` adds `&& self.long_press.is_none()`; `DialConfig::new` sets it to
-  `Action::None`.
-- Old configs: no `long_press`, nothing written; they load and save byte-identical.
-- `long_press` and not `long_touch`: omadeck's word for the gesture matches the crate's
-  event and the existing `StripLongPress` IPC event; the README mentions Elgato's
-  "long touch".
+## Task 1: config and daemon (~150 lines)
 
-No new `Action` variant and no `KINDS` change.
+**Files:** `crates/omadeck-core/src/config.rs`, `crates/omadeckd/src/daemon.rs` (`Source`,
+`try_input`, the input arms, `tap_dial`, the ctl `Dial` handling).
 
-## Daemon (`main.rs`)
+`DialConfig` gains, right after `press`:
 
-- New helper `run_dial_action(d, cfg, renderer, hub, audio, i, act, steps)`, used by
-  `EncoderTwist` (its existing `match` moves in), `EncoderDown`, the strip tap and the new
-  long press. It handles `Page` and `Brightness` on the deck loop (`do_page`,
-  `do_brightness`) and everything else with `action::run_steps` + `after_volume`, and
-  publishes `DialActionFailed` on error. That fixes bug #6 for dial presses and taps.
-  When PR 12's `dispatch()` exists, this helper becomes a call to it.
-- `TouchScreenLongPress(x, y)`: keep publishing `StripLongPress { x, y }`; then, as the tap
-  does, map `x` to a dial with `render::tap_to_dial`, flash that panel (`DIAL_FLASH`), and
-  run `dc.long_press_action()` through the helper.
-- The tap and long-press branches share one `strip_touch(d, …, x, long: bool)` so the
-  mapping, flash and logging aren't duplicated.
-- PR 8's busy state is keys only; nothing here.
+```rust
+/// Runs when the dial's strip panel is pressed and held (Elgato's "long touch"). Unset:
+/// a long press does what a tap does (runs `press`).
+#[serde(default, skip_serializing_if = "Action::is_none")]
+pub long_press: Action,
+```
 
-## IPC
+```rust
+impl DialConfig {
+    /// What holding this dial's strip panel runs: `long_press`, else `press`.
+    pub fn long_press_action(&self) -> &Action {
+        if self.long_press.is_none() { &self.press } else { &self.long_press }
+    }
+}
+```
 
-No new events. `StripLongPress` already exists. Failures reuse `DialActionFailed`.
+- `DialConfig::new` sets `long_press: Action::None`; `is_blank` adds
+  `&& self.long_press.is_none()`; `level_source` adds `&self.long_press` **last** in its
+  list of actions.
+- **Trap:** a full `DialConfig { … }` literal without `..DialConfig::new(i)` stops
+  compiling. The grep above finds them; add `long_press: Action::None`.
 
-## GUI (`editor.rs`, `build_dial`)
+Daemon:
 
-- A fourth `dial_action_group`, **"Long press on the strip"**, after "Press", with the
-  description "Press and hold this dial's panel. Nothing set: same as Press." Only shown
-  when the deck has a strip (`deck_info().strip.is_some()`), like the strip preview.
-- Presets are unchanged: a long press is something you add to a dial, not part of the
-  Volume or Brightness dial presets.
-- *Try it now* for the group follows the existing rules (disabled for page/brightness).
+- `Source` gains `LongTap(u8)` (`Display`: `dial {i}`, like `Tap`). In `try_input`'s
+  match on the source for the failure event (PR 11 moved it there from `run_input`),
+  `Source::LongTap(i)` goes with `Source::Tap(i)` (`DialActionFailed { index: i, … }`),
+  and the log names it "long press".
+- PR 11's `tap_dial` gains `long: bool` and runs `long_press_action()` when it's set.
+  Ctl's `Dial { input: Press }` calls `tap_dial(index, false)`. The tap arm and the
+  long-press arm both call one helper. Keep publishing `StripTap`/`StripLongPress` in the
+  arms, before the call.
 
-## Docs
+```rust
+/// A tap or long press on the strip: the dial under `x`, then `tap_dial`, as in the
+/// Elgato app.
+fn strip_touch(&mut self, x: u16, long: bool) {
+    let Some(deck) = &self.deck else { return };
+    let Some((w, _)) = deck.info.strip else { return };
+    let Some(i) = tap_to_dial(u32::from(x), w, deck.info.dials as usize) else { return };
+    let _ = self.tap_dial(i as u8, long);
+}
 
-README: under the Stream Deck + features, "hold a panel on the touch strip for a second
-action (Elgato's "long touch")". `examples/config.toml`: a commented `[dial.long_press]`
-in the dial example. CHANGELOG: one line for the feature and one for the bug fix.
+/// PR 11's, with `long`: flash panel `i` and run the dial's press (tap) or long press.
+fn tap_dial(&mut self, i: u8, long: bool) -> Result<()> {
+    if let Some(d) = &mut self.deck
+        && let Some(t) = d.flash_until.get_mut(i as usize)
+    {
+        // The tap time, not a deadline (bug 15).
+        *t = Some(Instant::now());
+        d.mark_dirty(i);
+    }
+    let act = self.cfg.dial(i).map(|dc| if long { dc.long_press_action() } else { &dc.press }.clone());
+    let Some(act) = act.filter(|a| !a.is_none()) else { return Ok(()) };
+    log::info!("strip {} on dial {i}: {}", if long { "long press" } else { "tap" }, act.summary());
+    self.try_input(if long { Source::LongTap(i) } else { Source::Tap(i) }, &act, 1)
+}
+```
 
-## Implementation steps
+- **Trap (BUGS.md 4):** the action is cloned out of `self.cfg` and the `deck` borrow ends
+  before `self.try_input`, which takes `&mut self`. Keep that order.
+- Remove the "Published for now" comment.
 
-1. [ ] `run_dial_action` helper; move the twist `match` into it; use it for `EncoderDown`
-       and the tap. Fixes bug #6. Tests. (Worth doing first as its own commit, or even on
-       `feat/brightness` right away; see BUGS.md.)
-2. [ ] Config: `long_press`, `long_press_action`, `is_blank`, tests.
-3. [ ] Daemon: `strip_touch` for tap and long press.
-4. [ ] GUI: the "Long press on the strip" group.
-5. [ ] README, example, CHANGELOG.
+Tests in `config.rs` (copy this one), plus `long_press_counts_for_the_panel_level` (a dial
+whose only action is `long_press = Volume { mute: true }` →
+`level_source() == Some(LevelSource::Volume(AudioDevice::Output))`; `Output` is
+`AudioDevice`'s default).
 
-## Tests
+```rust
+#[test]
+fn long_press_falls_back_to_press_and_is_omitted() {
+    let mut d = DialConfig { press: Action::Brightness { change: 0, set: Some(20) }, ..DialConfig::new(3) };
+    assert_eq!(d.long_press_action(), &d.press, "unset: same as a tap");
+    let s = toml::to_string_pretty(&d).unwrap();
+    assert!(!s.contains("long_press"), "nothing written when unset");
+    d.long_press = Action::Brightness { change: 0, set: Some(100) };
+    assert_eq!(d.long_press_action(), &Action::Brightness { change: 0, set: Some(100) });
+    let back: DialConfig = toml::from_str(&toml::to_string_pretty(&d).unwrap()).unwrap();
+    assert_eq!(back, d);
+    assert!(!DialConfig { long_press: Action::Back, ..DialConfig::new(0) }.is_blank());
+}
+```
 
-- config: `long_press_roundtrip_and_omitted_when_none`; `long_press_falls_back_to_press`;
-  `dial_with_only_long_press_is_not_blank`; `old_dial_config_saves_byte_identical`;
-  `example_parses` covers the new example.
-- daemon (pure helper): `deck_owned_dial_actions_do_not_go_to_action_run` (page and
-  brightness are routed to the deck, not `action::run`, for press, tap and long press).
+**Check:** `cargo test -p omadeck-core long_press && cargo clippy --all-targets -- -D warnings`
+→ `test result: ok. 2 passed`, no clippy warnings.
+
+## Task 2: GUI and docs (~100 lines)
+
+**Files:** `crates/omadeck-gui/src/app.rs` (`ActionTarget`), `crates/omadeck-gui/src/editor.rs`
+(`build_dial`), `crates/omadeck-gui/src/app.rs` (`refresh_dial`), `README.md`,
+`examples/config.toml`, `CHANGELOG.md`.
+
+- **`ActionTarget`** (groundwork, D10) gains `DialLongPress(u8)`, the variant groundwork
+  names for this PR. `dial_slot()` returns `None` for it (`Direction` has no long press);
+  `App::action_at` and `App::set_action_at` get explicit arms that read and write
+  `DialConfig::long_press` (through `cfg.dial(i)` and `edit_dial(i, ..)`). The slot is
+  built like `ActionSlot::dial(i, Direction::Press)` (so kind defaults use the press
+  direction) but with `target: ActionTarget::DialLongPress(i)` and its `get`/`set`
+  through that target.
+- **`build_dial`**: a fourth action group after "Press", built exactly like the other
+  three (same helper, same `ActionSlot`), titled **"Long press on the strip"**, with the
+  description "Press and hold this dial's panel. Nothing set: same as Press." Only when
+  the deck has a strip (`app.deck_info().strip.is_some()`), like the strip preview. Kind
+  defaults use the press direction: `Action::default_for(kind, Direction::Press)`.
+- **`refresh_dial`** tooltip: append ` · hold: {}` with `d.long_press.summary()` when
+  `long_press` is set.
+- Presets ("Volume dial", "Brightness dial") are unchanged: a long press is something you
+  add.
+- *Try it now* follows the existing rule (`Action::is_deck_owned()`, D11).
+- **Trap:** the group's closures are `Rc<dyn Fn…>` inside `ActionSlot` (D10). Don't add
+  an `impl Fn + Clone` parameter anywhere.
+- Docs: README, under the Stream Deck + features: "hold a panel on the touch strip for a
+  second action (Elgato's "long touch"); unset, a hold does what a tap does". A commented
+  `[dial.long_press]` in the dial example of `examples/config.toml` (keep it inside a
+  `# [[dial]]` block so `example_dial_parses` checks it). CHANGELOG under Unreleased →
+  Added.
+
+**Check:** `cargo test && cargo clippy --all-targets -- -D warnings` → all tests pass
+(`example_dial_parses` covers the new example), no warnings.
+
+## Capture on the machine first
+
+Paste the output here before Task 1:
+
+```bash
+systemctl --user stop omadeckd
+cargo run -p omadeckd 2>&1 | grep -E "strip (tap|long press|swipe)"
+```
+
+Then tap a panel, hold a panel about a second, and hold one while drifting sideways.
+Record: whether a hold logs **only** `strip long press at`, or a `strip tap at` first
+(if it does, Task 1 must not run `press` for that tap: stop and rethink); roughly how long
+the hold takes before the line appears; whether a drifting hold is a long press or a
+swipe.
 
 ## Hardware checks (Stream Deck +, 0fd9:0084, Omarchy)
 
-- [ ] Hold each of the four panels: the right dial's `long_press` runs, and the panel
+- [ ] Hold each of the four panels: that dial's `long_press` runs, once, and the panel
       flashes. A short tap still runs `press`.
 - [ ] A dial without `long_press`: holding its panel runs `press`, once.
-- [ ] Note roughly how long the firmware waits before it reports a long press, and that a
-      hold never also produces a tap (no double action).
-- [ ] A hold that drifts sideways is still a long press, not a flick (no page change).
-- [ ] Bug #6: a dial whose press is `brightness set = 100`, and one whose press is
-      `page index = 0`: pushing the dial and tapping its panel both work, no toast.
-- [ ] Config without `long_press` saves byte-identical from the GUI.
+- [ ] A hold that drifts sideways doesn't change page.
+- [ ] A long press that fails (e.g. a missing script) shows the configurator's toast.
+- [ ] The "Long press on the strip" group is missing on a deck without a strip.
+- [ ] A config without `long_press` saves byte-identical from the GUI.
 
 ## Decisions to explain
 
-- **A long press falls back to the tap action**, as an Elgato action that ignores `hold`
-  does. Today a long press does nothing, which feels broken; falling back makes holding
-  harmless, and `long_press` is only for when you want something different.
-- **The firmware decides what a long press is.** No timer of our own, so it feels the same
-  as in the Elgato app.
-- **Per dial, not per page**: dials and the strip are device-level (PR 5), so their long
-  press is too.
-- **`long_press`, not `long_touch`**: omadeck's own naming, matching the crate and the
-  existing IPC event; Elgato's term is mentioned in the README.
-- **The bug fix rides along** because the long press goes through the same path; it can
-  also be cherry-picked on its own.
+- **A long press falls back to the tap action,** as an Elgato action that ignores `hold`
+  does.
+- **The firmware decides what a long press is,** so it feels the same as in the Elgato
+  app.
+- **Per dial, not per page:** dials and the strip are device-level (PR 5).
+- **`long_press`, not `long_touch`:** omadeck's naming; Elgato's term is in the README.
 
 ## Later
 
-- A long push of the dial itself (hold the knob), timed in the daemon from
-  `EncoderDown`/`EncoderUp`; Elgato has no built-in equivalent.
+- A long push of the dial itself, timed in the daemon from `EncoderDown`/`EncoderUp`.
+- `omadeckd dial N long-press` through PR 11's ctl.
 - Showing what a long press does, like Elgato's trigger descriptions (a tooltip on the
   strip preview).
-- Long press on keys (Elgato has none built in; plugins time it).
 
-**Size:** about 150 lines (helper and bug fix ~50, config ~30 with tests, daemon ~30, GUI
-~25, docs).
-
-## Open decisions (settle when building)
-
-The plan picks a default for each; confirm or change it before starting this PR.
-
-- An unset `long_press` falls back to `press` (planned). Or should it do nothing, as today?
-- Where in the order: it only needs PRs 2–3, so it could go right after PR 7 (strip
-  backgrounds) instead of last.
-- Fix bug #6 now on `feat/brightness` (planned as an option), or wait for this PR?
+**Size:** about 250 lines: config ~70 with tests, daemon ~60, GUI ~60, docs ~30.

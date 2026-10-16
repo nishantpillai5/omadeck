@@ -1,8 +1,11 @@
 # Bugs
 
 Personal working notes, next to [PLAN.md](PLAN.md). Bugs found in the code on `daily`,
-with where they are, what goes wrong, and which branch should fix them. All 21 recorded
-bugs are closed (see the bug pass under Rebase outcomes); add what a fresh review finds.
+with where they are, what goes wrong, and which branch should fix them. Bugs 1–21 are
+closed (see the bug pass under Rebase outcomes), except that 18's fix didn't work (see
+29). The 2026-10-17 code review added 22–49, all open: 22–43 go to `fix/review`
+([review-fixes.md](review-fixes.md)), 44–49 to `feat/groundwork` (groundwork.md), because
+their proper fix is that branch's structure.
 
 Each entry: **status** (open / fixed in `<commit>`), **found** (date, how), the file and
 line on `daily`, what goes wrong, and the fix.
@@ -51,14 +54,14 @@ new `daily` and fixed there (based on `feat/strip-backgrounds`):
 - **15** — fixed: `flash_until` stores the tap time, so the flash lasts 150 ms.
 - **16** — fixed: `wpctl_rel` uses `unsigned_abs()`.
 - **17** — fixed: `parse_pactl` clamps like `parse_wpctl`.
-- **18** — fixed: volume/brightness changes mark panels dirty; one `paint_dial` per loop
-  pass (the `paint_dial` comment is updated to match).
+- **18** — marked fixed, but it isn't: the flush sits inside the per-update loop, and a
+  pass reads one HID report. Reopened as 29.
 - **21** — `a` and `e` were already fixed by the rebase (Brightness test disabled;
   `reload_from_disk` calls `update_style`); `b`, `c`, `d` fixed (app pick no longer renames
   the dial; `default_for` gives a new volume the direction's sign; a smaller replugged deck
   clears a stale selection).
 
-All 21 bugs are now closed. `daily` is `fix/bugs`.
+All 21 bugs were closed then (18 regressed, see 29). `daily` is `fix/bugs`.
 
 ## Open
 
@@ -344,3 +347,320 @@ page-independent dials. The two can't both live:
    `PageChanged { page: u8 }`. No migration: those configs only exist on `daily`.
    This also retires bugs 1, 2, 3, 8, 12 and 20.
 5. `PageStep` + flick + the folder flag make a natural small PR to offer upstream.
+
+## Review 2026-10-17
+
+A code review of `daily` = `fix/bugs` (`d7bd448`) in four parts (core, render, daemon,
+GUI), each finding re-checked against the code; the summary is in
+[review-2026-10-17.md](review-2026-10-17.md). File and symbol are on `d7bd448` (no line
+numbers). 22–43 are fixed on `fix/review` ([review-fixes.md](review-fixes.md)); 44–49 on
+`feat/groundwork`, whose structure their fix needs.
+
+### `fix/review`: high
+
+#### 22. CI never runs: `ci.yml` is invalid YAML
+
+- **Status:** open. **Found:** 2026-10-17, code review (Psych and `actionlint` both reject it).
+- **Where:** `.github/workflows/ci.yml`, step "Install dependencies". Since `2b389cc` (PR 3).
+- **What goes wrong:** the new `# font-dejavu: …` comment sits at 8 spaces and `run:` at 6,
+  so the step list doesn't parse ("did not find expected '-' indicator", line 16). GitHub
+  shows "Invalid workflow file" and no job runs: no fmt, clippy, tests or shell check.
+  Nobody saw it because `on:` only fires on `master`/`main` and pull requests.
+- **Fix:** indent `run:` under the step; add `workflow_dispatch:` so our branches can be
+  run by hand. Lands with 23, or CI goes red at once.
+
+#### 23. The strip golden test depends on the machine's font
+
+- **Status:** open. **Found:** 2026-10-17, code review (fails on macOS; reproduced).
+- **Where:** `render::tests::no_images_pixels_unchanged`, `renderer_with_font`, fixtures
+  `tests/fixtures/strip-{x1,b1}.png`.
+- **What goes wrong:** the renderer's font is whatever `fc-match monospace:weight=bold`
+  returns. The fixtures were drawn with a Nerd Font, so the test fails on a Mac (Andale
+  Mono) and in CI (DejaVu Sans Mono, no PUA glyphs for the `$B1` speaker), and breaks on
+  the Omarchy box after `omarchy-font-set` or a font update. With no font at all,
+  `renderer_with_font` returns `None` and the test passes without checking anything.
+- **Fix (D9):** a bundled OFL font subset, `Renderer::with_font_bytes`, glyph `"A"` in the
+  goldens, `OMADECK_UPDATE_GOLDEN=1` to regenerate. No test skips any more.
+
+#### 24. Every page made in the GUI is a folder, so flicks and `page_step` skip them all
+
+- **Status:** open. **Found:** 2026-10-17, code review (core and GUI parts both).
+- **Where:** `omadeck-gui/src/app.rs` `App::add_page` (`folder: true` always), used by
+  `ask_new_page` (**+**), `editor.rs` `new_folder` and the dial's "New page".
+- **What goes wrong:** make Home + "Work" + "Media" with **+** and flick the strip: nothing
+  happens (`step_page(None, 1) == None`); a "Next/previous page" key or dial does nothing.
+  Nothing in the GUI shows or edits the flag, and the README doesn't mention `folder`.
+- **Fix (D12):** `add_page(name, folder)`; **+** makes a normal page, "New page" on an
+  Open-page action makes a folder; a "Folder" toggle in the page actions. Core gets
+  `Config::add_page`, `is_folder`, `set_folder`.
+
+#### 25. Renaming or deleting a page misses dial actions that open it
+
+- **Status:** open. **Found:** 2026-10-17, review follow-up (checked in the code).
+- **Where:** `config.rs` `Config::rename_page`, `remove_page` (through `all_keys_mut`) and
+  `links_to`: keys only.
+- **What goes wrong:** a dial press "Open page Media" keeps pointing at "Media" after a
+  rename (the press then fails with "there's no page named …"), and keeps it after a
+  delete. The delete dialog's "the N keys that open it" undercounts.
+- **Fix:** `all_actions`/`all_actions_mut` over key actions and each dial's three slots;
+  the dialog says "keys or dials".
+
+#### 26. A hand edit of `brightness` in config.toml no longer reaches the deck
+
+- **Status:** open. **Found:** 2026-10-17, code review. A regression against upstream.
+- **Where:** `omadeckd/src/main.rs` `run()`, the reload block: `Deck.brightness` is set
+  once in `connect()` and `paint_all` uses it; upstream's `paint_all` used
+  `cfg.brightness` on every reload. `snapshot` draws brightness dials at `cfg.brightness`.
+- **What goes wrong:** edit `brightness = 30`, save: the deck stays where it was, now and
+  after a restart (the state file wins). `omadeckd snapshot` shows the config's value
+  while the deck shows the state file's.
+- **Fix (D1, bug part):** on reload, a changed `brightness` is applied and saved like a
+  `set`. `snapshot` uses `State::load().brightness.unwrap_or(cfg.brightness)`.
+
+#### 27. A GUI brightness change with no deck plugged in is dropped
+
+- **Status:** open. **Found:** 2026-10-17, code review.
+- **Where:** `run()`, `Command::SetBrightness`: `if let Some(d) = &mut deck`.
+- **What goes wrong:** move the slider while the deck is unplugged: the daemon throws it
+  away and the next connect starts from the old state-file value.
+- **Fix:** with no deck, send the value to the saver; `connect` reads it back.
+
+#### 28. The last brightness change is lost on shutdown
+
+- **Status:** open. **Found:** 2026-10-17, code review.
+- **Where:** `run()` spawns `brightness_saver` without keeping its `JoinHandle`.
+- **What goes wrong:** turn the brightness dial and stop the service within 200 ms
+  (`systemctl --user restart omadeckd`, logout): the process exits before the debounced
+  save, and the next start restores the previous value.
+- **Fix:** keep the handle; at shutdown drop the sender and join. The saver already
+  saves a pending value when the channel closes.
+
+#### 29. Panels are still painted per HID report (bug 18 isn't fixed)
+
+- **Status:** open. **Found:** 2026-10-17, code review (checked against elgato-streamdeck
+  0.13.1's `DeviceStateReader::read`).
+- **Where:** `run()`, the `dirty_panels` flush inside `for u in updates`; the
+  `paint_dial` calls for flash expiry, audio levels, `EncoderDown`/`EncoderUp` and taps.
+- **What goes wrong:** the flush runs after every update, and `read()` returns one report
+  per call anyway, so a hard spin still renders, encodes and writes the panel once per
+  report; input queues behind the LCD writes and the bar lags. A brightness change from
+  the GUI only marks the panel dirty, and the flush is reached only through device input,
+  so the panel shows the old value until you touch the deck. A press paints its panel
+  twice in one update; two levels flush twice.
+- **Fix:** drain queued reports with a zero timeout (bounded), mark panels dirty
+  everywhere, and paint dirty panels with one flush at the end of every pass, whatever
+  the read returned. The `next_deadline` timing is D4, in groundwork.
+
+### `fix/review`: medium
+
+#### 30. A volume turn just after connect shows a guess from 0
+
+- **Status:** open. **Found:** 2026-10-17, code review.
+- **Where:** `main.rs` `after_volume`: an unknown device's level defaults to `0` / `–`.
+- **What goes wrong:** turn up right after the deck connects: the bar jumps to 5%, then
+  snaps to the real level when the refresh lands.
+- **Fix:** no guess without a known level; just send `Refresh`.
+
+#### 31. A Hyprland dial turn runs up to eight `hyprctl` calls on the deck loop
+
+- **Status:** open. **Found:** 2026-10-17, code review.
+- **Where:** `action.rs` `run_steps` → `run` → `hypr_dispatch` → `hyprctl_dispatch`
+  (waits for the answer; two runs per step on Lua-config Hyprland).
+- **What goes wrong:** a dial on `workspace e+1`, spun hard, blocks the loop for up to 8
+  (or 16) round trips per report; with Hyprland stalled the deck freezes.
+- **Fix (D6):** more than one step runs in order on a helper thread; one step stays inline
+  so its error still shows.
+
+#### 32. 21c's fix covers Volume only: Turn left Brightness or Page step goes the wrong way
+
+- **Status:** open. **Found:** 2026-10-17, code review.
+- **Where:** `editor.rs` `dial_action_group` (`default_volume` only rewrites `Volume`);
+  the Brightness "Mode" combo hard-codes `change: 5`.
+- **What goes wrong:** Brightness on Turn left brightens; Next/previous page on Turn left
+  goes to the next page; Volume on Press is `change: 0, mute: false`, a press that does
+  nothing; Mode "Set" then back to "Change" gives `+5` on Turn left.
+- **Fix (D10):** `Action::default_for(kind, Direction)` in core, used by the dial slots
+  and the Mode combo. A Volume press mutes, as on Elgato's volume dial.
+
+#### 33. The "Brightness dial" preset leaves a Volume press behind
+
+- **Status:** open. **Found:** 2026-10-17, code review.
+- **Where:** `editor.rs` `build_dial`, the Brightness preset (sets both turns, not `press`).
+- **What goes wrong:** click **Volume dial**, then **Brightness dial**: turning changes
+  brightness, but the panel shows the speaker and the output volume (`level_source`
+  prefers Volume) and pressing mutes.
+- **Fix:** the preset sets `press = Action::None`.
+
+#### 34. A dial's editor closes whenever the deck changes page
+
+- **Status:** open. **Found:** 2026-10-17, code review.
+- **Where:** `app.rs` `App::show_page`: `select(None)` on any page change.
+- **What goes wrong:** a dial press "Next/previous page": `DialDown` selects the dial, the
+  `PageChanged` right after blanks the editor. "Try it now" on a dial's Open page does too.
+  Dials aren't per page, so only a key selection should close.
+- **Fix:** clear only a `Selection::Key`.
+
+### `fix/review`: low
+
+#### 35. A dial's "Open page" list hides the page the window shows
+
+- **Status:** open. **Found:** 2026-10-17, code review.
+- **Where:** `editor.rs` `action_rows`, `Action::Page`: filters out `app.current_page()`.
+- **What goes wrong:** viewing "Media", you can't set a dial press to open "Media"; set by
+  hand, it reads "Media (missing)". Right for a key (it can't open its own page), wrong for
+  a dial.
+- **Fix:** exclude the key's own page through its `Target`; dials exclude nothing.
+
+#### 36. The strip background row is missing when the deck is plugged in after the GUI starts
+
+- **Status:** open. **Found:** 2026-10-17, code review.
+- **Where:** `app.rs` `settings_popover` (`if self.deck.borrow().strip.is_some()`), built
+  in `build` and `reload_from_disk` only, not on a `Connected` relayout.
+- **Fix:** rebuild the popover in `rebuild_grid`.
+
+#### 37. Each right-click on the strip leaks a popover
+
+- **Status:** open. **Found:** 2026-10-17, code review.
+- **Where:** `app.rs` `strip_menu`: `popover.set_parent(&self.strip)`, never unparented.
+- **Fix:** unparent it when it closes.
+
+#### 38. A dial picker result lands in memory while config.toml is broken
+
+- **Status:** open. **Found:** 2026-10-17, code review.
+- **Where:** `app.rs` `App::edit_dial` (no `locked` check, unlike `edit_ref`).
+- **What goes wrong:** the file breaks while a dial's file dialog is open: the pick shows
+  in the preview but is never saved, and vanishes on the next reload.
+- **Fix:** return early when `locked`, as `edit_ref` does.
+
+#### 39. A background image that fails to decode is decoded again on every paint
+
+- **Status:** open. **Found:** 2026-10-17, code review (a probe counted the loads).
+- **Where:** `render.rs` `Renderer::backdrop_image`: a failure is stored as `None`, but
+  only `Some(Some(..))` counts as a hit. The doc comment says it "warns once".
+- **What goes wrong:** a truncated JPEG, a HEIC or a missing file as `background_image`:
+  every panel paint (each detent, each tap flash) re-reads the file, tries to decode it on
+  the deck loop and logs a warning.
+- **Fix:** cache the mtime with the failure; an entry whose mtime matches is a hit, image
+  or not.
+
+#### 40. SVG backgrounds come out blurry, and a huge SVG allocates a huge pixmap
+
+- **Status:** open. **Found:** 2026-10-17, code review (probe: 134 blended columns).
+- **Where:** `render.rs` `load_cover` → `load_svg_raw` (`rasterize_svg(tree, 1.0)`) →
+  `fit_cover`.
+- **What goes wrong:** a 24 × 24 icon-style SVG is rasterised at 24 × 24 and upscaled
+  with Lanczos; `width="20000"` allocates 20000 × N before cropping. PR 7's plan said "at
+  the cover scale".
+- **Fix:** render straight into the `w × h` pixmap at the cover scale, centred.
+
+#### 41. `fit_cover` resizes the whole image before cropping
+
+- **Status:** open. **Found:** 2026-10-17, code review (measured).
+- **Where:** `render.rs` `fit_cover`.
+- **What goes wrong:** a 4K wallpaper costs ~38 ms in the resize (on the deck loop, first
+  paint); a 16 × 1000 image to 800 × 100 builds an 800 × 50000 intermediate (160 MB), and a
+  2 × 2000 one about 2.5 GB. A 0 × 0 input returns 1 × 1, not `w × h`.
+- **Fix:** crop in source space first, then resize to exactly `w × h`.
+
+#### 42. The default mic glyph is "volume low", and the example's "right arrow" isn't one
+
+- **Status:** open, to confirm on the machine first (see review-fixes.md). **Found:**
+  2026-10-17, code review.
+- **Where:** `render.rs` `INPUT_GLYPH = "f057f"` ("microphone"); `examples/config.toml`
+  (`a mic ("f057f")`, `glyph = "f004e" # right arrow`).
+- **What goes wrong:** in Material Design Icons U+F057F is volume-low (the mic is U+F036C)
+  and U+F004E is a bold left arrow (right is U+F0054), so an input dial shows a speaker.
+- **Fix:** `f036c` and `f0054`, after the check.
+
+#### 43. Docs that disagree with the code
+
+- **Status:** open. **Found:** 2026-10-17, code review.
+- **Where:** README hardware table ("swipe is reported but not used yet"; a flick has
+  changed page since `4c7bf70`); README and example: `folder` undocumented, `brightness`
+  described as the setting although the state file wins; `config.rs` docs on
+  `Action::Brightness` ("persists it to the config"), `Page` ("a folder is just a page
+  with a Back key", above the `folder` field), `LevelSource::Volume` ("the daemon's audio
+  worker"); `render.rs` `DialStatus::level` ("volume, PR 4").
+- **Fix:** reword each; see review-fixes.md task 8.
+
+### `feat/groundwork`
+
+#### 44. The GUI's brightness slider and preview show the config's value, not the deck's
+
+- **Status:** open. **Found:** 2026-10-17, code review.
+- **Where:** `app.rs` `refresh_strip` (`LevelSource::Brightness => cfg.brightness`),
+  `settings_popover` (the slider), the slider handler (writes `config.brightness`).
+- **What goes wrong:** turn a brightness dial from 50 to 80: the slider and the panel
+  preview stay at 50, even after a GUI restart. Nudging the slider then jumps the deck. The
+  slider doesn't refresh the preview either, and each pause while dragging rewrites
+  config.toml for a value the daemon mostly ignores.
+- **Why groundwork:** the fix is the daemon publishing `Event::Brightness` and the GUI
+  mirroring it (D1); fix/review's 26 and 27 make the config edit and the no-deck case work
+  meanwhile.
+
+#### 45. Brightness can revert on a quick replug
+
+- **Status:** open. **Found:** 2026-10-17, code review.
+- **Where:** `main.rs` `Deck.brightness`, re-read in `connect()` from `state.toml`.
+- **What goes wrong:** turn the dial, and the USB link drops within the saver's 200 ms:
+  the new `Deck` reads the old value from the file.
+- **Why groundwork:** brightness moves to `Runtime`, which outlives the deck (D1, D3).
+
+#### 46. Volume changes run unordered, and the mic pop-up can show the old level
+
+- **Status:** open. **Found:** 2026-10-17, code review.
+- **Where:** `action.rs` `run_volume`: a thread per call; the Omarchy 4 mic pop-up sleeps
+  80 ms on another thread and reads.
+- **What goes wrong:** detents ~20 ms apart run `wpctl`/`omarchy-audio-*` concurrently;
+  `wpctl set-volume 5%+` is read-modify-write, so a step can be lost. On a loaded machine
+  the mic pop-up shows the value before the change.
+- **Why groundwork:** volume changes run in order on the watcher thread, each followed by
+  its read (D5).
+
+#### 47. A stale volume read can overwrite the optimistic bar
+
+- **Status:** open. **Found:** 2026-10-17, code review.
+- **Where:** `main.rs` `after_volume` + `AUDIO_REFRESH_DELAY` + the worker's `Refresh`.
+- **What goes wrong:** when the volume command takes longer than 150 ms (Omarchy 4's
+  script, Omarchy 3's `hyprctl`), or a 1 s poll is already running, the read returns the
+  old level and, since bug 9's fix dropped `last`, sends it: the bar shows 55, snaps to 50,
+  and the next guess builds on 50.
+- **Why groundwork:** the read happens after the change on the same thread (D5).
+
+#### 48. A hung `pactl` or `wpctl` freezes the bars for good
+
+- **Status:** open. **Found:** 2026-10-17, code review.
+- **Where:** `audio.rs` `capture` (`Command::output()`, no timeout).
+- **What goes wrong:** while PipeWire restarts, a read can hang; the worker stops, the
+  bars freeze, and a `Refresh` per turn piles up in the unbounded channel.
+- **Why groundwork:** `proc::output_timeout` on the watcher (D5).
+
+#### 49. A slow configurator stalls the deck loop and is then dropped
+
+- **Status:** open. **Found:** 2026-10-17, code review.
+- **Where:** `hub.rs` `Hub::publish` (upstream): `write_all` to every client on the loop,
+  200 ms write timeout. We added per-report events (`DialTurn`, `StripSwipe`, …).
+- **What goes wrong:** the GUI busy for a moment (rebuilding the editor) while a dial
+  spins: the socket fills, the loop blocks up to 200 ms, the client is dropped, and the
+  GUI stops getting events until it reconnects.
+- **Why groundwork:** per-client writer threads with a bounded channel (D8).
+
+### Design items moved to groundwork.md
+
+Not bugs; they're restructuring the later PRs need. See the review summary for detail.
+
+- One `Daemon` struct and `run_input(Source, …)` instead of four copies of the input
+  block; `dispatch` owns the volume follow-up (D3).
+- Loop timing: `next_deadline()` instead of a fixed 100 ms read (D4).
+- One watcher thread for all probes, in `probe.rs`/`watch.rs`, not `state.rs`; the GUI's
+  `strip_levels` poller goes, the daemon publishes `DialStatus` (D2, D5).
+- A generic `StateSaver` that writes the whole `State` (today it would wipe any new field),
+  with `load_from`/`save_to` and fsync (D7).
+- Renderer: stat only on `clear_cache` with `(mtime, len)` stamps, shared images, a cache
+  sweep, `Level` clamped in `draw_b1`, `$B1` colours as PR 3 decided, one `dial_status`
+  builder (D5, D9).
+- GUI: `ActionSlot` instead of nine `impl Fn` parameters (blocks PR 12's recursion) (D10).
+- One `is_deck_owned()` list used by `action::run` and the GUI (D11).
+- Smaller, for later: two `Level` types; `run_steps`' folding untestable; images decoded
+  on the GTK thread; a 2:1 thumbnail of the 8:1 strip; the strip preview blurry on HiDPI;
+  `PageStep` from a nested folder steps from Home (PR 13).

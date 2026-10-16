@@ -1,351 +1,535 @@
 # PR 15: `feat/app-pages`: switch page when an app is focused
 
-Part of [PLAN.md](PLAN.md). Base: `feat/media-dial` (PR 14). Needs the **Hyprland
-event listener** from PR 9 (`hypr.rs`, `HyprEvent::ActiveWindow`) and the folder stack
-from PR 13. It works without PR 11 (ctl), but treats a ctl `page` the same as a page key.
-
-**Before handing this to the local model** (from the 2026-10-16 review; do these when
-rewriting the plan after the previous feature lands, then delete this list):
-
-- [ ] Rewrite against the code as merged (upstream's named pages: `Option<&str>` / `Config::key(page, index)` / `Nav`), not `ba0eced`'s `page: u8`.
-- [ ] Replace every "assumption about PR N" with that PR's real, merged signatures, copied in full.
-- [ ] Settle every Open decision and write it as "Decided: …".
-- [ ] Split into tasks of ~150–300 lines, each ending with an exact `cargo test -p … <filter>` and what it should show.
-- [ ] Refer to symbols (function names, grep anchors), not line numbers.
-- [ ] Upstream already has `[[page]]` (`Page { name, keys }`). Drop `PageConfig`, `index`, `name` and `page_config_mut`; add `#[serde(default, skip_serializing_if = "Vec::is_empty")] apps: Vec<String>` to upstream's `Page`. Decide whether folder pages can be linked (probably not).
-- [ ] Daemon: `Deck.page`, `do_page` and `set_page` are gone. Define the target type explicitly (e.g. `enum Target { Home, Page(String) }`), switch with `Nav::switch` (rebase step 2), and name where `manual()` hooks into the flick, `PageStep` and Open-page paths.
-- [ ] GUI: no chips after the rebase; put the setting by upstream's page dropdown.
-- [ ] `apps::pick` returns a `gio::AppInfo`; `startup_wm_class()` needs `downcast_ref::<gio::DesktopAppInfo>()`. Say so.
-- [ ] Copy PR 9's `HyprListener` / `HyprEvent::ActiveWindow` definitions in.
-- [ ] Redo the Folders decision and its hardware check: folders don't sit under a numbered root with `Nav`.
+Part of [PLAN.md](PLAN.md). Base: `feat/media-dial` (PR 14). Needs the **Hyprland event
+listener** from PR 9 (`omadeckd/src/hypr.rs`, `HyprEvent::ActiveWindow`), `Nav::nearest`
+from PR 13, `Config::is_folder` from fix/review, and groundwork's `Daemon` struct and
+`Daemon::next_deadline` (D3/D4). Works without PR 11 (ctl); a ctl page change is just
+another manual move.
 
 **Outcome:** a page can follow apps. While a linked app is focused, the deck shows that
-page. When focus moves to an app that isn't linked, the deck goes back to the page it was
-on before. This is Elgato's **Smart Profiles**, with omadeck's pages in place of Elgato's
-profiles. You set it up in a small `[[page]]` table (`apps = ["spotify", "obs"]`), or with
-a **Follow apps** setting next to the page chips in the configurator. The same table also
-gives a page an optional name. Configs without `[[page]]` load and save byte-identical.
+page. When focus moves to an app that isn't linked, the deck goes back to where it was,
+open folder included. This is Elgato's **Smart Profiles**, with omadeck's pages in place
+of Elgato's profiles. You set it up with `apps = ["spotify"]` on upstream's `[[page]]`
+table, or with **Follow apps** in the configurator's page settings. Configs without
+`apps` load and save byte-identical.
 
-## How the Elgato app does it (researched 2026-10-16)
+## How the Elgato app does it (researched 2026-10-16, trimmed)
 
-- **Linking:** in Preferences → Profiles you pick a profile and choose an app from its
-  **Application** drop-down. The app's icon then shows next to the profile. "Stream Deck
-  will automatically switch to the Smart Profile once the application is detected as the
-  focused window." ([Elgato Explorer: Smart Profiles][sp],
-  [How to set up Smart Profiles][howto])
+- **Linking:** Preferences → Profiles, pick a profile, choose an app from its
+  **Application** drop-down. "Stream Deck will automatically switch to the Smart Profile
+  once the application is detected as the focused window."
+  ([Smart Profiles][sp], [how to set up][howto])
 - **Paused while editing:** "When the software is open, Smart Profiles are deactivated to
-  prevent profile switching while editing the Stream Deck configuration." The Stream Deck
-  window has to be minimised for Smart Profiles to work. ([sp])
-- **All models,** the Stream Deck + included ([howto]). Profiles belong to one device
-  (SDK: "shareable layouts, specific to a Stream Deck device" ([profiles])), so a Smart
-  Profile works per device.
-- **How apps are identified:** the executable name on Windows and `CFBundleIdentifier` on
-  macOS ([app-monitoring]). The Linux equivalent is the Hyprland window class.
-- **Not in the docs, so unconfirmed:**
-  - *Leaving the app.* The app is widely reported to go back to the profile that was
-    active before (the last profile with no app linked), not to a fixed default.
-  - *One app per profile.* The drop-down takes a single app.
-  - *Manual switches.* A manual profile switch (the *Switch Profile* key) while the app is
-    focused stays until focus changes again.
-  - *Two profiles linked to one app.* Which one wins.
-  - *Open folders.* Whether a profile switch closes an open folder. (A profile switch
-    shows the other profile's root.)
-- The SDK's `switchToProfile` only reaches profiles that ship with a plugin ([profiles]).
-  Users have asked Elgato for a "back to the previous profile" feature (Keyboard Maestro
-  and MSFS forums). So the return-to-previous behaviour exists only inside the Smart
-  Profile feature itself.
+  prevent profile switching while editing the Stream Deck configuration." ([sp])
+- **How apps are identified:** the executable name on Windows, `CFBundleIdentifier` on
+  macOS ([app-monitoring]). On Linux the equivalent is the Hyprland window class.
+- **Unconfirmed** (not in the docs): leaving the app goes back to the profile that was
+  active before; one app per profile; a manual switch while the app is focused stays until
+  focus changes; which of two profiles linked to one app wins.
 
 [sp]: https://www.elgato.com/us/en/explorer/products/stream-deck/smart-profiles-stream-deck/
 [howto]: https://www.elgato.com/eu/et/explorer/products/stream-deck/how-to-set-up-smart-profiles-on-stream-deck/
-[profiles]: https://docs.elgato.com/streamdeck/sdk/guides/profiles
 [app-monitoring]: https://docs.elgato.com/streamdeck/sdk/guides/app-monitoring
+
+## Decided
+
+- **Decided: `apps` on upstream's `Page`,** not a new table. Upstream's `[[page]]` already
+  has a name, so the old plan's `PageConfig { index, name, apps }` and optional names are
+  gone.
+- **Decided: Home can't follow apps.** Home is the top-level `[[key]]`s and has no table.
+  Leaving linked apps often lands on Home anyway.
+- **Decided: folders can't follow apps.** `Config::app_page` skips `folder = true` pages,
+  and the GUI greys the setting out on them. A folder is reached from a key; switching
+  into it sideways would leave its Back key pointing at Home.
+- **Decided: `Nav::switch` to the linked page,** so Back doesn't walk an app-switch trail
+  (the rebase's rule for sideways moves).
+- **Decided: leaving restores the whole `Nav`** saved before the first linked app took
+  over: the page, an open folder and its trail. `Nav::retain_existing` drops anything a
+  reload removed meanwhile. This replaces the old plan's "pop to root".
+- **Decided: a manual move sticks, detected by position.** No `manual()` hook in every
+  page path. On leaving, the deck goes back only if it is still on the linked page or in
+  a folder opened from it (`Nav::nearest(|p| !cfg.is_folder(p)) == link`). A flick, a
+  page key, the configurator's switcher and PR 11's ctl all count as manual with no extra
+  code.
+- **Decided: A → B → leave returns to before A.** Moving from one linked app to another
+  keeps the saved place, unless you moved by hand in between (then the place you moved to
+  is saved).
+- **Decided: the first matching page in file order wins** when two pages list the same app.
+- **Decided: match on window class,** ASCII case-insensitive, `*` matches any run. The
+  glob covers Chromium web apps (`chrome-<host>__<path>-Default`).
+- **Decided: 200 ms settle** (`APP_FOCUS_SETTLE`). Only the newest focus event counts, so
+  an alt-tab through four windows makes one decision.
+- **Decided: the configurator's window is ignored** (`CONFIGURATOR_CLASS`). Same result as
+  Elgato's pause ("editing never jumps"), without pausing while the window sits on another
+  workspace.
+- **Decided: following works with the deck unplugged.** `Nav` and the follow state live in
+  `Daemon`, not `Deck`, so a deck plugged in while Spotify is focused shows the Spotify
+  page.
+- **Decided: no new IPC.** `PageChanged` already moves the configurator.
+
+## Ask before building
+
+1. A manual page change while a linked app is focused sticks when you leave (planned). Or
+   should leaving always return?
+2. 200 ms settle before switching: OK, or shorter?
+
+## Before building: check against the base
+
+PR 9 and groundwork weren't merged when this plan was written. Check these on
+`feat/media-dial` and use the branch's names if they differ:
+
+```bash
+grep -n "pub enum HyprEvent\|pub struct ActiveWindow\|pub fn start" crates/omadeckd/src/hypr.rs
+grep -n "HyprEvent::ActiveWindow\|rt.window\|fn next_deadline\|fn show_page\|retain_existing" crates/omadeckd/src/*.rs
+grep -n "pub fn nearest\|pub fn is_folder" crates/omadeckd/src/nav.rs crates/omadeck-core/src/config.rs
+grep -rn "Page { name" crates
+```
+
+Expected (PR 9's plan, PR 13, fix/review, `d7bd448`):
+
+```rust
+// crates/omadeckd/src/hypr.rs (PR 9)
+/// The focused window, as `j/activewindow` reports it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ActiveWindow {
+    /// Without a `0x` prefix, lowercase, so event and JSON forms compare equal.
+    pub address: String,
+    pub class: String,
+    pub title: String,
+    pub pid: Option<u32>,
+}
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HyprEvent {
+    /// The focused workspace changed, moved monitor, or was renamed.
+    Workspace { id: i64, name: String },
+    /// The focused window changed or was retitled; `None` when nothing has focus.
+    ActiveWindow(Option<ActiveWindow>),
+}
+/// Starts the `hypr` thread. `None` outside Hyprland (no thread).
+pub fn start() -> Option<mpsc::Receiver<HyprEvent>>;
+// daemon.rs: Daemon: `hypr: Option<mpsc::Receiver<HyprEvent>>`; Runtime: `window: Option<hypr::ActiveWindow>`.
+// `Daemon::apply_hypr(&mut self)` drains `hypr` with try_recv; main.rs's run() calls it every
+// iteration right after `apply_values`, before the no-deck branch;
+// its `ActiveWindow(w)` arm sets `rt.window = w` and sends PR 10's `WatchCmd::Focus(w)` ("PR 10 and 15 hook in here").
+// A title change arrives as ActiveWindow(Some) with the same class.
+
+// crates/omadeckd/src/nav.rs (PR 13)
+#[derive(Debug, Default)]
+pub struct Nav { current: Option<String>, history: Vec<Option<String>> }
+pub fn nearest(&self, keep: impl Fn(&str) -> bool) -> Option<&str>;
+pub fn switch(&mut self, page: Option<&str>) -> bool;
+pub fn retain_existing(&mut self, cfg: &Config) -> bool;
+
+// crates/omadeck-core/src/config.rs (upstream + PR 5 + fix/review)
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Page {
+    pub name: String,
+    #[serde(default, rename = "key", skip_serializing_if = "Keys::is_empty")]
+    pub keys: Keys,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub folder: bool,
+}
+pub fn is_folder(&self, name: &str) -> bool;
+```
 
 ## Config
 
-Pages have no table of their own today. A page exists because some `[[key]]` has
-`page = N` (PR 5), and `Config::page_count()` counts keys only. A field on `KeyConfig`
-would be the wrong place, because the link belongs to the page, not to a key. So this PR
-adds a small top-level `[[page]]` table, written only for pages that actually have
-settings:
-
-```rust
-/// Settings for one page; only pages with a name or linked apps get a table.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-pub struct PageConfig {
-    /// Zero-based page number, like `KeyConfig::page`.
-    pub index: u8,
-    /// Shown in the configurator's chip tooltip and title. Optional.
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub name: String,
-    /// Show this page while a window of one of these apps is focused (Elgato's Smart
-    /// Profiles). Hyprland window classes, case-insensitive; `*` matches any run.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub apps: Vec<String>,
-}
-```
-
-- `Config.pages: Vec<PageConfig>`, `#[serde(default, rename = "page", skip_serializing_if
-  = "Vec::is_empty")]`. It goes after `dials`, so it serialises after `[[dial]]`. Add it
-  to `Config::default()`. An old file has no `pages`, so it saves exactly as before.
-- `PageConfig::is_blank()`: no name and no apps (and an empty pattern counts as none).
-  `save_to` drops blank pages (`retain`), removes empty `apps` strings, and sorts by
-  `index`, just as it already does for keys and dials.
-- `Config::page_config(p) -> Option<&PageConfig>` returns the first table with that
-  index. `page_config_mut(p)` creates the table if it is missing.
-- `page_count()` now also counts the indices of non-blank `[[page]]` tables, still capped
-  at `MAX_PAGES`. A page you named or linked before giving it keys still gets a chip.
-  Without `[[page]]` the count is unchanged.
-- `Config::app_page(class: &str) -> Option<u8>` returns the lowest-index page below
-  `page_count()` whose `apps` match. It skips tables with an index of `MAX_PAGES` or
-  more.
-
 ```toml
 [[page]]
-index = 2
 name = "Music"
 apps = ["spotify", "chrome-music.youtube.com*"]
 ```
 
-## Core: `crates/omadeck-core/src/follow.rs` (new, pure, tested)
+## Task 1: core: `apps`, matching, open windows (~170 lines)
 
-- `pub fn class_matches(pattern: &str, class: &str) -> bool`: compares ASCII
-  case-insensitively and supports `*` globs (any run, as many as needed). An empty
-  pattern or an empty class never matches. About 20 lines, no new dependency.
-- `pub const CONFIGURATOR_CLASS: &str = "dev.omadeck.Omadeck"`. The GUI's
-  `main.rs::APP_ID` re-exports it, so the daemon can recognise the configurator's window.
-- The state machine. The daemon keeps one `AppFollow` value, and every rule below is a
-  unit test:
+**Files:** `crates/omadeck-core/src/config.rs`, new `crates/omadeck-core/src/follow.rs`,
+`crates/omadeck-core/src/lib.rs` (`pub mod follow;`), every `Page { … }` literal.
+
+`Page` gains, after `folder`:
 
 ```rust
-#[derive(Debug, Default, Clone, PartialEq)]
-pub struct AppFollow {
-    /// The page the focused app is linked to, if any.
-    link: Option<u8>,
-    /// Where to go when focus leaves linked apps; `None` once the user paged by hand.
-    back: Option<u8>,
-}
-impl AppFollow {
-    /// Focus moved to an app linked to `link`. Returns the page to show, if it changes.
-    pub fn focus(&mut self, link: Option<u8>, current: u8) -> Option<u8>;
-    /// The user changed page (key, dial, flick, ctl): they took over, so do not return.
-    pub fn manual(&mut self);
-    /// A reload shrank the page count.
-    pub fn clamp(&mut self, page_count: u8);
+/// Show this page while a window of one of these apps is focused (Elgato's Smart
+/// Profiles). Hyprland window classes, case-insensitive; `*` matches any run. Ignored on
+/// folders.
+#[serde(default, skip_serializing_if = "Vec::is_empty")]
+pub apps: Vec<String>,
+```
+
+New in `impl Config`, next to `is_folder`:
+
+```rust
+/// The page to show while a window of `class` is focused: the first non-folder page, in
+/// file order, with a matching `apps` pattern.
+pub fn app_page(&self, class: &str) -> Option<&str> {
+    self.pages
+        .iter()
+        .filter(|p| !p.folder)
+        .find(|p| p.apps.iter().any(|a| crate::follow::class_matches(a, class)))
+        .map(|p| p.name.as_str())
 }
 ```
 
-`focus` does the following, in order:
+`follow.rs`:
 
-1. `link == self.link` → `None`. This covers another window of the same app, a different
-   app linked to the same page, and a popup.
-2. `Some(p)` → if `back` is `None`, set `back = Some(current)`. Then set `link = Some(p)`
-   and return `Some(p)` unless `p == current`. Moving from linked app A to linked app B
-   keeps the original `back`, so leaving B returns to the page you were on before A.
-3. `None` → `back.take()`, filtered to `!= current`.
+```rust
+//! Pages that follow the focused app: window-class matching and the open-window list.
 
-`pub fn parse_clients(json: &str) -> Vec<(String, String)>` reads `(class, title)` pairs
-from `hyprctl -j clients` (serde_json is already a dependency of core), drops duplicates
-and empty classes, and sorts them. `pub fn open_windows()` runs `hyprctl` and calls it.
-Only the GUI's window picker uses these.
+use serde::Deserialize;
 
-## Daemon (`omadeckd/src/main.rs`)
+/// The configurator's window class (its GTK application id). The daemon ignores focus on
+/// it, so editing never moves the deck.
+pub const CONFIGURATOR_CLASS: &str = "dev.omadeck.Omadeck";
 
-**PR 9 assumptions.** `hypr.rs` exposes `HyprListener { events: mpsc::Receiver<HyprEvent> }`
-with `HyprEvent::ActiveWindow(Option<ActiveWindow>)`, where `ActiveWindow { class, title,
-address, pid }` (PR 9). It sends one seeded event at start and again after each
-reconnect, and sends `ActiveWindow(None)` for `activewindow>>,` (treat it as an empty
-class). Title-only changes (`windowtitlev2`) also arrive as `ActiveWindow(Some)` with the
-same class, so the "same app, do nothing" rule matters. If PR 9 starts the listener only
-when some key needs it, add "any `[[page]]` has `apps`" to that condition. Outside
-Hyprland no events arrive, and this feature does nothing.
+/// Whether a Hyprland window class matches `pattern`: ASCII case-insensitive, `*` matches
+/// any run. An empty pattern or class never matches.
+pub fn class_matches(pattern: &str, class: &str) -> bool {
+    let (p, c) = (pattern.trim().to_ascii_lowercase(), class.to_ascii_lowercase());
+    if p.is_empty() || c.is_empty() {
+        return false;
+    }
+    let parts: Vec<&str> = p.split('*').collect();
+    if parts.len() == 1 {
+        return p == c;
+    }
+    let Some(mut rest) = c.strip_prefix(parts[0]) else { return false };
+    for mid in &parts[1..parts.len() - 1] {
+        match rest.find(mid) {
+            Some(i) => rest = &rest[i + mid.len()..],
+            None => return false,
+        }
+    }
+    rest.ends_with(parts[parts.len() - 1])
+}
 
-**PR 13 assumptions.** `Deck.page: u8` stays the root page. Folders are a stack on
-`Deck` (for example `Deck.folders: Vec<…>`), and a page change through `do_page` empties
-it (pops to root). If PR 13 names these differently, only `set_page` below changes.
+/// `(class, title)` for each open window in `hyprctl -j clients` output, one per class,
+/// sorted. Empty classes are dropped; anything unparsable gives an empty list.
+pub fn parse_clients(json: &str) -> Vec<(String, String)> {
+    #[derive(Deserialize)]
+    struct Client {
+        #[serde(default)]
+        class: String,
+        #[serde(default)]
+        title: String,
+    }
+    let mut v: Vec<(String, String)> = serde_json::from_str::<Vec<Client>>(json)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|c| !c.class.is_empty())
+        .map(|c| (c.class, c.title))
+        .collect();
+    v.sort();
+    v.dedup_by(|a, b| a.0 == b.0);
+    v
+}
+```
 
-New state in `run()`, kept across disconnects:
+- **Trap:** every `Page { name, keys, folder }` literal (config tests, `nav.rs` tests,
+  PR 13's tests, fix/review's `Config::add_page`) needs `apps: Vec::new()`. The grep above lists them.
+- `rename_page`/`remove_page` need nothing: `apps` lives on the page itself.
 
-- `focus_class: Option<String>`: the last settled focused class.
-- `focus_pending: Option<(String, Instant)>`: the newest unsettled class and when it
-  settles.
-- `Deck.follow: AppFollow`: reset on connect.
+Tests in `follow.rs` (copy this one): `class_matches_globs`, plus
+`parse_clients_dedups_and_sorts` (two Spotify windows and a kitty window → two pairs;
+`"not json"` → empty). In `config.rs`: `follow_apps_omitted_when_empty` (a page without `apps`
+saves without the word), `follow_app_page_skips_folders_and_takes_first` (a folder
+listing `spotify` and two pages listing it: the first non-folder wins).
 
-Event handling, in the loop next to the audio levels:
+```rust
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-- **Drain `hypr.events`.** For `ActiveWindow(w)` (class = `w.class`, or empty for `None`), ignore it when it is
-  `CONFIGURATOR_CLASS`; this is our version of Elgato's "paused while the app is open".
-  Otherwise set `focus_pending = Some((class, now + APP_FOCUS_SETTLE))`, with
-  `APP_FOCUS_SETTLE = 200 ms`. Only the newest event counts, so an alt-tab cycle through
-  four windows makes one decision.
-- **When `focus_pending` is due:** store the class in `focus_class`. Then, if a deck is
-  connected, call
-  `apply_focus(d, &cfg, …) = d.follow.focus(cfg.app_page(class), d.page)` and
-  `set_page` to the result. The loop already wakes every `READ_TIMEOUT` (100 ms), so a
-  switch lands 200–300 ms after focus settles.
-- **Empty class** (no window focused, an empty workspace): treated as an app with no link,
-  so the deck returns. Special workspaces and scratchpads need nothing special. Hyprland
-  reports focus inside them like any other window, and focus is global across monitors.
-- **Refactor `do_page`.** Split it into `set_page(d, cfg, renderer, hub, next)`, which
-  pops folders, repaints, logs and publishes `PageChanged`, and `do_page`. All of
-  `do_page`'s existing callers are manual: page keys, page dials and flicks, plus PR 11's
-  ctl `page`. `do_page` calls `d.follow.manual()` when the page actually changes.
-  Automatic switches call `set_page` directly. Opening or closing a folder is not a page
-  change and leaves `back` alone.
-- **Connect:** the new `Deck` gets `AppFollow::default()`. If `focus_class` is set, apply
-  it straight away, so a deck plugged in while Spotify is focused opens on the Spotify
-  page. Coming back means going back to page 0, where a fresh connect starts anyway.
-- **Reload:** run `d.follow.clamp(cfg.page_count())` after the existing page clamp, then
-  apply `focus_class` again. A link that was just added or removed takes effect without
-  a focus change, and an unchanged link is a no-op (rule 1).
-- Log lines: `page 3 of 4 (follows spotify)` and `page 1 of 4 (left spotify)`.
-- `snapshot` is unchanged, since it shows the front page.
+    #[test]
+    fn class_matches_globs() {
+        assert!(class_matches("spotify", "Spotify"), "case-insensitive");
+        assert!(!class_matches("spot", "spotify"), "no star: the whole class");
+        assert!(class_matches("chrome-*-Default", "chrome-music.youtube.com__-Default"));
+        assert!(class_matches("*spotify*", "com.spotify.Client"));
+        assert!(class_matches("*", "kitty"));
+        assert!(!class_matches("a*b*a", "ab"), "parts can't overlap");
+        assert!(!class_matches("", "kitty") && !class_matches("*", ""), "empty never matches");
+    }
+}
+```
 
-**IPC:** no new events. `Event::PageChanged` already moves the configurator, and an
-automatic switch looks like any other page change to clients.
+**Check:** `cargo test -p omadeck-core follow && cargo clippy --all-targets -- -D warnings`
+→ `test result: ok. 4 passed` (two in `follow::tests`, two `config::tests::follow_*`),
+no clippy warnings.
 
-## GUI
+## Task 2: daemon: `AppFollow` and the focus wiring (~260 lines)
 
-- **Page settings button.** `refresh_chips` adds a small `gtk::Button` with a
-  `emblem-system-symbolic` icon after the chips, tooltip "Page N settings". It opens a new
-  `crates/omadeck-gui/src/pages.rs`, whose `pub fn show(app: &Rc<App>, page: u8)`
-  presents an `adw::Dialog` titled "Page N" for the viewed page. This matches Elgato,
-  where the link lives in the profile's settings and not on a key.
-  - `adw::EntryRow` **Name**: edits `page_config_mut(page).name`.
-  - Group **Follow apps**, description "Show this page while one of these apps is
-    focused, and go back when you leave it." Each class gets one `adw::ActionRow`: the
-    title is the app's display name when a desktop entry matches, otherwise the class;
-    the subtitle is the class; a remove button sits at the end.
-  - **Add app…** reuses `apps::pick`. The class comes from
-    `DesktopAppInfo::startup_wm_class()`, otherwise the desktop id without `.desktop`.
-    That works for GTK and Flatpak apps (class = app id) and for most Electron apps
-    (case-insensitive matching covers `Spotify`/`spotify`).
-  - **Add open window…** lists `follow::open_windows()` as class and title rows in a
-    dialog like `apps::pick`. This is the reliable path where the desktop entry and the
-    class don't match. Chromium web apps get classes like
-    `chrome-<host>__<path>-Default`. TUI apps take the terminal's class unless they are
-    launched with their own (unconfirmed for Omarchy's `omarchy-launch-tui`).
-  - An `adw::EntryRow` **Window class** for typing a pattern with `*`. Its hint reads
-    "find it with `hyprctl activewindow`".
-- Chips: a linked page's chip gets a `linked` CSS class (a small accent underline). Its
-  tooltip becomes "Page 3 · Music · follows Spotify, OBS".
-- Title subtitle: "· page 3 of 4 (Music)" when the page has a name.
-- All edits go through `schedule_save`, like key edits. The chips are rebuilt when a
-  table makes a new page exist.
-- **Preview:** unchanged. The grid follows the deck through `PageChanged`. Focusing the
-  configurator never triggers a switch (the daemon ignores `CONFIGURATOR_CLASS`), so
-  you can edit any page while the deck stays where it is.
-- No *Try it now* (this is not an action). The starter layout is unchanged: no app is
-  linked by default.
+**Files:** new `crates/omadeckd/src/follow.rs` (`mod follow;` in `main.rs`),
+`crates/omadeckd/src/nav.rs` (derive), `crates/omadeckd/src/daemon.rs` (`Daemon`).
 
-## Docs
+`Nav`'s derive becomes `#[derive(Debug, Default, Clone, PartialEq)]`.
 
-- README: a feature bullet ("Pages can follow apps, like Elgato's Smart Profiles") and a
-  roadmap line `- [x] **App pages**: switch page when an app is focused`.
-- `examples/config.toml`: a commented `[[page]]` block under the Pages section, with the
-  `hyprctl activewindow` hint and a glob example.
-- CHANGELOG: one line under Unreleased → Added.
+`follow.rs`:
 
-## Implementation steps
+```rust
+//! Pages that follow apps (Elgato's Smart Profiles, on pages).
 
-1. [ ] Core: `follow.rs` (`class_matches`, `AppFollow`, `parse_clients`) with its tests.
-2. [ ] Core: `PageConfig`, `Config.pages`, `page_config(_mut)`, `app_page`,
-       `page_count`, and `save_to` cleanup, with tests (including byte-identical saving).
-3. [ ] Daemon: split `do_page` into `set_page` and `do_page` (`manual()`). No behaviour
-       change yet.
-4. [ ] Daemon: wire `HyprEvent::ActiveWindow` to `focus_pending`, then the settle and
-       apply steps, plus reapplying on connect and reload.
-5. [ ] GUI: `CONFIGURATOR_CLASS` re-exported as `APP_ID`; chip tooltips and title
-       with the page name.
-6. [ ] GUI: `pages.rs` dialog (name, app list, Add app…, Add open window…, class entry).
-7. [ ] Docs, example, CHANGELOG. Then fmt, clippy and test.
+use omadeck_core::Config;
 
-## Tests
+use crate::nav::Nav;
 
-- follow: `class_matches_case_insensitive`, `class_matches_globs` (`chrome-*-Default`,
-  `*spotify*`, `*`), `empty_pattern_or_class_never_matches`.
-- follow: `enter_and_leave_returns` (0 → link 2 → None gives 2, then 0),
-  `enter_when_already_there_is_noop`, `a_then_b_then_leave_returns_to_original`,
-  `manual_switch_in_app_sticks` (manual, then leave → None),
-  `refocus_same_link_does_not_switch_back` (manual, popup of the same app → None),
-  `leave_then_reenter_switches_again`, `clamp_drops_out_of_range_back`.
-- follow: `parse_clients` on captured `hyprctl -j clients` output, plus garbage input
-  returning an empty list.
-- config: `page_table_roundtrip`, `old_config_saves_byte_identical` (a fixture without
-  `[[page]]`, loaded and saved, compared byte for byte), `blank_page_table_dropped`,
-  `page_tables_sorted`, `page_count_counts_page_tables`,
-  `app_page_lowest_index_wins`, `app_page_ignores_out_of_range`.
+#[derive(Debug, Default)]
+pub struct AppFollow {
+    /// The page the focused app is linked to, if any.
+    link: Option<String>,
+    /// Where the deck was before a linked app took it; put back on leaving.
+    back: Option<Nav>,
+}
+
+impl AppFollow {
+    /// Focus moved to an app linked to `link` (`None`: not linked, or nothing focused).
+    /// Moves `nav` if it should; returns whether the deck needs repainting.
+    pub fn focus(&mut self, link: Option<&str>, nav: &mut Nav, cfg: &Config) -> bool {
+        if link == self.link.as_deref() {
+            return false;
+        }
+        // Still where we put it: on the linked page, or in a folder opened from it.
+        let ours = self.link.is_some() && nav.nearest(|p| !cfg.is_folder(p)) == self.link.as_deref();
+        match link {
+            Some(page) => {
+                if !ours {
+                    self.back = Some(nav.clone());
+                }
+                self.link = Some(page.to_string());
+                nav.switch(Some(page))
+            }
+            None => {
+                self.link = None;
+                match self.back.take() {
+                    Some(saved) if ours => {
+                        let before = nav.clone();
+                        *nav = saved;
+                        nav.retain_existing(cfg);
+                        *nav != before
+                    }
+                    _ => false,
+                }
+            }
+        }
+    }
+}
+```
+
+`Daemon` gains (all outlive a replug):
+
+```rust
+/// Hyprland sends a focus event for every window an alt-tab passes; act once focus has
+/// stayed put this long.
+const APP_FOCUS_SETTLE: Duration = Duration::from_millis(200);
+
+follow: AppFollow,
+/// The focused window's class once it settled; `""` when nothing has focus.
+focus_class: Option<String>,
+/// The newest focus change and when it settles.
+focus_pending: Option<(String, Instant)>,
+```
+
+- Imports: `use omadeck_core::{HOME, follow::CONFIGURATOR_CLASS};` and `use follow::AppFollow;`.
+- **In PR 9's `HyprEvent::ActiveWindow(w)` arm** of `apply_hypr` (where it sets `rt.window = w`), first
+  `let class = w.as_ref().map(|w| w.class.clone()).unwrap_or_default();`, then PR 9's and
+  PR 10's handling as they are, then, unless
+  `class.eq_ignore_ascii_case(CONFIGURATOR_CLASS)`,
+  `self.focus_pending = Some((class, Instant::now() + APP_FOCUS_SETTLE));`.
+- **`Daemon::next_deadline()`** includes `self.focus_pending.as_ref().map(|(_, at)| *at)`.
+- **Each pass**, before the no-deck branch: at the end of `apply_hypr` (after its drain
+  loop; `run()` calls it every iteration), with `let now = Instant::now();`:
+  `if let Some((class, _)) = self.focus_pending.take_if(|(_, at)| now >= *at) { self.focus_class = Some(class); self.apply_focus(); }`.
+- New method:
+
+```rust
+/// Show the page the focused app is linked to, or go back when it isn't linked.
+fn apply_focus(&mut self) {
+    let Some(class) = self.focus_class.clone() else { return };
+    let link = self.cfg.app_page(&class).map(str::to_string);
+    if self.follow.focus(link.as_deref(), &mut self.nav, &self.cfg) {
+        let page = self.nav.current().unwrap_or(HOME).to_string();
+        match &link {
+            Some(_) => log::info!("page {page} (follows {class})"),
+            None => log::info!("page {page} (left {class})"),
+        }
+        self.show_page();
+    }
+}
+```
+
+- **Reload:** call `self.apply_focus()` right after the reload's `nav.retain_existing`
+  and its `PageChanged`. A link added or removed in the GUI takes effect without a focus
+  change; an unchanged link is a no-op.
+- **Connect / disconnect:** nothing. `Nav` survives the replug, so the deck comes up on
+  the followed page.
+- **Trap:** `apply_focus` borrows `self.follow`, `self.nav` and `self.cfg` as separate
+  fields in one call. That compiles only as written, inside the method body. Don't move
+  it into a helper that takes `&mut self` and `&self.cfg`. And `class` and `link` are
+  owned `String`s so `self.show_page()` can borrow `self` mutably.
+
+Tests in `follow.rs`: copy this one, then add `a_then_b_then_leave_returns_to_before_a`,
+`manual_move_sticks` (follow Music, `nav.switch(Some("Work"))`, leave → stays on Work,
+returns `false`), `folder_opened_from_linked_page_still_returns` (follow Music,
+`nav.go(Some("F"))`, leave → back), `manual_move_then_b_saves_new_place`,
+`same_link_is_noop`.
+
+```rust
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use omadeck_core::{Keys, Page};
+
+    fn cfg() -> Config {
+        let page =
+            |name: &str, folder: bool| Page { name: name.into(), keys: Keys::default(), folder, apps: Vec::new() };
+        let pages = vec![page("Work", false), page("Music", false), page("Chat", false), page("F", true)];
+        Config { pages, ..Config::default() }
+    }
+
+    #[test]
+    fn enter_and_leave_restores_the_folder() {
+        let cfg = cfg();
+        let (mut f, mut nav) = (AppFollow::default(), Nav::default());
+        nav.go(Some("Work"));
+        nav.go(Some("F"));
+        assert!(f.focus(Some("Music"), &mut nav, &cfg));
+        assert_eq!(nav.current(), Some("Music"));
+        assert!(!f.focus(Some("Music"), &mut nav, &cfg), "another window of the same app");
+        assert!(f.focus(None, &mut nav, &cfg));
+        assert_eq!(nav.current(), Some("F"), "back where it was, folder and all");
+        assert!(nav.back());
+        assert_eq!(nav.current(), Some("Work"), "and the folder's Back still works");
+    }
+}
+```
+
+**Check:** `cargo test -p omadeckd follow:: && cargo clippy --all-targets -- -D warnings`
+→ `test result: ok. 6 passed`, no clippy warnings. Then the first three hardware checks.
+
+## Task 3: GUI "Follow apps", docs (~260 lines)
+
+**Files:** `crates/omadeck-gui/src/main.rs`, `crates/omadeck-gui/src/app.rs`, new
+`crates/omadeck-gui/src/pages.rs`, `README.md`, `examples/config.toml`, `CHANGELOG.md`.
+
+- `main.rs`: `pub const APP_ID: &str = omadeck_core::follow::CONFIGURATOR_CLASS;` so the
+  two can't drift.
+- **Page settings button.** In `App::new`, a third button in `page_actions` (shown only
+  for a page, never Home): icon `emblem-system-symbolic`, tooltip "Page settings", opens
+  `pages::show(&app, &name)` for `current_page()`. If fix/review already added a page
+  settings dialog for the Folder switch (`grep -n '"Folder' crates/omadeck-gui/src/app.rs`),
+  add the group below to that dialog instead of making a second one.
+- New `App` method, the one way the dialog edits:
+
+```rust
+/// Edit the `apps` of page `name`; false (and a toast) if the page is gone.
+pub fn edit_page_apps(self: &Rc<Self>, name: &str, f: impl FnOnce(&mut Vec<String>)) -> bool {
+    let mut cfg = self.config.borrow_mut();
+    let Some(p) = cfg.pages.iter_mut().find(|p| p.name == name) else {
+        drop(cfg);
+        self.toast("That page is gone");
+        return false;
+    };
+    f(&mut p.apps);
+    drop(cfg);
+    self.sync_page_list();
+    self.schedule_save();
+    true
+}
+```
+
+- `pages.rs`: `pub fn show(app: &Rc<App>, page: &str)` presents an
+  `adw::PreferencesDialog` titled with the page name, with one group **Follow apps**,
+  description "Show this page while one of these apps is focused, and go back to where
+  you were when you leave it." On a folder page the group is insensitive and the
+  description reads "Folders can't follow apps: they open from a key."
+  - One `adw::ActionRow` per pattern (title = the pattern, subtitle "Window class"), with
+    a flat `user-trash-symbolic` button that removes it.
+  - `adw::ButtonRow` **Add app…** → `apps::pick(&dialog, …)`. `pick` hands back a
+    `gio::AppInfo`; the class is `info.downcast_ref::<gio::DesktopAppInfo>().and_then(|d| d.startup_wm_class())`,
+    else `info.id()` without `.desktop`. That covers GTK and Flatpak apps (class = app id)
+    and most Electron apps (case-insensitive matching covers `Spotify`/`spotify`).
+  - `adw::ButtonRow` **Add open window…** → runs `hyprctl -j clients` off the UI thread:
+    `gio::spawn_blocking(|| omadeck_core::proc::output_timeout(Command::new("hyprctl").args(["-j", "clients"]), Duration::from_secs(2)))`,
+    awaited in `glib::spawn_future_local`, parsed with `follow::parse_clients`, shown as an
+    `adw::AlertDialog` with a `boxed-list` of `adw::ActionRow`s (title = class, subtitle =
+    title). Activating a row adds the class and closes it. An empty list toasts "No open
+    windows found". This is the reliable path for web apps and anything whose desktop
+    entry doesn't name its class. (A one-off read when the user asks, like `apps::pick`
+    reading desktop files; D2's "only the daemon polls" is about live state.)
+  - `adw::EntryRow` **Window class** with `show_apply_button(true)`; `connect_apply` adds
+    the trimmed text. Its hint: "find it with `hyprctl activewindow`".
+  - After each add or remove, rebuild the rows. Ignore a pattern already in the list.
+- `sync_page_list`: a page with `apps` gets ` · follows apps` after its label (PR 13 made
+  the labels `page_path(..).join(" › ")`).
+- **Traps:** the rows-rebuild function is called from the row buttons it creates, so it's
+  an `Rc<dyn Fn()>` (built once, cloned into each handler), not an `impl Fn`. And
+  `edit_page_apps` must not run while anything holds `app.config.borrow()`: read the
+  page's `apps` into a `Vec<String>` first, drop the borrow, then build rows.
+- Docs: README feature bullet ("Pages can follow apps, like Elgato's Smart Profiles") and
+  roadmap line `- [x] **App pages**`; a commented `apps = […]` in a `[[page]]` of
+  `examples/config.toml`, with the `hyprctl activewindow` hint and a glob; CHANGELOG under
+  Unreleased → Added.
+
+**Check:** `cargo test && cargo clippy --all-targets -- -D warnings` → all tests pass
+(`example_parses` covers the example), no warnings. Then the GUI hardware checks.
+
+## Capture on the machine first
+
+Paste each into this plan before Task 1 (or a fixture file) if it differs from what's
+assumed:
+
+- The configurator's class: run `omadeck`, focus it, `hyprctl activewindow | grep class`.
+  Assumed `dev.omadeck.Omadeck`.
+- Real classes for the apps you'll link: with Spotify, an Omarchy web app and a TUI app
+  open, `hyprctl -j clients | jq -r '.[] | "\(.class)\t\(.title)"'`. Save the raw
+  `hyprctl -j clients` as `crates/omadeck-core/tests/fixtures/hyprctl-clients.json` and
+  add a `parse_clients` test on it.
+- Whether Walker (or any layer-shell launcher) sends focus events:
+  `socat -U - UNIX-CONNECT:$XDG_RUNTIME_DIR/hypr/$HYPRLAND_INSTANCE_SIGNATURE/.socket2.sock | grep activewindow`,
+  then open and close Walker.
 
 ## Hardware checks (Stream Deck +, 0fd9:0084, Omarchy)
 
-- [ ] Link page 2 to Spotify. Focusing Spotify switches the deck, and focusing the
-      browser returns to the page it was on.
-- [ ] Alt-tab quickly through several windows: the deck changes at most once, after
-      focus settles.
-- [ ] Flick to another page while Spotify is focused, then leave Spotify: the deck stays
-      where you put it. Focus Spotify again: the deck switches again.
-- [ ] Spotify's own popups and menus don't bounce the deck.
-- [ ] Closing the last window on a workspace (`activewindow>>,`) returns the deck.
-- [ ] A scratchpad app (special workspace) linked to a page switches it when shown, and
-      the deck returns when the scratchpad is hidden.
-- [ ] Walker or other layer-shell launchers don't emit `activewindow` (unconfirmed) and
-      don't move the deck.
-- [ ] Focusing the configurator never switches the deck. Its grid follows the deck's
-      automatic switches.
-- [ ] With a folder open on page 1, focusing a linked app shows that page's root.
-      Leaving the app returns to page 1's root.
-- [ ] Unplug and replug while a linked app is focused: the deck reconnects on the linked
-      page.
-- [ ] Add a link in the GUI while the app is focused: the deck switches on reload,
-      without a focus change.
-- [ ] An Omarchy web app (Chromium `--app`), added with **Add open window…**, matches.
-- [ ] A config without `[[page]]` saves byte-identical.
+- [ ] Link Music to Spotify. Focusing Spotify switches the deck; focusing the browser
+      returns to the page it was on.
+- [ ] Alt-tab quickly through several windows: the deck changes at most once.
+- [ ] Flick to another page while Spotify is focused, then leave Spotify: the deck stays.
+      Focus Spotify again: it switches again.
+- [ ] Inside a folder on Work, focus Spotify, then leave: back in the folder, and its Back
+      key goes to Work.
+- [ ] Open a folder from Music while Spotify is focused, then leave: back to before.
+- [ ] Spotify's popups and menus don't bounce the deck.
+- [ ] Closing the last window on a workspace returns the deck.
+- [ ] Focusing the configurator never switches the deck; its page switcher follows the
+      deck's automatic switches.
+- [ ] Unplug, focus Spotify, plug in: the deck comes up on Music.
+- [ ] Add a link in the GUI while the app is focused: the deck switches on reload.
+- [ ] An Omarchy web app added with **Add open window…** matches.
+- [ ] A config without `apps` saves byte-identical.
 
 ## Decisions to explain
 
-- **Pages, not profiles.** omadeck has one layout with up to ten pages. A page that
-  follows apps gives the same result as a Smart Profile without adding profiles.
-- **A `[[page]]` table** instead of a field on keys. The link belongs to the page, and
-  the table is written only when used, so old configs are unchanged. The table also
-  makes room for names, which is the cheap reason to add `name` now.
+- **Pages, not profiles.** omadeck has one layout with pages. A page that follows apps
+  gives the same result as a Smart Profile without adding profiles.
 - **Several apps per page** (`apps` is a list). Elgato's drop-down takes one app
-  (unconfirmed). A list costs nothing and covers "OBS or the browser that hosts the
-  stream".
-- **Matching on window class** with a case-insensitive `*` glob. The class is Hyprland's
-  equivalent of Elgato's executable or bundle id. The glob covers Chromium web apps,
-  whose classes embed a URL.
-- **Return to the page you were on before,** not to page 0. This matches what Elgato is
-  reported to do (unconfirmed). A→B→leave returns to the page from before A.
-- **A manual page change while an app is focused sticks:** leaving doesn't jump back
-  (unconfirmed for Elgato). We never pull the deck away from a page the user just picked.
-  Re-focusing the same app doesn't switch either; only a change of the linked page does.
-- **Two pages linked to one app:** the lowest index wins. Elgato's behaviour here is
-  unconfirmed.
-- **Folders:** an automatic switch pops to root, and so does the return. Folder state is
-  transient, and restoring it means guessing whether it is still valid.
-- **A 200 ms settle** before acting. Elgato has no documented debounce. Hyprland sends
-  an event for every focus step, so without the settle an alt-tab would flicker the
-  keys.
-- **The configurator's window is ignored.** Elgato instead turns Smart Profiles off
-  whenever its own window is open. Ignoring our window gives the same "editing never
-  jumps" result without pausing the feature while the window sits on another workspace.
-- **No new IPC event.** `PageChanged` already describes what the deck shows.
+  (unconfirmed); a list costs nothing.
+- **Window class with a `*` glob,** Hyprland's equivalent of Elgato's executable or
+  bundle id.
+- **Return to where you were,** open folder included. Matches what Elgato is reported to
+  do (unconfirmed).
+- **A manual change sticks,** detected by where the deck is rather than by hooking every
+  page path (unconfirmed for Elgato).
+- **Folders and Home can't follow apps** (see Decided).
+- **200 ms settle.** Hyprland sends an event per focus step; without it an alt-tab would
+  flicker the keys.
+- **The configurator's window is ignored** rather than pausing the feature while it's
+  open.
+- **No new IPC event.**
 
 ## Later
 
-- Matching on window title as well (for TUI apps inside a terminal and browser tabs).
-- Linking an app to a folder (open folder X when the app is focused).
+- Matching on window title too (TUI apps inside a terminal, browser tabs).
+- The app's icon in the page switcher, as Elgato shows it next to the profile.
+- `omadeckd follow on|off` (PR 11's ctl) to pause following.
 - Per-deck links, once multiple decks exist.
-- The app's icon on its page chip, as Elgato shows it next to the profile.
-- A ctl `omadeck follow on|off` to pause following, once PR 11 exists.
-- Restoring an open folder when focus returns.
 
-**Size:** about 550 lines. Core with tests about 250, daemon about 80, GUI about 190,
-docs about 30.
-
-## Open decisions (settle when building)
-
-The plan picks a default for each; confirm or change it before starting this PR.
-
-- A manual page change while in a linked app sticks when you leave (planned), or should leaving always return to the earlier page?
-- Page names in the `[[page]]` table: in scope (planned, cheap) or later?
-- 200 ms settle delay before switching on a focus change: OK?
+**Size:** about 650 lines: core ~170 with tests, daemon ~230 with tests, GUI ~220, docs
+~30.
