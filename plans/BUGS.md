@@ -1,8 +1,8 @@
 # Bugs
 
 Personal working notes, next to [PLAN.md](PLAN.md). Bugs found in the code on `daily`,
-with where they are, what goes wrong, and which branch should fix them. A full bug pass
-over the repo is still to do; add what it finds here.
+with where they are, what goes wrong, and which branch should fix them. All 21 recorded
+bugs are closed (see the bug pass under Rebase outcomes); add what a fresh review finds.
 
 Each entry: **status** (open / fixed in `<commit>`), **found** (date, how), the file and
 line on `daily`, what goes wrong, and the fix.
@@ -10,8 +10,9 @@ line on `daily`, what goes wrong, and the fix.
 ## Rebase outcomes (2026-10-17)
 
 PRs 1–6 were rebuilt on `upstream/pages-and-folders` (`fb9052f`); `daily` is now
-`feat/strip-backgrounds` (`0312a0a`). Line numbers below are stale on the new `daily`;
-the status lines (here and in each entry) are current.
+`fix/bugs` (`d7bd448`), based on `feat/strip-backgrounds` (`0312a0a`). Line numbers
+below are stale on the new `daily`; the status lines (here and in each entry) are
+current.
 
 - **1** — retired: `App::key(i)` is page-aware on the new model (`key(page, i)`), so
   the editor's `get` closure reads the page being edited.
@@ -34,7 +35,30 @@ the status lines (here and in each entry) are current.
 - **20** — retired: `KeyDown`/`ActionFailed`/`Connected` carry the page on upstream's
   IPC.
 
-Still open: 9–11, 13–18, 21 (re-verify locations on the new `daily` before fixing).
+**Bug pass (2026-10-17, `fix/bugs` = `d7bd448`):** every open bug was re-verified on the
+new `daily` and fixed there (based on `feat/strip-backgrounds`):
+
+- **9** — fixed: `AudioCmd::Refresh(device)` drops the worker's `last` for that device, so
+  the true level is resent even when it equals the guess.
+- **10** — fixed: `run_volume` builds its command on the helper thread, so the Omarchy 3
+  `focused_monitor` `hyprctl` runs off the deck loop.
+- **11** — fixed: the strip preview reads a `strip_levels` cache filled by a background
+  poller (1 s), no `pactl`/`wpctl` on the UI thread per edit.
+- **13** — retired: with bug 5's state file the daemon never writes `config.toml`, and the
+  rewritten `save_now`/`watch_config`/`reload_from_disk` cancel a pending save and reload
+  the hand edit (with a toast). The remaining edge (a deleted file stops saving) is U1.
+- **14** — fixed: the Device row shows for mute actions too, so a mic-mute key is settable.
+- **15** — fixed: `flash_until` stores the tap time, so the flash lasts 150 ms.
+- **16** — fixed: `wpctl_rel` uses `unsigned_abs()`.
+- **17** — fixed: `parse_pactl` clamps like `parse_wpctl`.
+- **18** — fixed: volume/brightness changes mark panels dirty; one `paint_dial` per loop
+  pass (the `paint_dial` comment is updated to match).
+- **21** — `a` and `e` were already fixed by the rebase (Brightness test disabled;
+  `reload_from_disk` calls `update_style`); `b`, `c`, `d` fixed (app pick no longer renames
+  the dial; `default_for` gives a new volume the direction's sign; a smaller replugged deck
+  clears a stale selection).
+
+All 21 bugs are now closed. `daily` is `fix/bugs`.
 
 ## Open
 
@@ -161,6 +185,7 @@ A code review (reading only; `cargo test` couldn't run in the sandbox) of `daily
 
 #### 9. Optimistic volume can stick at a wrong value
 
+- **Status:** fixed in `d7bd448` (2026-10-17).
 - **Where:** `crates/omadeckd/src/main.rs:612` `after_volume` guesses the level and
   sends `AudioCmd::Refresh`; the worker only sends a level that differs from its
   `last`, and `Refresh` doesn't clear `last`.
@@ -172,6 +197,7 @@ A code review (reading only; `cargo test` couldn't run in the sandbox) of `daily
 
 #### 10. `hyprctl monitors -j` runs on the daemon loop for every volume action
 
+- **Status:** fixed in `d7bd448` (2026-10-17).
 - **Where:** `crates/omadeck-core/src/action.rs:56` `run_volume` calls
   `audio::focused_monitor()` before spawning (Omarchy 3 backend).
 - **What goes wrong:** every detent blocks on a `hyprctl` subprocess plus a JSON parse.
@@ -179,6 +205,7 @@ A code review (reading only; `cargo test` couldn't run in the sandbox) of `daily
 
 #### 11. The strip preview spawns audio processes on the UI thread per edit
 
+- **Status:** fixed in `d7bd448` (2026-10-17).
 - **Where:** `crates/omadeck-gui/src/app.rs:457-468` `refresh_strip` → `audio::volume()`
   per volume dial (3 spawns each on Omarchy 4), from `edit_dial` (every keystroke
   in a dial label) and `refresh_all`.
@@ -199,6 +226,8 @@ A code review (reading only; `cargo test` couldn't run in the sandbox) of `daily
 
 #### 13. The GUI's config watcher drops or interrupts changes
 
+- **Status:** retired by the rebase + bug 5's state file (2026-10-17); the remaining edge
+  is U1 (a deleted file stops saving).
 - **Where:** `crates/omadeck-gui/src/app.rs:681-687`.
 - **What goes wrong:** a reload is skipped while a GUI save is pending and never
   retried; the pending save then overwrites the hand edit (only brightness is
@@ -209,19 +238,23 @@ A code review (reading only; `cargo test` couldn't run in the sandbox) of `daily
 
 #### 14. Mic mute can't be set in the GUI
 
+- **Status:** fixed in `d7bd448` (2026-10-17).
 - **Where:** `crates/omadeck-gui/src/editor.rs:564` hides the Device row when
   "Toggle mute" is on, so a mute action is always Output.
 
 ### `daily`: low
 
-- **15.** The tap flash lasts 300 ms, not 150: `main.rs:472` stores
+- **15.** (Fixed in `d7bd448`.) The tap flash lasts 300 ms, not 150: `main.rs:472` stores
   `now + DIAL_FLASH`, then `:130`/`:351` compare `now.duration_since(t)`, which is 0
   while `t` is in the future. Store the tap time instead.
-- **16.** `wpctl_rel` panics on `change = -128` (`action.rs:133`, `i8::abs`); key and
+- **16.** (Fixed in `d7bd448`.) `wpctl_rel` panics on `change = -128` (`action.rs:133`,
+  `i8::abs`); key and
   press paths don't clamp. Use `unsigned_abs()`.
-- **17.** `parse_pactl` uses `parse::<u8>` (`audio.rs:108`): above 255% the Omarchy 4
+- **17.** (Fixed in `d7bd448`.) `parse_pactl` uses `parse::<u8>` (`audio.rs:108`): above
+  255% the Omarchy 4
   level read fails and the bar freezes. Clamp like `parse_wpctl`.
-- **18.** Volume and brightness repaint the strip panel per detent on the daemon
+- **18.** (Fixed in `d7bd448`.) Volume and brightness repaint the strip panel per detent
+  on the daemon
   loop (`write_lcd` + flush each time), against the `paint_dial` comment. Coalesce
   to one paint per loop pass.
 - **19.** (Fixed in `4c7bf70`, PR 5: `FLICK_MIN_PX = 50`.) Any swipe flips the page
@@ -232,12 +265,13 @@ A code review (reading only; `cargo test` couldn't run in the sandbox) of `daily
   `Connected` doesn't say the current page, so a configurator that attaches after a
   page change (or after a replug resets it to 0 without `PageChanged`) is out of
   sync. (Upstream solves this; see below.)
-- **21.** GUI odds and ends: the dial "Try it now" is enabled for Page/Brightness and
-  always fails (`editor.rs:264`); picking an app for "Turn left" renames the whole
-  dial (`:283`); choosing Volume from the kind combo on Turn left *raises* the
-  volume (`empty_of_kind(6)` is `change: 5` for every slot); a `Selection::Dial`
-  survives replugging a deck without dials (`app.rs:326`); a hand-edited font
-  doesn't reach the preview (`reload_config` skips `renderer.update_style()`).
+- **21.** GUI odds and ends. **Status:** all closed — `a` (dial "Try it now" enabled
+  for Page/Brightness, `editor.rs:264`) and `e` (a hand-edited font doesn't reach the
+  preview) were fixed by the rebase (`reload_from_disk` calls `update_style`); `b` (picking
+  an app for "Turn left" renames the whole dial, `:283`), `c` (choosing Volume from the
+  kind combo on Turn left *raises* the volume — `empty_of_kind` is `change: 5` for every
+  slot) and `d` (a `Selection::Dial` survives replugging a deck without dials, `app.rs:326`)
+  fixed in `d7bd448`.
 
 ### Upstream `pages-and-folders`
 

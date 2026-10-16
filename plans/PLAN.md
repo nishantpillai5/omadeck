@@ -37,7 +37,10 @@ PRs 1–6 are rebuilt on `upstream/pages-and-folders` (`fb9052f`); `daily` is no
 bugs U1–U9 in [BUGS.md](BUGS.md) are to go in the first message to the author.
 
 Next: **PR 8, toggle keys** (`feat/toggle-keys`, based on
-`feat/strip-backgrounds`).
+`fix/bugs`).
+
+**Done (2026-10-17): bug pass.** All 21 recorded bugs closed; the fixes live on
+`fix/bugs` (`d7bd448`, based on `feat/strip-backgrounds`), which is now `daily`.
 
 Each feature gets its own `feat/*` branch, plan file and (later) PR. Work them in this
 order; the order is mine, not upstream's roadmap order.
@@ -197,6 +200,7 @@ Useful pages (check they're still current when you use them):
 | `master` | `upstream/master` | Pure mirror. Never commit here. |
 | `feat/*` | `upstream/master`, or the feature it depends on | One branch per PR. Small and self-contained. |
 | `daily` | `upstream/master` + every `feat/*` merged in | What I build and run. |
+| `fix/bugs` | `feat/strip-backgrounds` | The 2026-10-17 bug pass (all 21 bugs closed). |
 | `plans` | `upstream/master` | These notes only. Never merged anywhere. |
 
 New features from PR 7 on mostly touch the same files as PRs 1–6, so base each new branch
