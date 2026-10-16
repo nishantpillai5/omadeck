@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::device::DeckInfo;
 use crate::paths;
+use crate::render::PanelStatus;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "event", rename_all = "snake_case")]
@@ -73,6 +74,15 @@ pub enum Event {
         index: u8,
         message: String,
     },
+    /// The panel brightness, 0–100: on connect and whenever it changes.
+    Brightness {
+        value: u8,
+    },
+    /// What a dial's strip panel shows: on connect and whenever it changes.
+    DialStatus {
+        index: u8,
+        status: PanelStatus,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -126,6 +136,19 @@ mod tests {
     fn roundtrip(ev: &Event) {
         let line = ev.to_line();
         assert_eq!(serde_json::from_str::<Event>(&line).unwrap(), *ev);
+    }
+
+    #[test]
+    fn state_events_roundtrip_and_wire_shape() {
+        roundtrip(&Event::Brightness { value: 40 });
+        roundtrip(&Event::DialStatus { index: 1, status: PanelStatus::default() });
+        let level = Some(crate::Level { value: 0.5, text: "50%".into(), muted: false });
+        roundtrip(&Event::DialStatus { index: 2, status: PanelStatus { level } });
+        assert_eq!(Event::Brightness { value: 40 }.to_line(), "{\"event\":\"brightness\",\"value\":40}\n");
+        assert_eq!(
+            Event::DialStatus { index: 1, status: PanelStatus::default() }.to_line(),
+            "{\"event\":\"dial_status\",\"index\":1,\"status\":{}}\n"
+        );
     }
 
     #[test]
