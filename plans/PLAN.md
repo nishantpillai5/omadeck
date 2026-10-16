@@ -18,8 +18,8 @@ Stream Deck + support and pages, all on `daily`, each on its own `feat/*` branch
 | 2 | `feat/dial-actions` | `[[dial]]` config; turns and presses run ordinary actions | [pr2](pr2-dial-actions.md) |
 | 3 | `feat/touch-strip` | Draw the strip with Elgato's `$X1`/`$B1` layouts | [pr3](pr3-touch-strip.md) |
 | 4 | `feat/dial-volume` | `volume` action, live level on the strip, mic capped at 100% | [pr4](pr4-dial-volume.md) |
-| 5 | `feat/pages` | Per-page keys, a `page` action, strip flick to page. **To be replaced** by upstream's pages + `feat/plus-pages` | [pr5](pr5-pages.md), [rebase](rebase-on-upstream-pages.md) |
-| 6 | `feat/brightness` | `brightness` action, live level on the strip, persisted | [pr6](pr6-brightness.md) |
+| 5 | `feat/plus-pages` | The Plus's page parts on upstream's pages: strip flick, `page_step`, folder skipping | [rebase](rebase-on-upstream-pages.md) (replaces `feat/pages`) |
+| 6 | `feat/brightness` | `brightness` action, live level on the strip, persisted in the state file | [pr6](pr6-brightness.md) |
 
 Known bugs (and the bug pass still to do) are in [BUGS.md](BUGS.md).
 
@@ -29,11 +29,14 @@ listed in each file.
 
 ## What's next, in order
 
-**First: [rebase onto upstream's pages](rebase-on-upstream-pages.md).** Upstream wrote
-pages and folders on an unmerged branch (`pages-and-folders`) a day before our PR 5.
-Drop `ba0eced`, rebuild PRs 1–4 and 6 on upstream's model, and port the Plus-only parts
-(flick, next/previous) as a new PR 5. Everything below assumes it is done; its "Effect
-on the other plans" section lists what changes in PRs 11–15 and in the `KINDS` order.
+**Done (2026-10-17): [rebase onto upstream's pages](rebase-on-upstream-pages.md).**
+PRs 1–6 are rebuilt on `upstream/pages-and-folders` (`fb9052f`); `daily` is now
+`feat/brightness` (`b53a2e6`), and the Plus's page parts are the new PR 5
+(`feat/plus-pages`, `4c7bf70`). Upstream is still at `fb9052f` with no open PRs; the
+bugs U1–U9 in [BUGS.md](BUGS.md) are to go in the first message to the author.
+
+Next: **PR 7, strip backgrounds** (`feat/strip-backgrounds`, based on
+`feat/brightness`).
 
 Each feature gets its own `feat/*` branch, plan file and (later) PR. Work them in this
 order; the order is mine, not upstream's roadmap order.
@@ -69,10 +72,10 @@ needs it, and have the later PRs reuse it rather than grow a second copy:
   commands in the other direction on the same socket (`Command`/`Reply` in `ipc.rs`), and
   `omadeckd press`/`dial` go through the daemon when it runs. Features before it don't
   depend on it.
-- **Daemon-owned actions** (PR 5 after the rebase, reused by 11, 12 and 16). One dispatch
-  that routes the actions the deck loop runs itself (Open page, Back, Page step,
-  Brightness) for every input path, so keys, dials, strip taps, multi-actions and ctl
-  all go through it. Built once, in [rebase step 2](rebase-on-upstream-pages.md).
+- **Daemon-owned actions** (built in the rebase, `4c7bf70`; reused by 11, 12 and 16).
+  One dispatch that routes the actions the deck loop runs itself (Open page, Back, Page
+  step, Brightness) for every input path, so keys, dials, strip taps, multi-actions and
+  ctl all go through it.
 - **Strip layers** (PR 7, reused by 9, 10 and 14). `Renderer::panel_backdrop()` draws the
   background layer under the panel layouts; later panels (live values, app volume, media)
   draw their items on top of it unchanged.

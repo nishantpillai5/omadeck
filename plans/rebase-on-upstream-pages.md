@@ -1,5 +1,12 @@
 # Rebase onto upstream's pages
 
+**Done 2026-10-17.** Upstream was still at `fb9052f` with no open PRs, so it was done
+on the branch as planned. Result: `feat/plus-input` `1a0506e`, `feat/dial-actions`
+`0397645`, `feat/touch-strip` `2b389cc`, `feat/dial-volume` `53cc5c4`/`1e0d572`,
+`feat/plus-pages` `4c7bf70` (new), `feat/brightness` `b53a2e6`; `daily` =
+`feat/brightness`. The old branches are tagged `old/*`. PR 6's brightness persists to
+the state file (bug 5), as decided.
+
 Part of [PLAN.md](PLAN.md). Do this **before PR 7**: every later plan builds on the
 page model, so it has to settle first.
 

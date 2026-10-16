@@ -7,6 +7,35 @@ over the repo is still to do; add what it finds here.
 Each entry: **status** (open / fixed in `<commit>`), **found** (date, how), the file and
 line on `daily`, what goes wrong, and the fix.
 
+## Rebase outcomes (2026-10-17)
+
+PRs 1–6 were rebuilt on `upstream/pages-and-folders` (`fb9052f`); `daily` is now
+`feat/brightness` (`b53a2e6`). Line numbers below are stale on the new `daily`; the
+status lines are current.
+
+- **1** — retired: `App::key(i)` is page-aware on the new model (`key(page, i)`), so
+  the editor's `get` closure reads the page being edited.
+- **2** — retired: upstream's `omadeckd press KEY [PAGE]` names the page.
+- **3** — retired as written: `page_count()` is gone; PR 13's folder counting is the
+  live question now.
+- **4** — fixed in `0397645` (PR 2): the rows copy the action out of the borrow first.
+- **5** — fixed in `b53a2e6` (PR 6): brightness lives in
+  `$XDG_STATE_HOME/omadeck/state.toml`, written by a debounced saver thread; the daemon
+  never writes `config.toml`.
+- **6** — fixed by the rebase: every input path (key, turn, press, tap, flick) goes
+  through `dispatch()`/`run_deck_action()`.
+- **7** — retired: with bug 5's state file the slider and the daemon no longer fight
+  over `config.toml`; the slider sends `Command::SetBrightness` and saves the start
+  value.
+- **8** — retired: `set_view_page` no longer exists; the GUI follows `PageChanged`.
+- **12** — retired: no page spin on the named-page model; new pages are made by name.
+- **19** — fixed in `4c7bf70` (PR 5): `FLICK_MIN_PX = 50`, mostly-vertical swipes don't
+  count.
+- **20** — retired: `KeyDown`/`ActionFailed`/`Connected` carry the page on upstream's
+  IPC.
+
+Still open: 9–11, 13–18, 21 (re-verify locations on the new `daily` before fixing).
+
 ## Open
 
 ### 1. The key editor shows the wrong action on page 2 and later
