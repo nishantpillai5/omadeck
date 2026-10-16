@@ -97,11 +97,23 @@ pub struct Renderer {
     font_pattern: Option<String>,
     pub theme: Theme,
     icons: HashMap<(PathBuf, u32), Option<RgbaImage>>,
+    /// Fitted background images for the strip, at native size, with the file's mtime.
+    backdrops: HashMap<(PathBuf, u32, u32), Option<(std::time::SystemTime, RgbaImage)>>,
+    #[cfg(test)]
+    pub decode_count: std::cell::Cell<u32>,
 }
 
 impl Renderer {
     pub fn new(style: &Style) -> Self {
-        let mut r = Self { font: None, font_pattern: None, theme: Theme::default(), icons: HashMap::new() };
+        let mut r = Self {
+            font: None,
+            font_pattern: None,
+            theme: Theme::default(),
+            icons: HashMap::new(),
+            backdrops: HashMap::new(),
+            #[cfg(test)]
+            decode_count: std::cell::Cell::new(0),
+        };
         r.update_style(style);
         r.theme = Theme::load_omarchy();
         r
@@ -123,8 +135,36 @@ impl Renderer {
     }
 
     /// Drop cached icons (call after the config changes; files may have been replaced).
+    /// Backdrop images are expensive to decode, so entries whose file is unchanged
+    /// (same mtime) are kept; the rest are dropped and re-decoded on next use.
     pub fn clear_cache(&mut self) {
         self.icons.clear();
+        self.backdrops.retain(|(path, _, _), v| {
+            let Some((mtime, _)) = v else { return true };
+            fs::metadata(path).ok().and_then(|m| m.modified().ok()).as_ref() == Some(mtime)
+        });
+    }
+
+    /// A fitted background image (strip or dial), decoded once per file. A missing or
+    /// unreadable file is cached as `None`, so it warns once and the layer is skipped.
+    fn backdrop_image(&mut self, path: &Path, w: u32, h: u32) -> Option<RgbaImage> {
+        let k = (path.to_path_buf(), w, h);
+        let mtime = fs::metadata(path).ok().and_then(|m| m.modified().ok());
+        if let Some(Some((mt, img))) = self.backdrops.get(&k).cloned()
+            && mtime == Some(mt)
+        {
+            return Some(img);
+        }
+        let loaded = mtime.is_some().then(|| load_cover(path, w, h)).flatten();
+        if loaded.is_none() {
+            log::warn!("could not load background image {}", path.display());
+        }
+        #[cfg(test)]
+        if loaded.is_some() {
+            self.decode_count.set(self.decode_count.get() + 1);
+        }
+        self.backdrops.insert(k, mtime.zip(loaded.clone()));
+        loaded
     }
 
     pub fn background(&self, face: Option<&Face>, style: &Style) -> Rgb {
@@ -620,16 +660,59 @@ pub fn load_icon(path: &Path, box_px: u32) -> Option<RgbaImage> {
     Some(imageops::resize(&img, nw, nh, FilterType::Lanczos3))
 }
 
+/// Scale to cover `w × h` (the longer side to the longer side, `Lanczos3`), then
+/// centre-crop to exactly `w × h`. Exact-size input is returned unchanged.
+pub fn fit_cover(img: &RgbaImage, w: u32, h: u32) -> RgbaImage {
+    if img.dimensions() == (w, h) {
+        return img.clone();
+    }
+    let (iw, ih) = img.dimensions();
+    let scale = (w as f32 / iw as f32).max(h as f32 / ih as f32);
+    let nw = (iw as f32 * scale).ceil() as u32;
+    let nh = (ih as f32 * scale).ceil() as u32;
+    let big = imageops::resize(img, nw.max(1), nh.max(1), FilterType::Lanczos3);
+    imageops::crop_imm(&big, (big.width().saturating_sub(w)) / 2, (big.height().saturating_sub(h)) / 2, w, h).to_image()
+}
+
+/// Load a raster or SVG image fitted to cover `w × h`. An animated GIF loads its first
+/// frame, which `image::open` already does.
+pub fn load_cover(path: &Path, w: u32, h: u32) -> Option<RgbaImage> {
+    let is_svg = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| e.eq_ignore_ascii_case("svg") || e.eq_ignore_ascii_case("svgz"));
+    if is_svg {
+        return load_svg_raw(path).map(|img| fit_cover(&img, w, h));
+    }
+    image::open(path).ok().map(|img| fit_cover(&img.to_rgba8(), w, h))
+}
+
+/// Rasterise an SVG at its intrinsic size (no scaling), for `load_cover`.
+fn load_svg_raw(path: &Path) -> Option<RgbaImage> {
+    rasterize_svg(&svg_tree(path)?, 1.0)
+}
+
+/// Rasterise an SVG scaled so its longer side is `box_px` (fit inside, no crop).
 fn load_svg(path: &Path, box_px: u32) -> Option<RgbaImage> {
-    use resvg::{tiny_skia, usvg};
-    let data = fs::read(path).ok()?;
-    let tree = usvg::Tree::from_data(&data, &usvg::Options::default()).ok()?;
+    let tree = svg_tree(path)?;
     let size = tree.size();
     let scale = box_px as f32 / size.width().max(size.height());
-    let (w, h) = (((size.width() * scale).ceil() as u32).max(1), ((size.height() * scale).ceil() as u32).max(1));
-    let mut pixmap = tiny_skia::Pixmap::new(w, h)?;
-    resvg::render(&tree, tiny_skia::Transform::from_scale(scale, scale), &mut pixmap.as_mut());
-    let mut out = RgbaImage::new(w, h);
+    rasterize_svg(&tree, scale)
+}
+
+fn svg_tree(path: &Path) -> Option<resvg::usvg::Tree> {
+    let data = fs::read(path).ok()?;
+    resvg::usvg::Tree::from_data(&data, &resvg::usvg::Options::default()).ok()
+}
+
+fn rasterize_svg(tree: &resvg::usvg::Tree, scale: f32) -> Option<RgbaImage> {
+    use resvg::tiny_skia;
+    let size = tree.size();
+    let w = (size.width() * scale).ceil() as u32;
+    let h = (size.height() * scale).ceil() as u32;
+    let mut pixmap = tiny_skia::Pixmap::new(w.max(1), h.max(1))?;
+    resvg::render(tree, tiny_skia::Transform::from_scale(scale, scale), &mut pixmap.as_mut());
+    let mut out = RgbaImage::new(w.max(1), h.max(1));
     for (dst, src) in out.pixels_mut().zip(pixmap.pixels()) {
         let c = src.demultiply();
         *dst = Rgba([c.red(), c.green(), c.blue(), c.alpha()]);
@@ -658,9 +741,12 @@ fn load_font(pattern: &str) -> Option<FontVec> {
 
 #[cfg(test)]
 mod tests {
-    use super::{B1_BAR, DialStatus, Level, Renderer, X1_ICON, X1_TITLE, glyph_char, tap_to_dial};
+    use super::{
+        B1_BAR, DialStatus, Level, Renderer, RgbaImage, X1_ICON, X1_TITLE, fit_cover, glyph_char, tap_to_dial,
+    };
     use crate::config::{Action, AudioDevice, Config, DialConfig, KeyConfig, Style};
     use crate::theme::Rgb;
+    use image::Rgba;
 
     #[test]
     fn glyph_forms() {
@@ -859,5 +945,103 @@ mod tests {
         // White label on a white background flips dark; on black it keeps its contrast.
         assert_eq!(r.label_color(None, &test_style(), Rgb(255, 255, 255)), Rgb(16, 16, 16));
         assert_eq!(r.label_color(None, &test_style(), Rgb(0, 0, 0)), Rgb(255, 255, 255));
+    }
+
+    #[test]
+    fn fit_cover_exact_size_is_identity() {
+        let img = RgbaImage::from_pixel(4, 2, Rgba([1, 2, 3, 255]));
+        assert_eq!(fit_cover(&img, 4, 2), img);
+    }
+
+    /// A 120 × 10 image in three vertical thirds: red, green, blue.
+    fn thirds_wide() -> RgbaImage {
+        let mut img = RgbaImage::new(120, 10);
+        for row in img.rows_mut() {
+            for (x, px) in row.enumerate() {
+                *px = if x < 40 {
+                    Rgba([255, 0, 0, 255])
+                } else if x < 80 {
+                    Rgba([0, 255, 0, 255])
+                } else {
+                    Rgba([0, 0, 255, 255])
+                };
+            }
+        }
+        img
+    }
+
+    /// A 10 × 120 image in three horizontal thirds: red, green, blue.
+    fn thirds_tall() -> RgbaImage {
+        let mut img = RgbaImage::new(10, 120);
+        for (y, row) in img.rows_mut().enumerate() {
+            for px in row {
+                *px = if y < 40 {
+                    Rgba([255, 0, 0, 255])
+                } else if y < 80 {
+                    Rgba([0, 255, 0, 255])
+                } else {
+                    Rgba([0, 0, 255, 255])
+                };
+            }
+        }
+        img
+    }
+
+    #[test]
+    fn fit_cover_wide_crops_centre() {
+        let out = fit_cover(&thirds_wide(), 80, 10);
+        assert_eq!(out.dimensions(), (80, 10));
+        assert_eq!(*out.get_pixel(40, 5), Rgba([0, 255, 0, 255]), "centre is green");
+        assert_eq!(*out.get_pixel(79, 5), Rgba([0, 0, 255, 255]), "right edge is blue");
+    }
+
+    #[test]
+    fn fit_cover_tall_crops_centre() {
+        let out = fit_cover(&thirds_tall(), 10, 80);
+        assert_eq!(out.dimensions(), (10, 80));
+        assert_eq!(*out.get_pixel(5, 40), Rgba([0, 255, 0, 255]), "centre is green");
+    }
+
+    /// A solid PNG in a per-test temp dir.
+    fn tmp_image(name: &str, w: u32, h: u32, color: Rgba<u8>) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("omadeck-cover-{name}-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("img.png");
+        image::DynamicImage::ImageRgba8(RgbaImage::from_pixel(w, h, color)).save(&path).unwrap();
+        path
+    }
+
+    #[test]
+    fn clear_cache_keeps_unchanged_backdrop() {
+        let mut r = Renderer::new(&test_style());
+        let path = tmp_image("keep", 4, 2, Rgba([9, 9, 9, 255]));
+        assert!(r.backdrop_image(&path, 4, 2).is_some());
+        let decodes = r.decode_count.get();
+        r.clear_cache();
+        assert!(r.backdrop_image(&path, 4, 2).is_some());
+        assert_eq!(r.decode_count.get(), decodes, "an unchanged file is not re-decoded");
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn touched_file_is_reloaded() {
+        let mut r = Renderer::new(&test_style());
+        let path = tmp_image("touch", 4, 2, Rgba([9, 9, 9, 255]));
+        assert!(r.backdrop_image(&path, 4, 2).is_some());
+        let decodes = r.decode_count.get();
+        // Different pixels and a newer mtime; coarse filesystems may need a wait.
+        let old = std::fs::metadata(&path).unwrap().modified().unwrap();
+        loop {
+            image::DynamicImage::ImageRgba8(RgbaImage::from_pixel(4, 2, Rgba([200, 1, 1, 255]))).save(&path).unwrap();
+            if std::fs::metadata(&path).unwrap().modified().unwrap() != old {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(1100));
+        }
+        r.clear_cache();
+        let img = r.backdrop_image(&path, 4, 2).unwrap();
+        assert_eq!(r.decode_count.get(), decodes + 1, "a touched file is re-decoded");
+        assert_eq!(*img.get_pixel(0, 0), Rgba([200, 1, 1, 255]));
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 }
