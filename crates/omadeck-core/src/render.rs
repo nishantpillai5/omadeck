@@ -35,7 +35,7 @@ pub struct Face<'a> {
 pub struct DialStatus {
     /// The dial is pressed (or a tap is still flashing).
     pub pressed: bool,
-    /// A value to show in the `$B1` panel layout (volume, PR 4).
+    /// A value to show in the `$B1` panel layout (volume or brightness).
     pub level: Option<Level>,
 }
 
@@ -74,7 +74,7 @@ const STRIP_TITLE_PX: f32 = 16.0;
 const B1_VALUE_PX: f32 = 24.0;
 /// Default panel glyphs for a volume or brightness dial with no icon or glyph of its own.
 const OUTPUT_GLYPH: &str = "f057e"; // 󰕾 speaker
-const INPUT_GLYPH: &str = "f057f"; // 󰕿 microphone
+const INPUT_GLYPH: &str = "f036c"; // 󰎬 microphone
 const MUTE_GLYPH: &str = "f075f"; // 󰝟 muted
 const BRIGHTNESS_GLYPH: &str = "f00de"; // 󀟎 brightness
 
@@ -1393,5 +1393,6 @@ mod tests {
         assert_eq!(volume_glyph(&face, AudioDevice::Input, true), MUTE_GLYPH);
         let own = DialConfig { glyph: Some("A".into()), ..volume_dial() };
         assert_eq!(volume_glyph(&own.face(), AudioDevice::Output, false), "A");
+        assert_eq!(INPUT_GLYPH, "f036c");
     }
 }

@@ -5,7 +5,7 @@
 # Home page; more pages are [[page]] tables with their own [[page.key]]s.
 # Icon paths may be absolute, start with ~/, or be relative to ~/.config/omadeck/.
 
-brightness = 70
+brightness = 70                # start value; the deck remembers its last brightness, and an edit here sets it
 
 [style]
 follow_theme = true          # use the active Omarchy theme's colours
@@ -63,6 +63,7 @@ page = "Media"               # the name of a [[page]] below
 
 [[page]]
 name = "Media"
+# folder = true                # skipped by flicks and page_step
 
 [[page.key]]
 index = 0
@@ -81,7 +82,7 @@ command = "playerctl play-pause"
 # [[key]]
 # index = 6
 # label = "Next page"
-# glyph = "f004e"              # right arrow
+# glyph = "f0054"              # right arrow
 # [key.action]
 # type = "page_step"
 # change = 1                   # next page; -1 is previous, folders are skipped
@@ -115,7 +116,7 @@ command = "playerctl play-pause"
 # [[dial]]
 # index = 1
 # label = "Volume"
-# glyph = "f057e"            # a speaker; a mic ("f057f") for an input dial
+# glyph = "f057e"            # a speaker; a mic ("f036c") for an input dial
 # [dial.turn_left]
 # type = "volume"
 # change = -5

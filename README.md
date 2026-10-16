@@ -103,7 +103,7 @@ omadeck speaks to decks through the [`elgato-streamdeck`](https://crates.io/crat
 | Stream Deck Mini / Mini MK.2, 6 keys | Expected to work |
 | Stream Deck XL / XL V2, 32 keys | Expected to work |
 | Stream Deck Neo, 8 keys | Keys expected to work; info screen and touch keys unsupported |
-| Stream Deck +, 8 keys | Keys, dials (turn left/right, press) and the touch strip (one panel per dial; tap = press); swipe is reported but not used yet |
+| Stream Deck +, 8 keys | Keys, dials (turn left/right, press) and the touch strip (one panel per dial; tap = press; a horizontal flick changes page) |
 | Stream Deck Pedal | Not supported (no display) |
 
 Got one of the untested models? Please [file a hardware report](https://github.com/thewizster/omadeck/issues/new?template=hardware_report.yml), whether it works or not.
@@ -122,7 +122,7 @@ Click any key to change it, or clear it with the trash button. The ▶ button te
 
 ### Pages and folders
 
-The switcher above the deck picks the page you're editing; **+** adds a page, and the pencil and trash buttons rename or delete it. To make a folder, set a key to **Open page** and click **New page**: you get a page with a Back key already in place, and the key gets a folder symbol. Open it with **›** to fill it.
+The switcher above the deck picks the page you're editing; **+** adds a page, and the folder, pencil and trash buttons mark it as a folder, rename or delete it. To make a folder, set a key to **Open page** and click **New page**: you get a page with a Back key already in place, and the key gets a folder symbol. Open it with **›** to fill it. The folder button marks a page as a folder: flicks and Next/previous page skip it. A page made with **New page** from an Open page action is a folder already.
 
 On the deck, **Go back** returns to the page you came from, or Home. Renaming a page updates every key that opens it.
 
@@ -143,7 +143,7 @@ omadeckd snapshot x.png [PAGE]  render the layout to an image
 The config file is `~/.config/omadeck/config.toml`. The app edits it for you, but it's plain TOML and safe to edit by hand; the daemon reloads it as soon as you save. See [`examples/config.toml`](examples/config.toml).
 
 ```toml
-brightness = 70
+brightness = 70               # start value; the deck remembers its last brightness, and an edit here sets it
 
 [style]
 follow_theme = true            # colours from the active Omarchy theme
@@ -174,6 +174,7 @@ page = "Media"
 
 [[page]]                       # top-level [[key]]s are the Home page; more pages go here
 name = "Media"
+# folder = true                # skipped by flicks and page_step
 
 [[page.key]]
 index = 0

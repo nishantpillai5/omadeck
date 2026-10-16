@@ -63,6 +63,16 @@ All notable changes to omadeck are documented here. The format follows
   255% no longer freezes the strip's bar.
 - Replugging a smaller deck no longer leaves the configurator editing a key or dial the
   hardware doesn't have.
+- Pages made with **+** are no longer folders, so flicks and `page_step` reach them; a
+  page's folder button marks it as one.
+- Editing `brightness` in config.toml changes the deck again, and the last brightness
+  is saved when the service stops.
+- A fast dial spin repaints its strip panel once per batch of input, not per report.
+- Renaming or deleting a page updates dials that open it.
+- The dial editor's defaults follow the slot: turning left lowers, a volume press mutes.
+- Background images: a broken file is tried once, SVGs are sharp, and wide or tall
+  images no longer need a huge buffer.
+- An input volume dial shows a microphone.
 - A colour value with a non-ASCII character (in the config or the Omarchy theme) crashed the
   daemon, and systemd restarted it into the same crash.
 - Websites, scripts and terminals opened from the deck ran inside the omadeckd service, so

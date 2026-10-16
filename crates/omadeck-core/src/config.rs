@@ -59,14 +59,14 @@ impl StripConfig {
     }
 }
 
-/// A named page of keys. Pages are flat: a "folder" is just a page with a Back key.
+/// A named page of keys. A `folder` page is one you open from a key (it starts with a
+/// Back key); flicks and `page_step` skip it.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Page {
     pub name: String,
     #[serde(default, rename = "key", skip_serializing_if = "Keys::is_empty")]
     pub keys: Keys,
-    /// A folder: opened from a key, with a Back key. Folders are skipped by page steps,
-    /// so a flick can't land inside one.
+    /// Skipped by flicks and `page_step`.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub folder: bool,
 }
@@ -239,7 +239,7 @@ pub enum Direction {
 /// What a dial's strip panel shows a value for, if anything.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LevelSource {
-    /// The level of an audio device, polled by the daemon's audio worker.
+    /// The level of an audio device, read by the daemon.
     Volume(AudioDevice),
     /// The deck's panel brightness, kept in the daemon itself.
     Brightness,
@@ -293,7 +293,7 @@ pub enum Action {
         change: i8,
     },
     /// Change the deck's panel brightness, 0–100. The daemon owns the current value and
-    /// persists it to the config, so this is never "run" like the other actions.
+    /// keeps it in the state file, so this is never "run" like the other actions.
     Brightness {
         /// Percent to change by, signed (per detent on a dial).
         #[serde(default, skip_serializing_if = "is_zero_i8")]
