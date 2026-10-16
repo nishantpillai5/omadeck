@@ -11,8 +11,8 @@ use omadeck_core::config::{self, RemovedPage};
 use omadeck_core::ipc::{self, Command as DaemonCommand, Event};
 use omadeck_core::paths::FileStamp;
 use omadeck_core::{
-    Action, AudioDevice, Config, DeckInfo, DialConfig, DialStatus, HOME, KeyConfig, Keys, Level, Page, Renderer,
-    device, paths, tap_to_dial,
+    Action, AudioDevice, Config, DeckInfo, DialConfig, DialStatus, HOME, KeyConfig, Keys, Level, Renderer, device,
+    paths, tap_to_dial,
 };
 
 use crate::{editor, media};
@@ -83,6 +83,8 @@ pub struct App {
     page_actions: gtk::Box,
     /// Warns that the page being edited has no way back on the deck.
     dead_end: gtk::Box,
+    /// The page actions' "Folder" toggle: on, flicks and Next/previous page skip the page.
+    folder_toggle: gtk::ToggleButton,
     /// Set while the page dropdown is updated from code, so it doesn't count as a choice.
     syncing_pages: Cell<bool>,
     /// The page being edited: `None` is home.
@@ -179,7 +181,12 @@ impl App {
             gtk::Button::builder().icon_name("document-edit-symbolic").tooltip_text("Rename this page").build();
         let delete_page =
             gtk::Button::builder().icon_name("user-trash-symbolic").tooltip_text("Delete this page").build();
+        let folder_toggle = gtk::ToggleButton::builder()
+            .icon_name("folder-symbolic")
+            .tooltip_text("Folder: flicks and Next/previous page skip it")
+            .build();
         let page_actions = gtk::Box::builder().css_classes(["linked"]).visible(false).build();
+        page_actions.append(&folder_toggle);
         page_actions.append(&rename_page);
         page_actions.append(&delete_page);
         let page_bar = gtk::Box::builder().spacing(6).halign(gtk::Align::Center).build();
@@ -279,6 +286,7 @@ impl App {
             page_dropdown,
             page_actions,
             dead_end,
+            folder_toggle,
             syncing_pages: Cell::new(false),
             page: RefCell::default(),
             daemon: RefCell::default(),
@@ -318,6 +326,16 @@ impl App {
             if let Some(app) = weak.upgrade() {
                 app.add_back_key();
             }
+        });
+        let weak = Rc::downgrade(&app);
+        app.folder_toggle.connect_toggled(move |b| {
+            let Some(app) = weak.upgrade() else { return };
+            if app.syncing_pages.get() {
+                return;
+            }
+            let Some(page) = app.current_page() else { return };
+            app.config.borrow_mut().set_folder(&page, b.is_active());
+            app.schedule_save();
         });
         let weak = Rc::downgrade(&app);
         new_page.connect_clicked(move |_| {
@@ -880,15 +898,15 @@ impl App {
         let pos = page.as_deref().and_then(|p| names.iter().position(|n| n == p)).map(|n| n + 1).unwrap_or(0);
         self.page_dropdown.set_selected(pos as u32);
         self.page_actions.set_visible(page.is_some());
+        self.folder_toggle.set_active(page.as_deref().is_some_and(|p| cfg.is_folder(p)));
         self.syncing_pages.set(false);
     }
 
-    /// Add a page that starts with a Back key, so it works as a folder. Returns its name.
-    pub fn add_page(self: &Rc<Self>, name: &str) -> String {
-        let mut cfg = self.config.borrow_mut();
-        let name = cfg.unique_page_name(name);
-        cfg.pages.push(Page { name: name.clone(), keys: Keys(vec![back_key()]) });
-        drop(cfg);
+    /// Add a page that starts with a Back key. Returns its name. A `folder` is skipped by
+    /// flicks and Next/previous page: pages made for an Open-page action are folders,
+    /// pages made with **+** are not.
+    pub fn add_page(self: &Rc<Self>, name: &str, folder: bool) -> String {
+        let name = self.config.borrow_mut().add_page(name, folder, back_key());
         self.sync_page_list();
         self.schedule_save();
         name
@@ -939,7 +957,7 @@ impl App {
     fn ask_new_page(self: &Rc<Self>) {
         let suggestion = self.config.borrow().unique_page_name("Page");
         self.page_name_dialog("New page", "Create", &suggestion, None, |app, name| {
-            let name = app.add_page(&name);
+            let name = app.add_page(&name, false);
             app.show_page(Some(name), true);
             app.toast("New page — give a key the “Open page” action to reach it from your deck");
         });

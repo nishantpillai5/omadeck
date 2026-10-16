@@ -36,6 +36,7 @@ Written in Rust: a tiny background daemon drives the hardware, and a GTK4/libadw
   - **Open website:** one click fetches the site's icon for the key. The icon is requested from the site itself; DuckDuckGo's icon service is used only if the site offers none, and the app tells you when that happens.
   - **Hyprland:** any dispatcher. Lua (`hl.dsp.focus({ workspace = "3" })`) is passed straight to `hyprctl dispatch`. Classic syntax (`workspace 3`, `movetoworkspace 2`, `togglefloating`, `fullscreen`, `killactive`, `exec …`) is translated automatically on Hyprland versions that use a Lua config.
   - **Open page:** pages and folders, for more keys than your deck has. A new page starts with a Back key, so a key that opens it works like a folder.
+  - **Next/previous page:** the next or previous page — for a key, a dial turn, or a flick of the Stream Deck +'s touch strip (left is next, right is previous, wrapping). Folders are skipped.
   - **Volume:** change the output or input (microphone) volume, or toggle mute. It goes through Omarchy's own volume commands when they're installed, so the same on-screen pop-up shows as your volume keys — otherwise it falls back to `wpctl`.
 - **Icons your way**
   - PNG, JPEG, SVG, WebP or GIF images.
@@ -102,7 +103,7 @@ omadeck speaks to decks through the [`elgato-streamdeck`](https://crates.io/crat
 | Stream Deck Mini / Mini MK.2, 6 keys | Expected to work |
 | Stream Deck XL / XL V2, 32 keys | Expected to work |
 | Stream Deck Neo, 8 keys | Keys expected to work; info screen and touch keys unsupported |
-| Stream Deck +, 8 keys | Keys, dials (turn left/right, press) and the touch strip (one panel per dial; tap = press); swipe is reported but not used yet |
+| Stream Deck +, 8 keys | Keys, dials (turn left/right, press) and the touch strip (one panel per dial; tap = press; a horizontal flick changes page) |
 | Stream Deck Pedal | Not supported (no display) |
 
 Got one of the untested models? Please [file a hardware report](https://github.com/thewizster/omadeck/issues/new?template=hardware_report.yml), whether it works or not.
@@ -121,7 +122,7 @@ Click any key to change it, or clear it with the trash button. The ▶ button te
 
 ### Pages and folders
 
-The switcher above the deck picks the page you're editing; **+** adds a page, and the pencil and trash buttons rename or delete it. To make a folder, set a key to **Open page** and click **New page**: you get a page with a Back key already in place, and the key gets a folder symbol. Open it with **›** to fill it.
+The switcher above the deck picks the page you're editing; **+** adds a page, and the folder, pencil and trash buttons mark it as a folder, rename or delete it. To make a folder, set a key to **Open page** and click **New page**: you get a page with a Back key already in place, and the key gets a folder symbol. Open it with **›** to fill it. The folder button marks a page as a folder: flicks and Next/previous page skip it. A page made with **New page** from an Open page action is a folder already.
 
 On the deck, **Go back** returns to the page you came from, or Home. Renaming a page updates every key that opens it.
 
@@ -175,6 +176,7 @@ page = "Media"
 
 [[page]]                       # top-level [[key]]s are the Home page; more pages go here
 name = "Media"
+# folder = true                # skipped by flicks and page_step
 
 [[page.key]]
 index = 0
@@ -195,6 +197,7 @@ Action types:
 | `page` | `page` (a page `name`) |
 | `back` | |
 | `volume` | `device` (`output`/`input`), `change` (±%), `mute` |
+| `page_step` | `change` (± pages, default 1) |
 
 Per-key look overrides are `background`, `label_color` and `show_label`. Dials take the same fields (`icon`, `glyph`, `background`, `label_color`, `show_label`) for their panel on the touch strip.
 
