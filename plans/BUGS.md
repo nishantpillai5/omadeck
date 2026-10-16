@@ -10,8 +10,8 @@ line on `daily`, what goes wrong, and the fix.
 ## Rebase outcomes (2026-10-17)
 
 PRs 1–6 were rebuilt on `upstream/pages-and-folders` (`fb9052f`); `daily` is now
-`feat/brightness` (`b53a2e6`). Line numbers below are stale on the new `daily`; the
-status lines are current.
+`feat/strip-backgrounds` (`0312a0a`). Line numbers below are stale on the new `daily`;
+the status lines (here and in each entry) are current.
 
 - **1** — retired: `App::key(i)` is page-aware on the new model (`key(page, i)`), so
   the editor's `get` closure reads the page being edited.
@@ -19,7 +19,7 @@ status lines are current.
 - **3** — retired as written: `page_count()` is gone; PR 13's folder counting is the
   live question now.
 - **4** — fixed in `0397645` (PR 2): the rows copy the action out of the borrow first.
-- **5** — fixed in `b53a2e6` (PR 6): brightness lives in
+- **5** — fixed in `b949033` (PR 6): brightness lives in
   `$XDG_STATE_HOME/omadeck/state.toml`, written by a debounced saver thread; the daemon
   never writes `config.toml`.
 - **6** — fixed by the rebase: every input path (key, turn, press, tap, flick) goes
@@ -40,7 +40,7 @@ Still open: 9–11, 13–18, 21 (re-verify locations on the new `daily` before f
 
 ### 1. The key editor shows the wrong action on page 2 and later
 
-- **Status:** open. **Found:** 2026-10-16, while planning folders (PR 13).
+- **Status:** retired by the rebase (2026-10-17). **Found:** 2026-10-16, while planning folders (PR 13).
 - **Where:** `crates/omadeck-gui/src/editor.rs:68`, in `build_key`, the `get` closure
   passed to `action_editor`:
   `move |c| c.key(i).map(|k| k.action.clone()).unwrap_or_default()`.
@@ -59,7 +59,7 @@ Still open: 9–11, 13–18, 21 (re-verify locations on the new `daily` before f
 
 ### 2. `omadeckd press N` ignores pages
 
-- **Status:** open (minor). **Found:** 2026-10-16, while planning folders (PR 13).
+- **Status:** retired by the rebase (2026-10-17). **Found:** 2026-10-16, while planning folders (PR 13).
 - **Where:** `crates/omadeckd/src/main.rs:172`: `cfg.key(i)`.
 - **What goes wrong:** it runs the first key with index `N` on any page: page 1's key if
   there is one, otherwise a key from a later page. There's no way to name the page.
@@ -86,7 +86,7 @@ A code review (reading only; `cargo test` couldn't run in the sandbox) of `daily
 
 #### 4. Five editor rows panic on a RefCell double borrow
 
-- **Status:** open. **Found:** 2026-10-16, review (repro'd with a `rustc --edition 2024` test).
+- **Status:** fixed in `0397645` (PR 2, 2026-10-17). **Found:** 2026-10-16, review (repro'd with a `rustc --edition 2024` test).
 - **Where:** `crates/omadeck-gui/src/editor.rs:409` (Script "Run in a terminal"),
   `:446` (Sound volume), `:556` (Volume "Toggle mute"), `:580` (Volume device),
   `:598` (Volume "Change per turn").
@@ -99,6 +99,8 @@ A code review (reading only; `cargo test` couldn't run in the sandbox) of `daily
 
 #### 5. The daemon rewrites the whole config on every brightness change
 
+- **Status:** fixed in `b949033` (PR 6, 2026-10-17): the state file + debounced saver
+  thread; the daemon never writes `config.toml`.
 - **Where:** `crates/omadeckd/src/main.rs:640` `persist_brightness` → `Config::load()` +
   `save()` (`config.rs:426`).
 - **What goes wrong:** before PR 6 the daemon never wrote `config.toml`. Now one turn
@@ -119,7 +121,7 @@ A code review (reading only; `cargo test` couldn't run in the sandbox) of `daily
 
 #### 6. Dial press and strip tap can't run Page or Brightness actions
 
-- **Status:** open. (Also found 2026-10-16 while planning PR 16; that plan and commit
+- **Status:** fixed by the rebase (2026-10-17). (Also found 2026-10-16 while planning PR 16; that plan and commit
   `48f138e` called it "bug 4" before the numbers were merged. #4 is the RefCell panic.)
 
 - **Where:** `crates/omadeckd/src/main.rs:447` (`EncoderDown`) and `:479`
@@ -132,6 +134,8 @@ A code review (reading only; `cargo test` couldn't run in the sandbox) of `daily
 
 #### 7. The settings Brightness slider no longer saves
 
+- **Status:** retired by the rebase (2026-10-17): with bug 5's state file the slider
+  and the daemon no longer fight over `config.toml`.
 - **Where:** `crates/omadeck-gui/src/app.rs:599-601` `save_now`.
 - **What goes wrong:** to avoid stomping a daemon-persisted brightness, `save_now`
   always copies `disk.brightness` into the config before saving, so the slider's
@@ -143,6 +147,8 @@ A code review (reading only; `cargo test` couldn't run in the sandbox) of `daily
 
 #### 8. The editor goes stale on a page switch; edits land on the other page
 
+- **Status:** retired by the rebase (2026-10-17): `set_view_page` no longer exists; the
+  GUI follows `PageChanged`.
 - **Where:** `crates/omadeck-gui/src/app.rs:422` `set_view_page` refreshes the grid,
   chips and title but not the editor.
 - **What goes wrong:** press a page key on the deck: `KeyDown` opens that key's
@@ -180,6 +186,7 @@ A code review (reading only; `cargo test` couldn't run in the sandbox) of `daily
 
 #### 12. Page spin and emptied pages
 
+- **Status:** retired by the rebase (2026-10-17): no page spin on the named-page model.
 - **Where:** `crates/omadeck-gui/src/editor.rs:116-118`; `app.rs:543-557`.
 - **What goes wrong:** (a) moving a key to a page where that index is already taken
   makes two `[[key]]` with the same (page, index); the second is a ghost the GUI
@@ -217,9 +224,11 @@ A code review (reading only; `cargo test` couldn't run in the sandbox) of `daily
 - **18.** Volume and brightness repaint the strip panel per detent on the daemon
   loop (`write_lcd` + flush each time), against the `paint_dial` comment. Coalesce
   to one paint per loop pass.
-- **19.** Any swipe flips the page (`main.rs:500`), however short or vertical; equal
-  x counts as previous. Consider a minimum horizontal distance.
-- **20.** IPC has no page context: `KeyDown`/`ActionFailed` carry no page and
+- **19.** (Fixed in `4c7bf70`, PR 5: `FLICK_MIN_PX = 50`.) Any swipe flips the page
+  (`main.rs:500`), however short or vertical; equal x counts as previous. Consider a
+  minimum horizontal distance.
+- **20.** (Retired by the rebase: upstream's IPC carries the page.) IPC has no page
+  context: `KeyDown`/`ActionFailed` carry no page and
   `Connected` doesn't say the current page, so a configurator that attaches after a
   page change (or after a replug resets it to 0 without `PageChanged`) is out of
   sync. (Upstream solves this; see below.)
