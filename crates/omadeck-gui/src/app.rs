@@ -1492,12 +1492,15 @@ impl App {
             Msg::Event(Event::DialActionFailed { index, message }) => {
                 self.toast(&format!("Dial {}: {message}", index + 1));
             }
-            // Dial turns and strip touches: nothing in the configurator reacts to them yet.
+            // Dial turns, strip touches and the daemon's state: nothing in the configurator
+            // reacts to them yet (the state events are handled by the preview's poller still).
             Msg::Event(
                 Event::DialTurn { .. }
                 | Event::StripTap { .. }
                 | Event::StripLongPress { .. }
-                | Event::StripSwipe { .. },
+                | Event::StripSwipe { .. }
+                | Event::Brightness { .. }
+                | Event::DialStatus { .. },
             ) => {}
         }
         self.update_title();

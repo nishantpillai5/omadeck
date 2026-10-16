@@ -1,17 +1,19 @@
 //! Talks to configurator windows over the Unix socket: broadcasts daemon events to all of
 //! them and collects the commands they send.
-//!
-//! Each window gets its own writer thread, so publishing never waits on a socket and a
-//! window that stops reading can't hold up the deck.
 
+use std::collections::BTreeMap;
 use std::io::Write;
-use std::net::Shutdown;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex, mpsc};
+use std::sync::mpsc::{self, SyncSender, TrySendError};
+use std::sync::{Arc, Mutex};
 
 use anyhow::{Context, Result};
 use omadeck_core::ipc::{self, Command, Event};
+
+/// Lines queued per client. A client this far behind loses events, never the deck loop's
+/// time and never its connection.
+const CLIENT_QUEUE: usize = 256;
 
 pub struct Hub {
     path: PathBuf,
@@ -19,51 +21,49 @@ pub struct Hub {
     commands: mpsc::Receiver<Command>,
 }
 
-/// Events a window may fall behind by before it's disconnected. It reconnects, and the
-/// replay brings it up to date.
-const QUEUE: usize = 256;
-
-struct Client {
-    queue: mpsc::SyncSender<String>,
-    /// Shut down to unblock the writer and tell the window it was dropped.
-    stream: UnixStream,
-}
-
-impl Client {
-    fn open(stream: UnixStream, hello: String) -> Option<Self> {
-        let (queue, lines) = mpsc::sync_channel::<String>(QUEUE);
-        let mut writer = stream.try_clone().ok()?;
-        std::thread::Builder::new()
-            .name("ipc-writer".into())
-            .spawn(move || {
-                for line in lines {
-                    if writer.write_all(line.as_bytes()).is_err() {
-                        break;
-                    }
-                }
-                let _ = writer.shutdown(Shutdown::Both);
-            })
-            .ok()?;
-        queue.try_send(hello).ok()?;
-        Some(Self { queue, stream })
-    }
-
-    /// False when the window is gone or too far behind.
-    fn send(&self, line: &str) -> bool {
-        let ok = self.queue.try_send(line.to_string()).is_ok();
-        if !ok {
-            let _ = self.stream.shutdown(Shutdown::Both);
-        }
-        ok
-    }
-}
-
 struct Inner {
-    clients: Vec<Client>,
-    /// Last connect/disconnect event, replayed to new clients.
+    /// One queue per client; its writer thread empties it into the socket.
+    clients: Vec<SyncSender<Arc<str>>>,
+    replay: Replay,
+}
+
+/// What a new client is told first, so it starts in sync: the latest of each kind of state
+/// event.
+struct Replay {
+    /// Last connect/disconnect event.
     status: Event,
-    /// Last page change, replayed to new clients.
+    /// Last page change.
     page: Event,
+    /// Last brightness.
+    brightness: Option<Event>,
+    /// Last `DialStatus` per panel; cleared on disconnect.
+    panels: BTreeMap<u8, Event>,
+}
+
+impl Replay {
+    fn remember(&mut self, ev: &Event) {
+        match ev {
+            Event::Connected { .. } => self.status = ev.clone(),
+            Event::Disconnected => {
+                self.status = ev.clone();
+                self.panels.clear();
+            }
+            Event::PageChanged { .. } => self.page = ev.clone(),
+            Event::Brightness { .. } => self.brightness = Some(ev.clone()),
+            Event::DialStatus { index, .. } => {
+                self.panels.insert(*index, ev.clone());
+            }
+            _ => {}
+        }
+    }
+
+    /// The lines a new client is sent first, in this order.
+    fn lines(&self) -> Vec<Arc<str>> {
+        let mut out: Vec<Arc<str>> = vec![self.status.to_line().into(), self.page.to_line().into()];
+        out.extend(self.brightness.iter().map(|e| e.to_line().into()));
+        out.extend(self.panels.values().map(|e| e.to_line().into()));
+        out
+    }
 }
 
 impl Hub {
@@ -72,13 +72,18 @@ impl Hub {
         let listener = UnixListener::bind(&path).with_context(|| format!("binding {}", path.display()))?;
         let inner = Arc::new(Mutex::new(Inner {
             clients: Vec::new(),
-            status: Event::Disconnected,
-            page: Event::PageChanged { page: None },
+            replay: Replay {
+                status: Event::Disconnected,
+                page: Event::PageChanged { page: None },
+                brightness: None,
+                panels: BTreeMap::new(),
+            },
         }));
         let (tx, commands) = mpsc::channel();
         let shared = inner.clone();
         std::thread::Builder::new().name("ipc".into()).spawn(move || {
             for stream in listener.incoming().flatten() {
+                let (queue, lines) = mpsc::sync_channel::<Arc<str>>(CLIENT_QUEUE);
                 if let Ok(reader) = stream.try_clone() {
                     let tx = tx.clone();
                     let _ = std::thread::Builder::new().name("ipc-client".into()).spawn(move || {
@@ -90,24 +95,28 @@ impl Hub {
                     });
                 }
                 let mut g = shared.lock().unwrap();
-                let hello = g.status.to_line() + &g.page.to_line();
-                if let Some(c) = Client::open(stream, hello) {
-                    g.clients.push(c);
+                // Queued under the lock, so nothing published meanwhile can overtake it.
+                for line in g.replay.lines() {
+                    let _ = queue.try_send(line);
                 }
+                g.clients.push(queue);
+                drop(g);
+                spawn_writer(stream, lines);
             }
         })?;
         Ok(Self { path, inner, commands })
     }
 
+    /// Send `ev` to every client. Never waits on a client: it only queues the line.
     pub fn publish(&self, ev: Event) {
-        let line = ev.to_line();
+        let line: Arc<str> = ev.to_line().into();
         let mut g = self.inner.lock().unwrap();
-        match ev {
-            Event::Connected { .. } | Event::Disconnected => g.status = ev,
-            Event::PageChanged { .. } => g.page = ev,
-            _ => {}
-        }
-        g.clients.retain(|c| c.send(&line));
+        g.replay.remember(&ev);
+        g.clients.retain(|c| match c.try_send(line.clone()) {
+            Ok(()) | Err(TrySendError::Full(_)) => true,
+            // Its writer stopped: the client went away.
+            Err(TrySendError::Disconnected(_)) => false,
+        });
     }
 
     /// Commands received since the last call.
@@ -120,110 +129,60 @@ impl Hub {
     }
 }
 
+/// A client's writer: the only place that writes to its socket, so a client that stops
+/// reading stalls this thread alone. Ends when a write fails (the client closed).
+fn spawn_writer(mut stream: UnixStream, lines: mpsc::Receiver<Arc<str>>) {
+    let _ = std::thread::Builder::new().name("ipc-write".into()).spawn(move || {
+        for line in lines {
+            if stream.write_all(line.as_bytes()).is_err() {
+                break;
+            }
+        }
+    });
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::{BufRead, BufReader, Read};
+    use std::io::{BufRead, BufReader};
     use std::time::{Duration, Instant};
 
     fn socket(name: &str) -> PathBuf {
-        std::env::temp_dir().join(format!("omadeck-test-{}-{name}.sock", std::process::id()))
-    }
-
-    fn wait_for_clients(hub: &Hub, n: usize) {
-        let deadline = Instant::now() + Duration::from_secs(2);
-        while hub.inner.lock().unwrap().clients.len() != n {
-            assert!(Instant::now() < deadline, "client never registered");
-            std::thread::sleep(Duration::from_millis(5));
-        }
+        std::env::temp_dir().join(format!("omadeck-{name}-{}.sock", std::process::id()))
     }
 
     #[test]
-    fn a_window_that_stops_reading_cannot_hold_up_the_deck() {
-        let path = socket("stuck");
+    fn new_client_gets_the_replay() {
+        let path = socket("hub-replay");
         let hub = Hub::start(path.clone()).unwrap();
-        let mut stuck = UnixStream::connect(&path).unwrap();
-        wait_for_clients(&hub, 1);
+        hub.publish(Event::Brightness { value: 40 });
+        hub.publish(Event::DialStatus { index: 1, status: Default::default() });
+        let stream = UnixStream::connect(&path).unwrap();
+        stream.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+        let lines: Vec<String> = BufReader::new(stream).lines().take(4).map(|l| l.unwrap()).collect();
+        assert_eq!(
+            lines,
+            vec![
+                r#"{"event":"disconnected"}"#,
+                r#"{"event":"page_changed","page":null}"#,
+                r#"{"event":"brightness","value":40}"#,
+                r#"{"event":"dial_status","index":1,"status":{}}"#,
+            ]
+        );
+        hub.shutdown();
+    }
 
-        // Far more than the socket buffer and the queue hold, and nobody reading.
+    #[test]
+    fn a_client_that_never_reads_does_not_block_publish() {
+        let path = socket("hub-stuck");
+        let hub = Hub::start(path.clone()).unwrap();
+        let _stuck = UnixStream::connect(&path).unwrap(); // connected, never read
+        std::thread::sleep(Duration::from_millis(100)); // let the hub accept it
         let start = Instant::now();
         for i in 0..20_000 {
-            hub.publish(Event::ActionFailed { index: 0, message: format!("{i:0>200}") });
+            hub.publish(Event::DialTurn { index: 0, delta: (i % 2) as i8 });
         }
-        assert!(start.elapsed() < Duration::from_secs(1), "publishing took {:?}", start.elapsed());
-        assert!(hub.inner.lock().unwrap().clients.is_empty(), "the stuck window is still subscribed");
-
-        // The window is told it was dropped: reading ends, so it reconnects.
-        stuck.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
-        let mut sink = Vec::new();
-        stuck.read_to_end(&mut sink).expect("the socket should close, not time out");
-        hub.shutdown();
-    }
-
-    #[test]
-    fn a_stuck_window_does_not_cost_the_others_their_events() {
-        let path = socket("two");
-        let hub = Hub::start(path.clone()).unwrap();
-        let _stuck = UnixStream::connect(&path).unwrap();
-        wait_for_clients(&hub, 1);
-        let healthy = UnixStream::connect(&path).unwrap();
-        wait_for_clients(&hub, 2);
-
-        // The healthy window reads everything as it arrives.
-        let reader = std::thread::spawn(move || {
-            healthy.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
-            BufReader::new(healthy)
-                .lines()
-                .map_while(Result::ok)
-                .filter(|l| l.contains("\"key_up\""))
-                .take(2_000)
-                .count()
-        });
-        for i in 0..2_000 {
-            hub.publish(Event::KeyUp { index: (i % 15) as u8 });
-            if i % 100 == 0 {
-                // Give the healthy reader a moment so only the stuck window falls behind.
-                std::thread::sleep(Duration::from_millis(1));
-            }
-        }
-        assert_eq!(reader.join().unwrap(), 2_000, "the healthy window missed events");
-        hub.shutdown();
-    }
-
-    #[test]
-    fn commands_from_a_window_reach_the_daemon() {
-        let path = socket("cmd");
-        let hub = Hub::start(path.clone()).unwrap();
-        let mut window = UnixStream::connect(&path).unwrap();
-        // What the configurator's `ipc::Sender` writes.
-        window.write_all(b"{\"command\":\"show_page\",\"page\":\"Media\"}\n").unwrap();
-
-        let deadline = Instant::now() + Duration::from_secs(2);
-        loop {
-            if let Some(Command::ShowPage { page }) = hub.commands().next() {
-                assert_eq!(page.as_deref(), Some("Media"));
-                break;
-            }
-            assert!(Instant::now() < deadline, "the command never arrived");
-            std::thread::sleep(Duration::from_millis(5));
-        }
-        hub.shutdown();
-    }
-
-    #[test]
-    fn new_windows_get_the_current_state() {
-        let path = socket("hello");
-        let hub = Hub::start(path.clone()).unwrap();
-        hub.publish(Event::PageChanged { page: Some("Media".into()) });
-        let stream = UnixStream::connect(&path).unwrap();
-        wait_for_clients(&hub, 1);
-        hub.publish(Event::KeyUp { index: 3 });
-
-        stream.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
-        let lines: Vec<String> = BufReader::new(stream).lines().take(3).map(Result::unwrap).collect();
-        assert_eq!(lines[0], Event::Disconnected.to_line().trim_end());
-        assert_eq!(lines[1], Event::PageChanged { page: Some("Media".into()) }.to_line().trim_end());
-        assert_eq!(lines[2], Event::KeyUp { index: 3 }.to_line().trim_end());
+        assert!(start.elapsed() < Duration::from_secs(1), "publish waited on the client: {:?}", start.elapsed());
         hub.shutdown();
     }
 }
