@@ -4,6 +4,7 @@
 mod hub;
 mod nav;
 mod saver;
+mod watch;
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -13,20 +14,21 @@ use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
-use notify::{RecursiveMode, Watcher};
+use notify::{RecursiveMode, Watcher as _};
 use omadeck_core::config::apply_brightness;
 use omadeck_core::device::{self, DeviceStateReader, DeviceStateUpdate, HidApi, ImageRect, Kind, StreamDeck};
 use omadeck_core::ipc::{Command, Event};
 use omadeck_core::paths::FileStamp;
-use omadeck_core::probe::{self, Values};
+use omadeck_core::probe::{self, Probe, Value, Values};
 use omadeck_core::state::State;
 use omadeck_core::{
-    Action, AudioDevice, Config, DeckInfo, DialStatus, Level, LevelSource, PANEL_W, Renderer, action, audio, paths,
+    Action, AudioDevice, Config, DeckInfo, DialStatus, Level, LevelSource, PANEL_W, Renderer, action, paths,
     tap_to_dial,
 };
 
 use hub::Hub;
 use nav::Nav;
+use watch::{WatchCmd, Watcher};
 
 const SCAN_INTERVAL: Duration = Duration::from_secs(2);
 const READ_TIMEOUT: Duration = Duration::from_millis(100);
@@ -39,95 +41,9 @@ const DIAL_FLASH: Duration = Duration::from_millis(150);
 const POST_CONNECT_REPAINT: Duration = Duration::from_secs(1);
 /// Minimum horizontal distance, in strip pixels, for a swipe to count as a flick.
 const FLICK_MIN_PX: i32 = 50;
-/// How often the audio worker re-reads a watched device's level.
-const AUDIO_POLL: Duration = Duration::from_millis(1000);
-/// Wait this long after our own volume change before re-reading, so the command finishes.
-const AUDIO_REFRESH_DELAY: Duration = Duration::from_millis(150);
-
 /// At most this many more HID reports are taken in one pass after the first, so a fast
 /// spin is handled together and its panels are painted once.
 const MAX_DRAIN: usize = 32;
-
-/// A message the main loop sends the audio worker.
-enum AudioCmd {
-    /// Which devices some dial shows; polled every second while non-empty.
-    Watch(Vec<AudioDevice>),
-    /// We just changed this device; re-read it soon and send the result even if it's
-    /// unchanged, so an optimistic guess that was wrong gets corrected.
-    Refresh(AudioDevice),
-}
-
-/// The audio worker: reads the watched devices' levels off the deck loop and sends
-/// `(device, level)` when a value changes, so a fast spin never blocks the deck.
-struct AudioWorker {
-    cmd: mpsc::Sender<AudioCmd>,
-    levels: mpsc::Receiver<(AudioDevice, Level)>,
-}
-
-fn start_audio_worker() -> AudioWorker {
-    let (cmd_tx, cmd_rx) = mpsc::channel::<AudioCmd>();
-    let (lvl_tx, lvl_rx) = mpsc::channel::<(AudioDevice, Level)>();
-    std::thread::Builder::new()
-        .name("audio".into())
-        .spawn(move || {
-            let mut watched: Vec<AudioDevice> = Vec::new();
-            let mut last: HashMap<AudioDevice, audio::Level> = HashMap::new();
-            let mut next_poll = Instant::now();
-            loop {
-                let cmd = if watched.is_empty() {
-                    cmd_rx.recv().map_err(|_| mpsc::RecvTimeoutError::Disconnected)
-                } else {
-                    cmd_rx.recv_timeout(next_poll.saturating_duration_since(Instant::now()))
-                };
-                match cmd {
-                    Ok(AudioCmd::Watch(devs)) => {
-                        watched = devs;
-                        last.clear();
-                        next_poll = Instant::now();
-                        continue;
-                    }
-                    Ok(AudioCmd::Refresh(dev)) => {
-                        // Drop the last known value so the next read is sent even
-                        // when it equals what we already knew.
-                        last.remove(&dev);
-                        next_poll = Instant::now() + AUDIO_REFRESH_DELAY;
-                        continue;
-                    }
-                    Err(mpsc::RecvTimeoutError::Timeout) => {}
-                    Err(mpsc::RecvTimeoutError::Disconnected) => return,
-                }
-                let now = Instant::now();
-                if now >= next_poll && !watched.is_empty() {
-                    for dev in &watched {
-                        if let Some(lv) = audio::volume(*dev)
-                            && last.get(dev) != Some(&lv)
-                        {
-                            last.insert(*dev, lv);
-                            if lvl_tx.send((*dev, lv.to_panel())).is_err() {
-                                return;
-                            }
-                        }
-                    }
-                    next_poll = now + AUDIO_POLL;
-                }
-            }
-        })
-        .expect("spawn audio thread");
-    AudioWorker { cmd: cmd_tx, levels: lvl_rx }
-}
-
-/// The volume devices any dial shows, so the audio worker only reads what's on screen.
-fn watched_devices(cfg: &Config, n_dials: usize) -> Vec<AudioDevice> {
-    let mut devs = Vec::new();
-    for dev in [AudioDevice::Output, AudioDevice::Input] {
-        if (0..n_dials).any(
-            |i| matches!(cfg.dial(i as u8).and_then(|d| d.level_source()), Some(LevelSource::Volume(d)) if d == dev),
-        ) {
-            devs.push(dev);
-        }
-    }
-    devs
-}
 
 struct Deck {
     dev: Arc<StreamDeck>,
@@ -282,7 +198,7 @@ fn run() -> Result<()> {
     // Watch the config dir and Omarchy's theme state for changes.
     std::fs::create_dir_all(paths::config_dir())?;
     let (tx, rx) = mpsc::channel::<()>();
-    let mut watcher = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
+    let mut fs_watch = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
         if let Ok(ev) = res
             && !matches!(ev.kind, notify::EventKind::Access(_))
             && ev.paths.iter().any(|p| relevant(p))
@@ -290,16 +206,16 @@ fn run() -> Result<()> {
             let _ = tx.send(());
         }
     })?;
-    watcher.watch(&paths::config_dir(), RecursiveMode::NonRecursive)?;
+    fs_watch.watch(&paths::config_dir(), RecursiveMode::NonRecursive)?;
     let mut dir_stamp = FileStamp::of(&paths::config_dir());
     let mut cfg_stamp = FileStamp::of(&paths::config_file());
     let mut last_stamp_check = Instant::now();
     let omarchy = paths::omarchy_current_dir();
     if omarchy.is_dir() {
-        watcher.watch(&omarchy, RecursiveMode::NonRecursive)?;
+        fs_watch.watch(&omarchy, RecursiveMode::NonRecursive)?;
     }
     if paths::icons_dir().is_dir() {
-        let _ = watcher.watch(&paths::icons_dir(), RecursiveMode::NonRecursive);
+        let _ = fs_watch.watch(&paths::icons_dir(), RecursiveMode::NonRecursive);
     }
 
     let mut cfg = load_config();
@@ -310,7 +226,7 @@ fn run() -> Result<()> {
     log::info!("theme: {}", renderer.theme.name);
 
     let mut hid = device::new_hidapi().context("initialising hidapi")?;
-    let audio = start_audio_worker();
+    let watcher = watch::start();
     let saver = saver::start_saver();
     let mut state = State::load();
     let mut deck: Option<Deck> = None;
@@ -333,13 +249,13 @@ fn run() -> Result<()> {
             // The directory's mtime moves on every save; only its identity matters here.
             if !FileStamp::same_file(d, dir_stamp) {
                 dir_stamp = d;
-                let _ = watcher.unwatch(&paths::config_dir());
+                let _ = fs_watch.unwatch(&paths::config_dir());
                 if d.is_some() {
                     log::info!("config directory was replaced; watching the new one");
-                    let _ = watcher.watch(&paths::config_dir(), RecursiveMode::NonRecursive);
+                    let _ = fs_watch.watch(&paths::config_dir(), RecursiveMode::NonRecursive);
                     if paths::icons_dir().is_dir() {
-                        let _ = watcher.unwatch(&paths::icons_dir());
-                        let _ = watcher.watch(&paths::icons_dir(), RecursiveMode::NonRecursive);
+                        let _ = fs_watch.unwatch(&paths::icons_dir());
+                        let _ = fs_watch.watch(&paths::icons_dir(), RecursiveMode::NonRecursive);
                     }
                 }
             }
@@ -380,9 +296,9 @@ fn run() -> Result<()> {
                 // Keep the levels of devices that are still watched, so the repaint below
                 // draws their bars as they are instead of blanking them for a moment (the
                 // worker re-polls and refreshes them). Drop only what is no longer shown.
-                let watched = watched_devices(&cfg, d.info.dials as usize);
-                d.device_levels.retain(|dev, _| watched.contains(dev));
-                let _ = audio.cmd.send(AudioCmd::Watch(watched));
+                let watched = probe::watched_probes(&cfg, nav.current(), d.info.dials as usize);
+                d.device_levels.retain(|dev, _| watched.contains(&Probe::Volume(*dev)));
+                let _ = watcher.cmd.send(WatchCmd::Watch(watched));
             }
             // A hand edit of `brightness` in config.toml wins over the state file, like
             // any other hot-reloaded field (it is also saved there).
@@ -431,7 +347,11 @@ fn run() -> Result<()> {
                 });
                 if let Some(d) = &deck {
                     repaint_at = Some(Instant::now() + POST_CONNECT_REPAINT);
-                    let _ = audio.cmd.send(AudioCmd::Watch(watched_devices(&cfg, d.info.dials as usize)));
+                    let _ = watcher.cmd.send(WatchCmd::Watch(probe::watched_probes(
+                        &cfg,
+                        nav.current(),
+                        d.info.dials as usize,
+                    )));
                 }
             } else {
                 std::thread::sleep(READ_TIMEOUT);
@@ -464,9 +384,10 @@ fn run() -> Result<()> {
             mark_dirty(d, i);
         }
 
-        // Volume levels from the audio worker: update the device and repaint its panels.
-        while let Ok((dev, level)) = audio.levels.try_recv() {
-            d.device_levels.insert(dev, level.clone());
+        // Volume levels from the watcher: update the device and repaint its panels.
+        while let Ok((p, v)) = watcher.values.try_recv() {
+            let (Probe::Volume(dev), Value::Level(level)) = (p, v);
+            d.device_levels.insert(dev, level);
             for (i, src) in d.dial_levels.iter().enumerate().take(d.info.dials as usize) {
                 if *src == Some(LevelSource::Volume(dev)) {
                     d.dirty_panels[i] = true;
@@ -507,7 +428,7 @@ fn run() -> Result<()> {
                                 log::warn!("key {i}: {e:#}");
                                 hub.publish(Event::ActionFailed { index: i, message: format!("{e:#}") });
                             }
-                            after_volume(d, &audio, &k.action, 1);
+                            after_volume(d, &watcher, &k.action, 1);
                         }
                         DeviceStateUpdate::ButtonUp(i) => {
                             paint(d, &cfg, nav.current(), &mut renderer, i, false);
@@ -536,7 +457,7 @@ fn run() -> Result<()> {
                                         log::warn!("dial {i}: {e:#}");
                                         hub.publish(Event::DialActionFailed { index: i, message: format!("{e:#}") });
                                     }
-                                    after_volume(d, &audio, act, steps);
+                                    after_volume(d, &watcher, act, steps);
                                 }
                             }
                         }
@@ -565,7 +486,7 @@ fn run() -> Result<()> {
                                     log::warn!("dial {i}: {e:#}");
                                     hub.publish(Event::DialActionFailed { index: i, message: format!("{e:#}") });
                                 }
-                                after_volume(d, &audio, &dc.press, 1);
+                                after_volume(d, &watcher, &dc.press, 1);
                             }
                         }
                         DeviceStateUpdate::EncoderUp(i) => {
@@ -612,7 +533,7 @@ fn run() -> Result<()> {
                                             message: format!("{e:#}"),
                                         });
                                     }
-                                    after_volume(d, &audio, &dc.press, 1);
+                                    after_volume(d, &watcher, &dc.press, 1);
                                 }
                             }
                         }
@@ -645,7 +566,7 @@ fn run() -> Result<()> {
                 log::warn!("lost {} ({e}); waiting for it to come back", d.info.model);
                 deck = None;
                 last_scan = None;
-                let _ = audio.cmd.send(AudioCmd::Watch(Vec::new()));
+                let _ = watcher.cmd.send(WatchCmd::Watch(Vec::new()));
                 hub.publish(Event::Disconnected);
             }
         }
@@ -663,6 +584,7 @@ fn run() -> Result<()> {
         let _ = d.dev.reset();
     }
     hub.shutdown();
+    watcher.stop();
     // Let the saver write a state that is still settling.
     saver.finish();
     Ok(())
@@ -760,6 +682,8 @@ fn dispatch(
             do_brightness(d, saver, state, *set, change);
             Ok(false)
         }
+        // after_volume hands it to the watcher, which runs it in order and reads it back.
+        Action::Volume { .. } => Ok(false),
         a => action::run_steps(a, steps).map(|_| false),
     }
 }
@@ -803,35 +727,25 @@ fn do_brightness(d: &mut Deck, saver: &saver::StateSaver, state: &mut State, set
     }
 }
 
-/// After a volume action has run: move the bar optimistically, so it doesn't wait on
-/// the read-back the way an external value must (the brightness bar is instant for the
-/// same reason). The value is the last known level plus the change, clamped 0–100; the
-/// audio worker's refresh re-reads the true value a moment later and corrects it, which
-/// for a relative change is the same number.
-fn after_volume(d: &mut Deck, audio: &AudioWorker, act: &Action, steps: u8) {
+/// After a volume action has run: hand it to the watcher (which runs it in order and
+/// reads it back) and move the bar optimistically, so it doesn't wait on the read-back
+/// the way an external value must. The value is the last known level plus the change,
+/// clamped 0–100; the watcher's read-back corrects it a moment later, which for a
+/// relative change is the same number.
+fn after_volume(d: &mut Deck, watcher: &Watcher, act: &Action, steps: u8) {
     let Action::Volume { device, change, mute } = act else { return };
-    let Some(cur) = d.device_levels.get(device).cloned() else {
-        // Nothing read yet (just connected): a guess from 0 would show a wrong bar; the
-        // refresh brings the real value.
-        let _ = audio.cmd.send(AudioCmd::Refresh(*device));
-        return;
-    };
-    let pct = (cur.value * 100.0).round() as i32;
-    let next = if *mute {
-        // A press toggles mute; guess the new state from the current one.
-        let muted = !cur.muted;
-        Level { value: cur.value, text: if muted { "Muted".into() } else { format!("{}%", pct) }, muted }
-    } else {
-        let p = (pct + *change as i32 * steps as i32).clamp(0, 100);
-        Level { value: p as f32 / 100.0, text: format!("{p}%"), muted: false }
-    };
+    let change = if *mute { 0 } else { i32::from(action::folded_volume(*change, steps)) };
+    // Runs on the watcher, after any earlier change, and is read back there.
+    let _ = watcher.cmd.send(WatchCmd::Volume { device: *device, change, mute: *mute });
+    // No guess before the first read: that read is moments away.
+    let Some(cur) = d.device_levels.get(device) else { return };
+    let next = probe::guess_volume(cur, change, *mute);
     d.device_levels.insert(*device, next);
     for (i, src) in d.dial_levels.iter().enumerate().take(d.info.dials as usize) {
         if *src == Some(LevelSource::Volume(*device)) {
             d.dirty_panels[i] = true;
         }
     }
-    let _ = audio.cmd.send(AudioCmd::Refresh(*device));
 }
 
 /// Run `act` from the deck and repaint if it moved the page.
