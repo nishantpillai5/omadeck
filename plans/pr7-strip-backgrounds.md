@@ -4,19 +4,13 @@ Part of [PLAN.md](PLAN.md). Based on `feat/brightness` (PR 6), which it touches 
 `render.rs`, `config.rs`, the daemon's strip paint path and the GUI's dial editor. No
 other PR is needed first.
 
-**Before handing this to the local model** (from the 2026-10-16 review; do these when
-rewriting the plan after the previous feature lands, then delete this list):
-
-- [ ] Settle every Open decision and write it as "Decided: …".
-- [ ] Split into tasks of ~150–300 lines, each ending with an exact `cargo test -p … <filter>` and what it should show.
-- [ ] Refer to symbols (function names, grep anchors), not line numbers.
-- [ ] Spell out the layer split. Today `Renderer::background(face, style)` resolves dial colour → style → theme in one step. Layer 1 = `self.background(None, style)`. Layer 3 = `face.background.and_then(Rgb::parse)`, drawn only when it's `Some`. Write `panel_backdrop`'s full body as code, or the model paints the dial colour over the strip image.
-- [ ] Add a step 0: capture golden pixels (or snapshot PNGs) for `$X1`, `$B1` and an empty slot with the *old* code, and commit them before the signature change. The "no-image pixels unchanged" test has nothing to compare against otherwise.
-- [ ] `load_cover` for SVG: give the signature and the scale `max(w/sw, h/sh)`, then centre-crop. `load_svg` fits the longer side, which is the opposite.
-- [ ] Define `tone` exactly: mean RGB of the composited opaque backdrop, alpha ignored.
-- [ ] Name the cache-test hook: `#[cfg(test)] pub decodes: Cell<u32>` on `Renderer`.
-- [ ] GUI: give code for the right-click (`set_button(gdk::BUTTON_SECONDARY)`) and say which widget handle the popover row keeps to update its subtitle. Drop the `import_image` rename.
-- [ ] Split: (a) core render steps 1–3, (b) daemon, (c) GUI, (d) docs.
+**Rewritten 2026-10-17 against `daily` = `feat/brightness` (`b53a2e6`).** All Open
+decisions are settled below; tasks A–F are split with exact checks; the code the tasks
+build is written out in the "Code" sections. Verified against the tree: `Config` fields
+are `brightness, style, keys, pages, dials`; `render_strip_panel(&mut self, dial,
+style, st)`; `icon_row(app, icon, target, set_icon)` (the async-safe `target` is part of
+the signature); `media::import_icon(src)`; `reload_from_disk` already calls
+`renderer.clear_cache()`; the snapshot knob samples `panel.get_pixel(2, 2)`.
 
 **Outcome:** the Stream Deck + touch strip can show one 800 × 100 background image across
 the whole strip, and each dial panel can have its own 200 × 100 image, which wins over
@@ -99,9 +93,10 @@ pub background_image: Option<String>,
 - `DialConfig::new` sets it to `None`. `is_blank()` counts it, so a dial with only an
   image is kept on save and drawn.
 - `Face` gains `background_image: Option<&'a str>`. `KeyConfig::face()` sets it to `None`
-  (keys get no image in this PR).
-- `Config::default()` gets `strip: StripConfig::default()`. Field order in `Config` is
-  `brightness, style, strip, keys, dials`, so `[strip]` saves after `[style]`, before `[[key]]`.
+  (keys get no image in this PR); `DialConfig::face()` passes its own through.
+- `Config::default()` gets `strip: StripConfig::default()`. The field goes after
+  `style` and before `keys` (current order `brightness, style, keys, pages, dials`), so
+  `[strip]` saves after `[style]`, before `[[key]]`.
 - Old configs: no `[strip]` and no `background_image` load as `None`, and saving writes
   neither, so a re-saved file is byte-identical.
 
@@ -213,26 +208,34 @@ None.
 
 ## GUI (`omadeck-gui`)
 
-- **Image rows.** Generalise `icon_row(app, icon, set_icon)` to
-  `image_row(app, title, hint, current, set)`. `icon_row` stays a one-line wrapper, so the
-  key editor doesn't change. The preview uses `render::load_cover(path, 80, 40)` for
-  backgrounds, so the thumbnail shows the crop. Images import through
-  `media::import_icon` into `icons/` (it validates and de-duplicates). It is renamed
-  `media::import_image`, keeping an `import_icon` alias.
+- **Image rows.** Generalise `icon_row(app, icon, target, set_icon)` to
+  `image_row(app, title, hint, current, target, set)`, keeping the async-safe `target`
+  (`Fn(&Rc<App>) -> Target`) so a pick lands where it started, as the pickers do today.
+  `icon_row` stays a one-line wrapper over it, so the key editor doesn't change. The
+  preview uses `render::load_cover(path, 80, 40)` for backgrounds, so the thumbnail shows
+  the crop. Images import through `media::import_icon` into `icons/` (it validates and
+  de-duplicates); no rename.
 - **Dial editor, Appearance group:** a "Background image" row ("200 × 100; fills the panel
   and covers the strip image") under the Background colour row. The colour row's subtitle
   reads "Under the image" when both are set.
 - **Strip background, two ways in:**
-  - Right-click (a secondary `GestureClick`) on the strip preview opens a small popover
+  - Right-click on the strip preview (`self.strip`, a `gtk::Image`) opens a small popover
     with "Set strip background…" and "Remove strip background". This copies Elgato's
-    right-click on the touch strip.
+    right-click on the touch strip:
+    ```rust
+    let click = gtk::GestureClick::builder().set_button(gdk::BUTTON_SECONDARY).build();
+    click.connect_pressed({ let a = app.clone(); move |_, _, x, y| a.strip_menu(x, y) });
+    strip.add_controller(&click);
+    ```
+    where `strip_menu` pops a `gtk::Popover` at the pointer.
   - The same row ("Touch strip background", "800 × 100; fills the strip") in the settings
     popover, shown only when `deck.strip.is_some()`. The popover is built once at startup,
-    so the row updates its own subtitle and thumbnail after a change.
+    so the row keeps the `gtk::Image` thumbnail handle and updates its own subtitle and
+    thumbnail after a change (a small `refresh` closure captured by both buttons).
   - Both edit `config.strip.background_image`, then `refresh_strip()` and `schedule_save()`.
 - **Preview:** `refresh_strip` already renders through `render_strip`, so it matches the
-  hardware. `reload_config` must call `renderer.clear_cache()` (it doesn't today), so a
-  replaced file shows up.
+  hardware. `reload_from_disk` already calls `renderer.clear_cache()`; with the mtime-aware
+  cache a replaced file shows up and an unchanged one doesn't re-decode.
 - **Presets and *Try it now*:** nothing changes.
 
 ## Starter layout
@@ -255,20 +258,175 @@ colours, which are the point of `follow_theme`.
   (`background_image` on `[[dial]]`), which fill and crop to size; the configurator picks
   them, and right-clicking the strip preview sets the strip's."
 
+## Code (write this, don't redesign it)
+
+**`tone`, exactly.** The mean RGB of the final composited backdrop image, alpha ignored
+(layer 1 is opaque, so the composite is opaque): `img.pixels().fold((0u32,0,0,0), …)`
+averaging `px[0..3]`, divided by the pixel count. No image anywhere → the mean of a solid
+rectangle, i.e. the old `bg`.
+
+**`fit_cover` and `load_cover`** (free functions next to `load_icon`, `grep "pub fn load_icon"`):
+
+```rust
+/// Scale to cover `w × h` (longer side to the longer side, `Lanczos3`), then
+/// centre-crop. Exact-size input is returned unchanged.
+pub fn fit_cover(img: &RgbaImage, w: u32, h: u32) -> RgbaImage {
+    if img.dimensions() == (w, h) { return img.clone(); }
+    let (iw, ih) = img.dimensions();
+    let scale = (w as f32 / iw as f32).max(h as f32 / ih as f32);
+    let (nw, nh) = (((iw as f32 * scale).round() as u32).max(1), ((ih as f32 * scale).round() as u32).max(1));
+    let big = imageops::resize(img, nw, nh, FilterType::Lanczos3);
+    imageops::crop_imm(&big, (nw - w) / 2, (nh - h) / 2, w, h).to_image()
+}
+
+/// `load_icon`'s SVG/raster split, but fitted to cover `w × h` instead of inside a box.
+pub fn load_cover(path: &Path, w: u32, h: u32) -> Option<RgbaImage> {
+    let is_svg = path.extension().and_then(|e| e.to_str())
+        .is_some_and(|e| e.eq_ignore_ascii_case("svg") || e.eq_ignore_ascii_case("svgz"));
+    if is_svg {
+        // Rasterise the SVG at the cover scale of its own size, then crop.
+        let img = load_svg_raw(path)?;          // full-size raster, new helper split out of `load_svg`
+        return Some(fit_cover(&img, w, h));
+    }
+    Some(image::open(path).ok()?.to_rgba8()).map(|img| fit_cover(&img, w, h))
+}
+```
+
+`load_svg(path, box_px)` keeps its fit-to-box behaviour for icons; `load_svg_raw` is the
+same body without the scale/crop (rasterise at the SVG's intrinsic size). An animated GIF
+loads its first frame: `image::open` already does this (`gif` feature is enabled).
+
+**`panel_backdrop`** (method on `Renderer`, `grep "fn render_strip_panel"` for the
+neighbourhood). `dial` is `None` or blank → no layers 3/4:
+
+```rust
+pub fn panel_backdrop(&mut self, cfg: &Config, i: u8, panels: u32) -> Backdrop {
+    let base = self.background(None, &cfg.style);
+    let dial = cfg.dial(i).filter(|d| !d.is_blank());
+    let mut img = solid_rect(PANEL_W, PANEL_H, base);
+    // Layer 2: the strip image, fitted once per file and sliced per panel.
+    if let Some(src) = cfg.strip.background_image.as_deref()
+        && let Some(full) = self.backdrop_image(&paths::resolve(src), PANEL_W * panels, PANEL_H)
+    {
+        let slice = imageops::crop_imm(&full, i as u32 * PANEL_W, 0, PANEL_W, PANEL_H).to_image();
+        imageops::overlay(&mut img, &slice, 0, 0);
+    }
+    if let Some(d) = &dial {
+        // Layer 3: the dial's own colour, only when set on the dial.
+        if let Some(c) = d.background.as_deref().and_then(Rgb::parse) {
+            imageops::overlay(&mut img, &solid_rect(PANEL_W, PANEL_H, c), 0, 0);
+        }
+        // Layer 4: the dial image, alpha-composited over everything under it.
+        if let Some(src) = d.background_image.as_deref()
+            && let Some(image) = self.backdrop_image(&paths::resolve(src), PANEL_W, PANEL_H)
+        {
+            imageops::overlay(&mut img, &image, 0, 0);
+        }
+    }
+    Backdrop { tone: mean_rgb(&img), img }
+}
+
+/// A fitted background image, decoded once per file (mtime in the key's value).
+fn backdrop_image(&mut self, path: &Path, w: u32, h: u32) -> Option<RgbaImage> {
+    let mtime = fs::metadata(path).ok()?.modified().ok();
+    let k = (path.to_path_buf(), w, h);
+    if let Some((mt, img)) = self.backdrops.get(&k).cloned()
+        && mt == mtime
+    {
+        return Some(img);
+    }
+    let loaded = load_cover(path, w, h);
+    if loaded.is_none() {
+        log::warn!("could not load background image {}", path.display());
+    }
+    if let Some(img) = &loaded { self.decode_count += 1; }
+    self.backdrops.insert(k, mtime.zip(loaded.clone()));
+    loaded
+}
+```
+
+The empty-slot dimming (×0.55) moves out of `render_strip_panel` into the caller's
+knowledge of layers: an empty slot **with no image** (no strip slice, no dial image) is
+`solid(…)` of the dimmed base, exactly as today; with an image it is the undimmed
+backdrop. Implement it in `render_strip_panel`:
+
+```rust
+pub fn render_strip_panel(&mut self, cfg: &Config, i: u8, panels: u32, st: DialStatus) -> RgbaImage {
+    let dial = cfg.dial(i).filter(|d| !d.is_blank());
+    let face = dial.map(|d| d.face());
+    let has_image = cfg.strip.background_image.is_some()
+        || dial.is_some_and(|d| d.background_image.is_some());
+    let mut img = if face.is_none() && !has_image {
+        solid_rect(PANEL_W, PANEL_H, self.background(None, &cfg.style).mix(Rgb(0, 0, 0), 0.55))
+    } else {
+        self.panel_backdrop(cfg, i, panels).img
+    };
+    let Some(face) = face else { return img };
+    let tone = /* the backdrop's tone: recompute or keep from the branch above */;
+    // … the rest of today's body unchanged, with `bg` replaced by `tone` in
+    // `label_color(..)` and `draw_b1(..)` (its track is `tone.mix(fg, 0.22)`).
+}
+```
+
+Compute the `tone` once (in `panel_backdrop`, and as the dimmed/plain base in the
+no-image branch) so it isn't measured twice.
+
+**Cache fields** on `Renderer` (next to `icons`, `grep "icons: HashMap"`):
+
+```rust
+backdrops: HashMap<(PathBuf, u32, u32), Option<(std::time::SystemTime, RgbaImage)>>,
+#[cfg(test)]
+pub decode_count: std::cell::Cell<u32>,
+```
+
+`clear_cache` (grep `"pub fn clear_cache"`): keep `self.icons.clear()`; for `backdrops`,
+retain entries whose file mtime still matches (one `stat` each) and drop the rest.
+
 ## Implementation steps
 
-1. [ ] Config: `StripConfig`, `Config.strip`, `DialConfig.background_image` and `is_blank`;
-       config tests. Commit.
-2. [ ] Render: `fit_cover`, `load_cover` and the backdrop cache with mtime-aware
-       `clear_cache`; unit tests for the pure parts. Commit.
-3. [ ] Render: `Backdrop` and `panel_backdrop`; switch `render_strip_panel` to
-       `(cfg, i, panels, st)` and use `tone`; fix the callers in the daemon and the tests.
-       Run the no-image pixel-identity test before going further. Commit.
-4. [ ] Daemon: `write_panel` and the `snapshot` knob colour. Check on the hardware. Commit.
-5. [ ] GUI: `image_row`, the dial editor row, the strip right-click popover, the settings
-       row, and `clear_cache` in `reload_config`. Commit.
-6. [ ] Docs, `examples/config.toml`, CHANGELOG; `cargo fmt && cargo clippy --all-targets
-       -- -D warnings && cargo test`. Commit.
+Task sizes are ~150–300 lines including tests; each ends with its check.
+
+0. [ ] **Golden pixels (old code, before any change).** On `daily`, add a throwaway test
+       that renders: (a) a `$X1` panel (label + glyph dial, no image), (b) a `$B1` volume
+       panel (`Level { value: 0.4, text: "40%" }`), (c) an empty slot — each at 200 × 100
+       — and writes them to `crates/omadeck-core/tests/fixtures/strip-{x1,b1,empty}.png`
+       (`include_bytes!`-able). Run it, commit the three PNGs and delete the throwaway
+       test. **Check:** `ls crates/omadeck-core/tests/fixtures/` shows the three PNGs;
+       `cargo test -p omadeck-core` still green.
+1. [ ] **Task A — config.** `StripConfig`, `Config.strip` (after `style`),
+       `DialConfig.background_image` + `new` + `is_blank`, `Face.background_image` in both
+       `face()` impls. Tests: `strip_background_roundtrip`,
+       `old_config_saves_without_strip`, `dial_background_image_roundtrip`,
+       `dial_with_only_background_image_is_not_blank`. **Check:**
+       `cargo test -p omadeck-core config` → all pass; `example_parses` green. Commit.
+2. [ ] **Task B — render, pure.** `fit_cover`, `load_svg_raw`, `load_cover`, the
+       `backdrops` cache + `backdrop_image` + mtime-aware `clear_cache` + `decode_count`.
+       Tests: `fit_cover_exact_size_is_identity`, `fit_cover_wide_crops_centre`,
+       `fit_cover_tall_crops_centre`, `clear_cache_keeps_unchanged_backdrop`,
+       `touched_file_is_reloaded` (temp dir, `filetime`-free: write, `clear_cache`, write
+       again with a newer mtime via `fs::set_file_times`). **Check:**
+       `cargo test -p omadeck-core render` → all pass. Commit.
+3. [ ] **Task C — render, layers.** `Backdrop`, `mean_rgb`, `panel_backdrop`,
+       `render_strip_panel(cfg, i, panels, st)` with `tone`, `render_strip` updated to pass
+       `(cfg, i, panels)`; fix the in-crate test callers. Tests from the Tests section
+       (layer tests + `no_images_pixels_unchanged` comparing against the Task 0 fixtures).
+       **Check:** `cargo test -p omadeck-core render` → all pass, including
+       `no_images_pixels_unchanged`. The daemon no longer compiles (old signature) —
+       expected; Task D fixes it. Commit with the daemon broken is **not** allowed:
+       instead do Task D in the same commit as the call-site fixes, or fix
+       `write_panel`/`snapshot` mechanically here and keep the knob-tone fix in Task D.
+4. [ ] **Task D — daemon.** `write_panel` calls
+       `render_strip_panel(cfg, i, d.info.dials as u32, dial_status(..))`; the snapshot
+       knob uses `renderer.panel_backdrop(&cfg, i, n).tone` instead of
+       `panel.get_pixel(2, 2)`. **Check:** `cargo build --workspace` and
+       `cargo clippy --all-targets -- -D warnings` clean. Hardware checks below. Commit.
+5. [ ] **Task E — GUI.** `image_row` (generalised `icon_row`, wrapper kept), the dial
+       editor row, the strip right-click popover, the settings-popover row. **Check:**
+       `cargo clippy --all-targets -- -D warnings` clean; manual: pick a dial image and a
+       strip image, preview matches, right-click works. Commit.
+6. [ ] **Task F — docs.** README, `examples/config.toml` (`example_dial_parses` block
+       count stays 3), CHANGELOG. **Check:** `cargo fmt && cargo clippy --all-targets
+       -- -D warnings && cargo test` all green. Commit.
 
 ## Tests
 
@@ -367,10 +525,18 @@ colours, which are the point of `follow_theme`.
 `render_strip_panel` signature change and the `tone` substitution are the parts to
 review most carefully.
 
-## Open decisions (settle when building)
+## Decided (2026-10-17)
 
-The plan picks a default for each; confirm or change it before starting this PR.
+- **Decided: `background_image` everywhere.** `background` already means a colour on
+  keys and dials; one field can't mean two things. `[strip]` keeps the same name, so a
+  strip colour can join it later.
+- **Decided: one strip image per config.** Dials and the strip are device-level in
+  omadeck (as in Elgato, so far as the docs say); a per-page strip background is a Later
+  item if Elgato turns out to allow it.
+- **Decided: decode on the deck loop, mtime-cached.** Same as icons today. The 4K-JPEG
+  hardware check is a gate: if a reload takes more than ~100 ms, move to the pre-fitted
+  import from Later — nothing in Tasks A–E changes shape either way.
 
-- Field name: `background_image` everywhere (planned, since `background` already means a colour on keys and dials), or `[strip] background`?
-- One strip image per config (planned), or one per page? Elgato's scope is unconfirmed.
-- Images are decoded on the deck loop at reload (cached afterwards). Acceptable for very large images, or should the GUI store a pre-cropped copy? Decide after the 4K-JPEG hardware check.
+## Open decisions
+
+None.
