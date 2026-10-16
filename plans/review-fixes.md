@@ -994,3 +994,24 @@ crates/omadeck-core/src/*.rs` prints nothing.
 - groundwork.md is based on this branch: it can call `Action::default_for`, `Direction`,
   `Config::is_folder`, `flush_dirty`/`mark_dirty` and `set_brightness`, which exist
   after this.
+
+## Verified on the machine (2026-10-17, Stream Deck +, `fix/review` build)
+
+Daemon-side, via socket and journal: hand-edit of `brightness` reaches the deck;
+`SetBrightness` with no prior state works and persists; after a service restart the
+panel keeps the state-file value (10), not the config's 35. A corrupted background
+image logs exactly one warning, is not retried per paint, and a replaced file loads.
+Fast dial spins: zero repaint/flush errors, RSS flat at ~12.5 MB.
+
+On the deck: volume dial runs `+5`/`-5`/`mute-toggle` per turn/press; the brightness
+dial stepped 85→70 and the last value persisted; a strip flick went Home →
+Workspaces, skipping four test folders (folder-skipping confirmed). GUI, by clicking:
+**+** makes a normal page, "New page" makes a folder (Back key, named after the key,
+unique), the folder toggle flips the flag, re-picking Volume in Turn left gives −5 and
+in Press gives mute, and the Brightness preset leaves no Volume press behind (the
+Volume preset was observed rewiring a dial live). The Mic dial's config glyph was
+updated from f057f to f036c (the default fix only covers dials without a glyph).
+
+Not exercised by hand (unit-test coverage only): 35 (a dial's Open-page list), 36
+(settings popover when the deck plugs in late), 38 (late picker result with a broken
+config).
