@@ -1,9 +1,25 @@
 # PR 14: `feat/media-dial`: media dial and media keys
 
-Part of [PLAN.md](PLAN.md). Base: `feat/folders` (PR 13). Uses the **state watcher**
+Part of [PLAN.md](PLAN.md). Base: `feat/folders` (PR 13; **stale**: PR 13 is mostly obsolete after the rebase, so base on PR 12). Uses the **state watcher**
 (PR 8) and the **strip layers** (PR 7, panels draw over them unchanged). Uses the
 **audio streams** (PR 10) only as an example config (turn = the player's app volume); no
 code depends on it. Assumptions about PR 8 and PR 10 are listed under "Assumptions".
+
+**Before handing this to the local model** (from the 2026-10-16 review; do these when
+rewriting the plan after the previous feature lands, then delete this list):
+
+- [ ] Rewrite against the code as merged (upstream's named pages: `Option<&str>` / `Config::key(page, index)` / `Nav`), not `ba0eced`'s `page: u8`.
+- [ ] Replace every "assumption about PR N" with that PR's real, merged signatures, copied in full.
+- [ ] Settle every Open decision and write it as "Decided: …".
+- [ ] Split into tasks of ~150–300 lines, each ending with an exact `cargo test -p … <filter>` and what it should show.
+- [ ] Refer to symbols (function names, grep anchors), not line numbers.
+- [ ] `Probe`/`Value` live in core `state.rs` (PR 8), not `watch.rs`.
+- [ ] Decide how the playback position avoids a repaint every poll. E.g. `fn changed(&self, old: &Value, new: &Value, since: Duration) -> bool` on `Probe`, defaulting to `old != new`, plus where the receive time is kept. Say whether `Probe::Player` is read inline or spawned in PR 8's terms (it runs `playerctl`).
+- [ ] One run function: `run_media(cmd, seek, player, 1)` and `run_media_on(action, steps, target)` disagree. Give one signature and its callers.
+- [ ] Reuse `audio::backend()` for Omarchy detection. It checks `swayosd-client`; this plan checks `omarchy-swayosd-client`.
+- [ ] Check on the machine first: is `playerctl` installed, and is `OMARCHY_PATH` set in the systemd service?
+- [ ] The `old_config_byte_identical` fixture is "the PR 13 example config". Use one that exists.
+- [ ] Split: (a) core (`player.rs`, action, config, tests; no daemon), (b) render, watcher, daemon, GUI.
 
 **Outcome:** a `media` action for keys and dials: play/pause, next, previous, stop, and
 seek ± N seconds. A **media dial** (turn = scrub, press = play/pause) shows the playing
@@ -112,8 +128,8 @@ command = "next"
 player = "spotify"   # optional
 ```
 
-- `KINDS` gets "Media" at the next free index (**13**: App volume 9, Multi action 10, Delay 11,
-  Folder 12; use `KINDS.len()` at the time). Add the matching `kind_index`, and
+- `KINDS` gets "Media" at the next free index (**14** after the rebase: App volume 11, Multi
+  action 12, Delay 13, no Folder kind; use `KINDS.len()` at the time). Add the matching `kind_index`, and
   `empty_of_kind` → `Media { command: PlayPause, seek: 0, player: None }`.
 - `summary()`: "Play/Pause", "Next track", "Previous track", "Stop", "Seek +5 s" /
   "Seek -5 s", with " (spotify)" when `player` is set.

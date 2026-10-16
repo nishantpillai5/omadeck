@@ -6,6 +6,22 @@ the active workspace". Base branch: `feat/toggle-keys` (PR 8), because it reuses
 introduces the **Hyprland event listener** (`omadeckd/src/hypr.rs`), which PR 10 (focused
 app volume) and PR 15 (pages follow the focused app) reuse.
 
+**Before handing this to the local model** (from the 2026-10-16 review; do these when
+rewriting the plan after the previous feature lands, then delete this list):
+
+- [ ] Rewrite against the code as merged (upstream's named pages: `Option<&str>` / `Config::key(page, index)` / `Nav`), not `ba0eced`'s `page: u8`.
+- [ ] Replace every "assumption about PR N" with that PR's real, merged signatures, copied in full.
+- [ ] Settle every Open decision and write it as "Decided: …".
+- [ ] Split into tasks of ~150–300 lines, each ending with an exact `cargo test -p … <filter>` and what it should show.
+- [ ] Refer to symbols (function names, grep anchors), not line numbers.
+- [ ] CPU/memory/battery as `Value::Level` carry a meaningless `muted`. Add `Value::Percent(u8)`, or say `muted: false`.
+- [ ] Define the text-only `$A1` panel exactly. `render::Level` has `value: f32`; cleaner is `DialStatus { text, bar: Option<f32> }`.
+- [ ] jiff: make step 1 a go/no-go. Run `cargo tree -i jiff -e features` after enabling `tz-system`; if it pulls in a new package, use the fallback.
+- [ ] `hypr.rs`: give the `Pending` struct, the `Parsed` enum and the reconnect loop as code, plus a sample `.socket2.sock` transcript with expected events as a test fixture.
+- [ ] Give the glyph codepoints as a fixed list to use as-is; check them in the font by hand.
+- [ ] Mark which Open decisions block coding (only caption-vs-hide does).
+- [ ] Split: (a) `live.rs` + `sysinfo.rs`, pure, with tests (a good first task), (b) `Live` config, (c) render, (d) watcher probes + daemon, (e) `hypr.rs` as its own PR (10 and 15 need it), (f) GUI.
+
 **Outcome:** any key, and any dial's strip panel, can show a live value: the time or
 date (strftime format), CPU %, memory %, battery % (with charging), the active Hyprland
 workspace, or the first line of a command's output, polled at an interval. The value is
@@ -112,12 +128,18 @@ No new `Action` variant and no `KINDS` change: a live key's press runs its ordin
 
 ## Assumptions about PR 8 (state watcher)
 
-PR 8's plan isn't written yet; PR 9 assumes this and adapts if PR 8 lands differently:
+**Stale:** written before PR 8's plan. Replace this section with PR 8's merged API.
+Known differences: PR 8 spawns asynchronously with a 5 s `COMMAND_TIMEOUT` (not
+`min(interval, 10 s)` below; pick one policy per probe kind); `Value::Level` is
+`audio::Level { percent, muted }`; `apply_value` and `KeyStatus` exist only if PR 8
+adds them as its handoff list asks. Originally assumed:
 - `Probe` and `Value` live in **core** (`omadeck-core/src/state.rs`), `Hash + Eq + Clone`,
   because `config.rs` derives probes and `render.rs` draws values; the worker loop is in
   `omadeckd/src/watch.rs`. If PR 8 kept them in the daemon, PR 9 moves them to core first.
-- `Probe::Command { cmd: String, interval: u32 }` → `Value::Bool` (exit status), and
-  `Value::{Bool(bool), Text(String), Level(u8)}`.
+- `Probe::Command { cmd, interval }` → `Value::Toggle(Toggle::{Off, On, Busy(text)})`
+  (exit 0 / other / 75), and `Value::{Toggle, Level}`; PR 9 adds `Value::Text(String)`.
+  PR 8 already spawns commands with piped stdout and a reader thread (first non-empty
+  line, 4 KiB cap), so `CommandOutput` reuses that spawn path unchanged.
 - The main loop has `watched_probes(cfg, page, n_dials) -> Vec<Probe>`, sent as
   `WatchCmd::Watch` on connect, reload and page change; `Deck.values: HashMap<Probe,
   Value>`; and one `apply_value(d, cfg, renderer, probe, value)` that inserts on change and

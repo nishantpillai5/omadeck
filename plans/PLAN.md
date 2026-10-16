@@ -41,7 +41,7 @@ order; the order is mine, not upstream's roadmap order.
 | # | Branch | Feature | Plan |
 |---|--------|---------|------|
 | 7 | `feat/strip-backgrounds` | Background images for the whole strip and per dial | [pr7](pr7-strip-backgrounds.md) |
-| 8 | `feat/toggle-keys` | Keys with on/off faces that follow real state | [pr8](pr8-toggle-keys.md) |
+| 8 | `feat/toggle-keys` | Keys with on/off faces that follow real state, plus a busy state with progress for slow toggles (e.g. a model server starting up) and for any key while its command runs | [pr8](pr8-toggle-keys.md) |
 | 9 | `feat/live-keys` | Keys that show a clock, CPU, workspace, … and update themselves | [pr9](pr9-live-keys.md) |
 | 10 | `feat/app-volume` | Per-app volume: a dial for a chosen app, or for the focused app | [pr10](pr10-app-volume.md) |
 | 11 | `feat/ctl` | Drive the running daemon from the shell (`omadeckd page next`, `brightness 30`, …) | [pr11](pr11-ctl.md) |
@@ -49,6 +49,7 @@ order; the order is mine, not upstream's roadmap order.
 | 13 | `feat/folders` | A key opens a sub-page with a Back key (finishes "Pages and folders") | [pr13](pr13-folders.md) |
 | 14 | `feat/media-dial` | Media dial: scrub, play/pause, track and progress on the strip | [pr14](pr14-media-dial.md) |
 | 15 | `feat/app-pages` | Switch page automatically when an app is focused | [pr15](pr15-app-pages.md) |
+| 16 | `feat/strip-long-press` | Hold a strip panel for a second action per dial (Elgato's "long touch") | [pr16](pr16-strip-long-press.md) |
 
 ### Shared building blocks
 
@@ -68,9 +69,10 @@ needs it, and have the later PRs reuse it rather than grow a second copy:
   commands in the other direction on the same socket (`Command`/`Reply` in `ipc.rs`), and
   `omadeckd press`/`dial` go through the daemon when it runs. Features before it don't
   depend on it.
-- **Daemon-owned actions** (PR 12, reused by 13). `Action::is_deck_owned()` marks actions
-  the deck loop runs itself (page, brightness, later folder), so multi-actions and ctl
-  route them to the loop instead of spawning them.
+- **Daemon-owned actions** (PR 5 after the rebase, reused by 11, 12 and 16). One dispatch
+  that routes the actions the deck loop runs itself (Open page, Back, Page step,
+  Brightness) for every input path, so keys, dials, strip taps, multi-actions and ctl
+  all go through it. Built once, in [rebase step 2](rebase-on-upstream-pages.md).
 - **Strip layers** (PR 7, reused by 9, 10 and 14). `Renderer::panel_backdrop()` draws the
   background layer under the panel layouts; later panels (live values, app volume, media)
   draw their items on top of it unchanged.
@@ -83,6 +85,32 @@ upstream's pages: Open page 6 and Go back 7 (upstream), Volume 8, Page step 9, B
 is no longer a kind (upstream's Open page covers it). PRs 7, 8, 9, 11, 13 and 15 add no
 action kinds (toggle and live are key properties, not actions).
 
+## Handing a plan to the local model
+
+Plans are handed to a local model (Qwen 3.8 27B). It copies what it's given and doesn't
+reconcile contradictions, so a plan is ready only when:
+
+- [ ] It matches the code as merged now. Rewrite it after the previous feature lands
+      (and after each rebase); no "assumptions about PR N", copy PR N's real types in.
+- [ ] Every Open decision is settled and written as "Decided: …".
+- [ ] It's split into tasks of ~150–300 lines, one per session, in order. Each task names
+      the files, the new types and signatures in full, and ends with an exact check
+      (`cargo test -p omadeck-core <filter>`, `cargo clippy --all-targets -- -D warnings`)
+      and what it should show.
+- [ ] Each task has one fully written test to copy the pattern from.
+- [ ] Code is referred to by symbol (function name, a string to grep for), not by line.
+- [ ] Known traps are spelled out: no `if let … = get(&a.config.borrow()) { edit(..) }`
+      (BUGS.md 4: clone, drop the borrow, then edit); recursive GUI builders take
+      `Rc<dyn Fn…>`, not `impl Fn`; nothing slow on the deck loop.
+- [ ] Hardware facts (command output, JSON samples, which tools Omarchy ships) are
+      captured on the machine first and pasted into the plan or a fixture file.
+
+Work the model can't do well: the rebase itself (conflict resolution), and GUI layout
+judgement. Do those yourself, or with a stronger model.
+
+Each plan has a **Before handing this to the local model** list near the top with what
+the 2026-10-16 review found in it.
+
 Each plan ends with **Open decisions**: the choices it made a default for. Settle them when
 that PR's turn comes, before building it.
 
@@ -90,9 +118,7 @@ that PR's turn comes, before building it.
 
 - More Elgato strip layouts: `$C1` (two bars, e.g. output and mic). (`$A1`, value only,
   comes with live keys in PR 9.)
-- Long press on a strip panel as its own action.
 - Screensaver and idle dimming: dim or blank the deck when hypridle says idle or locked.
-- Elgato-style key feedback: a pressed or busy look while a command runs.
 - From upstream's roadmap: **OBS** scene and recording keys, **multiple decks** with a
   layout per serial, **import/export** of shareable layouts.
 - Plus XL (vertical strip, 6 dials) and the Neo's info bar, once someone can test them.

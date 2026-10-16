@@ -5,6 +5,22 @@ control socket** building block. It needs nothing from PRs 7–10 beyond the cod
 leave in `omadeckd/src/main.rs`. The one assumption is that PR 8 sends
 `WatchCmd::Refresh` from the key-press path (see "Assumptions" below).
 
+**Before handing this to the local model** (from the 2026-10-16 review; do these when
+rewriting the plan after the previous feature lands, then delete this list):
+
+- [ ] Rewrite against the code as merged (upstream's named pages: `Option<&str>` / `Config::key(page, index)` / `Nav`), not `ba0eced`'s `page: u8`.
+- [ ] Replace every "assumption about PR N" with that PR's real, merged signatures, copied in full.
+- [ ] Settle every Open decision and write it as "Decided: …".
+- [ ] Split into tasks of ~150–300 lines, each ending with an exact `cargo test -p … <filter>` and what it should show.
+- [ ] Refer to symbols (function names, grep anchors), not line numbers.
+- [ ] After the rebase, upstream already has the client→daemon half: `ipc::Command` (tagged `"command"`), per-client reader threads, `Hub::commands()`, `ipc::connect()`. Rewrite §IPC and §Hub as new variants plus a reply path on that, not a second `Command` enum tagged `"cmd"`.
+- [ ] Pages are names: redo the CLI (`omadeckd page next|prev|<name>|home`), `State { page: Option<String>, … }`. Upstream already has `press KEY [PAGE]`, so drop Later's `--page N` and BUGS.md 2.
+- [ ] Parameter lists like `press_key(d, cfg, renderer, hub, audio, i)` use `AudioWorker`, which PR 8 removes. Introduce one `Ctx` struct, or list the real arguments.
+- [ ] Step 1 (pulling three handlers out of the run loop) has no test harness. Name the exact blocks by their `DeviceStateUpdate` arm and the new functions' boundaries; the check is `cargo test` plus four manual presses. It routes through rebase step 2's dispatch.
+- [ ] Use the rebase's dispatch (`is_navigation()` + Brightness), not PR 12's `is_deck_owned()`, which comes later.
+- [ ] Import the enum as `ipc::Command`: `std::process::Command` is used in the same files.
+- [ ] Key flash: today `flash_until` stores now+FLASH but expiry checks `duration_since(t) >= DIAL_FLASH`, so it lasts ~2× (BUGS.md 15). Say whether to fix it first.
+
 **Outcome:** the daemon accepts commands on the socket it already publishes events on.
 `omadeckd page next`, `omadeckd page 2`, `omadeckd brightness 30`, `omadeckd brightness
 +10`, `omadeckd reload` and `omadeckd state` drive the running daemon. `omadeckd press 3`

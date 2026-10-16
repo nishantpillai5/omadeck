@@ -172,6 +172,9 @@ one), and a page order to step through.
     (`change × steps`) call `step_page`, then `Nav::switch`, then upstream's
     `show_page`. `show_page` already repaints and publishes `PageChanged`.
   - Add a minimum horizontal distance to the flick (BUGS.md 19).
+  - **This step owns the one dispatch.** PR 16's `run_dial_action` and PR 12's
+    `dispatch()` are not built separately; they call this one. It must route
+    upstream's `Page`/`Back` (`is_navigation()`), `PageStep` and `Brightness`.
   - Route every input path (key, turn, press, tap) through **one** dispatch for
     deck-owned actions. That fixes BUGS.md 6 (dial press can't page) and is the
     `is_deck_owned()` that PR 12 planned.
@@ -210,7 +213,7 @@ one), and a page order to step through.
 | BUGS.md | Fixed by |
 |---|---|
 | 1, 2, 3, 8, 12, 20 | Gone with `ba0eced`; upstream's code replaces it (check upstream doesn't have the same bug). |
-| 4 | Step 1, `feat/dial-actions` (where `action_editor` came in) |
+| 4 | Step 1: Script and Sound rows on `feat/dial-actions` (where `action_editor` came in), the three Volume rows on `feat/dial-volume` |
 | 5, 7, 13 | Step 3, `feat/brightness` |
 | 6, 19, 21 (dial Try it now) | Step 2, `feat/plus-pages` |
 | 9, 10, 15, 16, 17, 18 | `feat/dial-volume` / `feat/touch-strip`, during step 1 or right after |
@@ -265,13 +268,19 @@ Update each of these when its turn comes; they were written against `ba0eced`'s
 
   That's a small follow-up PR on upstream's model, or nothing. Rewrite pr13 then, and
   drop its `folder` string field and `key_at` API.
+- **PRs 7–10, 14, 16:** still written against `page: u8` (`key_on`, `do_page`,
+  `watched_probes(cfg, page: u8, …)`, `Event::KeyState { page: u8 }`). Switch them to
+  page names. PR 8's `run_tracked` sits on top of upstream's new spawning in `action.rs`
+  (uwsm-app, else `systemd-run --scope`); build on that.
 - **PR 11 ctl:** upstream already has the client→daemon half (`Command`, `Sender`,
   `hub.commands()`). Build `omadeckd page next`, `brightness 30`, etc. as new
   `Command` variants on it instead of a second channel.
 - **PR 12 multi-actions:** `is_deck_owned()` is the one dispatch from step 2. Keep
   `is_navigation()` as upstream's name, or rename it in our PR only if Brightness
   needs it too.
-- **PR 15 app pages:** the target is a page *name* (`Option<String>`), not an index.
+- **PR 15 app pages:** upstream already has `[[page]]` (`Page { name, keys }`), so PR 15's
+  own `[[page]]` table can't exist. Add `apps: Vec<String>` to upstream's `Page` instead.
+  The target is a page *name* (`Option<String>`), not an index.
   It uses `Nav::switch`, not `go`, so Back doesn't walk an app-switch trail.
 - **`KINDS` order** (replaces PLAN.md's list):
 

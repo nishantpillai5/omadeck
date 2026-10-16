@@ -5,6 +5,15 @@ pages). Based on `feat/multi-actions` (PR 12); needs PR 5's pages. It touches th
 state watcher (PR 8/9) and ctl (PR 11) only through the small hooks listed under
 [Interactions](#interactions-with-other-prs).
 
+**Before handing this to the local model** (from the 2026-10-16 review; do these when
+rewriting the plan after the previous feature lands, then delete this list):
+
+- [ ] **Mostly obsolete.** Upstream's pages-and-folders already has folders: a page with a Back key at index 0, `Nav::go`/`back`/`retain_existing`, `new_folder()` in the GUI. `KeyConfig.folder`, `key_at`, `Location`, `Action::Folder` and the breadcrumb all go.
+- [ ] Rewrite as a small plan (~150 lines) on upstream's `Nav` and the rebase's `Page.folder` flag, covering what's left of Elgato's behaviour: Back fixed and not editable at top-left; hold Back for Home (500 ms from key-down, e.g. `Deck.back_down: Option<Instant>` checked in the loop, `Nav::home()`); a default folder face; optionally Auto Exit. Or drop it.
+- [ ] Settle every Open decision and write it as "Decided: …".
+- [ ] Split into tasks of ~150–300 lines, each ending with an exact `cargo test -p … <filter>` and what it should show.
+- [ ] Refer to symbols (function names, grep anchors), not line numbers.
+
 **Outcome:** a `folder` action opens a sub-page of keys. Inside a folder the top-left
 key is a fixed **Back** key: a press goes up one level, and holding it returns to the
 front page, as in the Elgato app. Folders can nest and can have pages of their own. The

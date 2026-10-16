@@ -5,6 +5,21 @@ key-press path already exist. Doesn't need the state watcher, the Hyprland liste
 strip layers. It does lean on PR 11's control socket for one thing: a `omadeckd press` through the daemon of a
 multi key has to run the multi on the deck loop.
 
+**Before handing this to the local model** (from the 2026-10-16 review; do these when
+rewriting the plan after the previous feature lands, then delete this list):
+
+- [ ] Rewrite against the code as merged (upstream's named pages: `Option<&str>` / `Config::key(page, index)` / `Nav`), not `ba0eced`'s `page: u8`.
+- [ ] Replace every "assumption about PR N" with that PR's real, merged signatures, copied in full.
+- [ ] Settle every Open decision and write it as "Decided: …".
+- [ ] Split into tasks of ~150–300 lines, each ending with an exact `cargo test -p … <filter>` and what it should show.
+- [ ] Refer to symbols (function names, grep anchors), not line numbers.
+- [ ] `action_editor` is generic over `impl Fn` closures. Calling it from its own `Multi` arm nests closure types without end and rustc hits the recursion limit. Change it to take `Rc<dyn Fn(&Config) -> Action>` / `Rc<dyn Fn(&Rc<App>, Action)>` first, as its own step.
+- [ ] The step `edit` closure must not hold `a.config.borrow()` while calling the outer `edit` (BUGS.md 4). Clone the action, drop the borrow, then edit.
+- [ ] Stale after the rebase: `KINDS` 12/13; the example's `type = "page" index = 1` becomes `page = "name"`; `Source::Key { page: u8 }` holds the page name. Deck-owned steps are Open page, Back, Page step and Brightness (no Folder kind; PR 8 toggles aren't actions).
+- [ ] `dispatch()` is rebase step 2's dispatch, extended for `Multi`, not a new function. Drop `audio` from its parameters (PR 8 removes it).
+- [ ] Combo mapping: write both directions between `KINDS` indices and positions in `KEY_KINDS`/`STEP_KINDS`.
+- [ ] Sketch the steps editor's widget tree, and say how selecting a step triggers `rebuild_editor`.
+
 **Outcome:** a new `multi` action holds an ordered list of steps. Each step is an ordinary
 action (app, script, sound, website, Hyprland, volume, page, brightness, and whatever
 PRs 8–11 added) or a `delay` step that waits some milliseconds. It works on keys, dial
@@ -112,7 +127,8 @@ step, so the check happens at run time instead.
 
 ## Action changes (`omadeck-core`)
 
-- `KINDS` gains `"Multi action"` and `"Delay"` at the end. After PR 10's "App volume" (9) these are
+- `KINDS` gains `"Multi action"` and `"Delay"` at the end. (After the rebase: App volume is 11, so these are **12** and **13**; the numbers that
+  follow are from before the rebase.) After PR 10's "App volume" (9) these are
   indices **10 and 11** (PRs 7, 8, 9 and 11 add no kinds); `kind_index`,
   `empty_of_kind` and the tests use the real numbers. `empty_of_kind`: `Multi { steps: vec![] }`
   and `Delay { ms: 500 }`.
@@ -362,7 +378,8 @@ older configurators show it unchanged.
 - Choosing a state for a two-state step (Elgato's `userDesiredState`), for example
   "mute on" rather than a mute toggle.
 - Press and hold to cancel a running multi.
-- A busy look on the key while it runs (PLAN's "Elgato-style key feedback").
+- PR 8's `busy_while_running` for multis: the key stays busy until the sequencer's last
+  step ends (and a tracked step inside it has exited).
 - Drag-and-drop step reorder, and duplicating a step.
 - Batching consecutive Hyprland steps into one `hyprctl --batch` call, with per-command
   Lua translation.

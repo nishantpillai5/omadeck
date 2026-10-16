@@ -90,6 +90,9 @@ A code review (reading only; `cargo test` couldn't run in the sandbox) of `daily
 
 #### 6. Dial press and strip tap can't run Page or Brightness actions
 
+- **Status:** open. (Also found 2026-10-16 while planning PR 16; that plan and commit
+  `48f138e` called it "bug 4" before the numbers were merged. #4 is the RefCell panic.)
+
 - **Where:** `crates/omadeckd/src/main.rs:447` (`EncoderDown`) and `:479`
   (`TouchScreenPress`) call `action::run(&dc.press)` directly; only the key path
   (`:382`) and the turn path (`:415`) route to `do_page`/`do_brightness`.
@@ -253,7 +256,8 @@ page-independent dials. The two can't both live:
 (or master once it lands). This also means PR 13 (folders) is mostly done upstream.
 
 1. Cherry-pick ffc6c54, e56a25c, 1676c66, 4c1ec00, da2b426. Renumber `KINDS`
-   (…, Open page 6, Go back 7, Volume 8, Brightness 9). Dials stay top-level
+   (…, Open page 6, Go back 7, Volume 8, Page step 9, Brightness 10; see the
+   table in [rebase-on-upstream-pages.md](rebase-on-upstream-pages.md)). Dials stay top-level
    (page-independent for free). Dial painting takes no page. The dial editor uses
    the `KeyRef` pattern too.
 2. Cherry-pick 4860e9f against upstream's page-aware `paint_all`, fixing bug 5 while

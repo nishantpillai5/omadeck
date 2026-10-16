@@ -4,6 +4,20 @@ Part of [PLAN.md](PLAN.md). Based on `feat/brightness` (PR 6), which it touches 
 `render.rs`, `config.rs`, the daemon's strip paint path and the GUI's dial editor. No
 other PR is needed first.
 
+**Before handing this to the local model** (from the 2026-10-16 review; do these when
+rewriting the plan after the previous feature lands, then delete this list):
+
+- [ ] Settle every Open decision and write it as "Decided: …".
+- [ ] Split into tasks of ~150–300 lines, each ending with an exact `cargo test -p … <filter>` and what it should show.
+- [ ] Refer to symbols (function names, grep anchors), not line numbers.
+- [ ] Spell out the layer split. Today `Renderer::background(face, style)` resolves dial colour → style → theme in one step. Layer 1 = `self.background(None, style)`. Layer 3 = `face.background.and_then(Rgb::parse)`, drawn only when it's `Some`. Write `panel_backdrop`'s full body as code, or the model paints the dial colour over the strip image.
+- [ ] Add a step 0: capture golden pixels (or snapshot PNGs) for `$X1`, `$B1` and an empty slot with the *old* code, and commit them before the signature change. The "no-image pixels unchanged" test has nothing to compare against otherwise.
+- [ ] `load_cover` for SVG: give the signature and the scale `max(w/sw, h/sh)`, then centre-crop. `load_svg` fits the longer side, which is the opposite.
+- [ ] Define `tone` exactly: mean RGB of the composited opaque backdrop, alpha ignored.
+- [ ] Name the cache-test hook: `#[cfg(test)] pub decodes: Cell<u32>` on `Renderer`.
+- [ ] GUI: give code for the right-click (`set_button(gdk::BUTTON_SECONDARY)`) and say which widget handle the popover row keeps to update its subtitle. Drop the `import_image` rename.
+- [ ] Split: (a) core render steps 1–3, (b) daemon, (c) GUI, (d) docs.
+
 **Outcome:** the Stream Deck + touch strip can show one 800 × 100 background image across
 the whole strip, and each dial panel can have its own 200 × 100 image, which wins over
 the strip image for that panel. Both sit under the existing `$X1`/`$B1` layouts, so

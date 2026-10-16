@@ -4,6 +4,23 @@ Part of [PLAN.md](PLAN.md). Base: `feat/live-keys` (PR 9). Uses the **state watc
 (PR 8, `watch.rs`) for stream levels and the **Hyprland event listener** (PR 9, `hypr.rs`)
 for focus. Owns the **audio streams** building block, which PR 14 (media dial) reuses.
 
+**Before handing this to the local model** (from the 2026-10-16 review; do these when
+rewriting the plan after the previous feature lands, then delete this list):
+
+- [ ] Rewrite against the code as merged (upstream's named pages: `Option<&str>` / `Config::key(page, index)` / `Nav`), not `ba0eced`'s `page: u8`.
+- [ ] Replace every "assumption about PR N" with that PR's real, merged signatures, copied in full.
+- [ ] Settle every Open decision and write it as "Decided: …".
+- [ ] Split into tasks of ~150–300 lines, each ending with an exact `cargo test -p … <filter>` and what it should show.
+- [ ] Refer to symbols (function names, grep anchors), not line numbers.
+- [ ] Use PR 9's real `HyprEvent::ActiveWindow` (it carries a struct with `address`, not `{ class, title, pid }`) and its `hypr_state.window`; don't add a second `Deck.active_window`. Use `watched_probes`' real signature and PR 8's `Deck.values`.
+- [ ] PR 8's watcher reads each probe separately. Say exactly how one `audio::streams()` read per tick serves every `Probe::App` (e.g. a `read_group` hook, or a special case in the loop).
+- [ ] The optimistic bar: use PR 8's `Settle::Expect`, or a stale poll overwrites the guess.
+- [ ] `spawn_seq` takes commands that are already built, so "on the helper thread" doesn't exist. `run_app_volume` reads `pactl` first, so it needs its own `thread::spawn`. In the daemon, pass the stream ids from the cached level instead of re-reading.
+- [ ] List every `match` on `LevelSource` that `App` breaks (`DialConfig::volume_device`, `dial_status`, …; grep for it).
+- [ ] Name the module and parameter types for `app_panel`, and the fallback when `object.id` is missing from `pactl` JSON.
+- [ ] Capture real `pactl -f json list sink-inputs` / `wpctl` output on the machine first and add it as fixtures.
+- [ ] Split: (a) core streams + a chosen-app key action, (b) chosen-app panel through the watcher, (c) focused mode, (d) GUI picker and presets.
+
 **Outcome:** a new `app_volume` action that changes or mutes the volume of one app's
 audio streams. It has two modes. **Chosen app** controls one app you pick (e.g. Spotify).
 **Focused app** controls whichever app has the focused Hyprland window, and keeps
@@ -104,7 +121,9 @@ change = 5
 # turn_left: change = -5; press: mute = true
 ```
 
-- `KINDS` gains "App volume" at the next free index (**9**: PRs 7–9 add no kinds; `KINDS` only grows at the end).
+- `KINDS` gains "App volume" at the next free index (**11**, after the rebase: Open page 6,
+  Go back 7, Volume 8, Page step 9, Brightness 10; PRs 7–9 add no kinds; `KINDS` only grows
+  at the end). `KINDS` is a fixed-size array (`[&str; N]`); grow `N` and give the final array.
   `empty_of_kind` → `AppVolume { app: "", focused: true, change: 5, mute: false }`. Focused
   is the default because it works without choosing anything.
 - `summary()`: `Spotify volume +5%`, `Toggle mute (Spotify)`, `Focused app volume −5%`,

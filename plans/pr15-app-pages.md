@@ -4,6 +4,21 @@ Part of [PLAN.md](PLAN.md). Base: `feat/media-dial` (PR 14). Needs the **Hyprlan
 event listener** from PR 9 (`hypr.rs`, `HyprEvent::ActiveWindow`) and the folder stack
 from PR 13. It works without PR 11 (ctl), but treats a ctl `page` the same as a page key.
 
+**Before handing this to the local model** (from the 2026-10-16 review; do these when
+rewriting the plan after the previous feature lands, then delete this list):
+
+- [ ] Rewrite against the code as merged (upstream's named pages: `Option<&str>` / `Config::key(page, index)` / `Nav`), not `ba0eced`'s `page: u8`.
+- [ ] Replace every "assumption about PR N" with that PR's real, merged signatures, copied in full.
+- [ ] Settle every Open decision and write it as "Decided: …".
+- [ ] Split into tasks of ~150–300 lines, each ending with an exact `cargo test -p … <filter>` and what it should show.
+- [ ] Refer to symbols (function names, grep anchors), not line numbers.
+- [ ] Upstream already has `[[page]]` (`Page { name, keys }`). Drop `PageConfig`, `index`, `name` and `page_config_mut`; add `#[serde(default, skip_serializing_if = "Vec::is_empty")] apps: Vec<String>` to upstream's `Page`. Decide whether folder pages can be linked (probably not).
+- [ ] Daemon: `Deck.page`, `do_page` and `set_page` are gone. Define the target type explicitly (e.g. `enum Target { Home, Page(String) }`), switch with `Nav::switch` (rebase step 2), and name where `manual()` hooks into the flick, `PageStep` and Open-page paths.
+- [ ] GUI: no chips after the rebase; put the setting by upstream's page dropdown.
+- [ ] `apps::pick` returns a `gio::AppInfo`; `startup_wm_class()` needs `downcast_ref::<gio::DesktopAppInfo>()`. Say so.
+- [ ] Copy PR 9's `HyprListener` / `HyprEvent::ActiveWindow` definitions in.
+- [ ] Redo the Folders decision and its hardware check: folders don't sit under a numbered root with `Nav`.
+
 **Outcome:** a page can follow apps. While a linked app is focused, the deck shows that
 page. When focus moves to an app that isn't linked, the deck goes back to the page it was
 on before. This is Elgato's **Smart Profiles**, with omadeck's pages in place of Elgato's
