@@ -151,8 +151,10 @@ pub fn build_key(app: &Rc<App>, i: u8) -> gtk::Widget {
         let bg = r.background(Some(&face), &cfg.style);
         (bg, r.label_color(Some(&face), &cfg.style, bg))
     };
-    look.add(&color_row(app, "Background", bg, key.background.is_some(), move |a, c| a.edit(i, |k| k.background = c)));
-    look.add(&color_row(app, "Label colour", fg, key.label_color.is_some(), move |a, c| {
+    look.add(&color_row(app, "Background", bg, key.background.is_some(), None, move |a, c| {
+        a.edit(i, |k| k.background = c)
+    }));
+    look.add(&color_row(app, "Label colour", fg, key.label_color.is_some(), None, move |a, c| {
         a.edit(i, |k| k.label_color = c)
     }));
     page.add(&look);
@@ -280,10 +282,28 @@ pub fn build_dial(app: &Rc<App>, i: u8) -> gtk::Widget {
         let bg = r.background(Some(&face), &cfg.style);
         (bg, r.label_color(Some(&face), &cfg.style, bg))
     };
-    look.add(&color_row(app, "Background", bg, dial.background.is_some(), move |a, c| {
-        a.edit_dial(i, |d| d.background = c)
-    }));
-    look.add(&color_row(app, "Label colour", fg, dial.label_color.is_some(), move |a, c| {
+    look.add(&color_row(
+        app,
+        "Background",
+        bg,
+        dial.background.is_some(),
+        dial.background_image.is_some().then_some("Under the image"),
+        move |a, c| a.edit_dial(i, |d| d.background = c),
+    ));
+    look.add(&image_row(
+        app,
+        "Background image",
+        "200 × 100; fills the panel and covers the strip image",
+        dial.background_image.as_deref(),
+        dial.background_image.as_deref().and_then(|p| omadeck_core::render::load_cover(&paths::resolve(p), 80, 40)),
+        move |_| Target::Dial(i),
+        move |a, t, v| {
+            if let Target::Dial(j) = t {
+                a.edit_dial(j, |d| d.background_image = v);
+            }
+        },
+    ));
+    look.add(&color_row(app, "Label colour", fg, dial.label_color.is_some(), None, move |a, c| {
         a.edit_dial(i, |d| d.label_color = c)
     }));
     page.add(&look);
@@ -871,61 +891,65 @@ fn site_name(host: &str) -> String {
 
 /// The icon row, shared by the key and dial editors; edits through `set_icon`, which
 /// takes the target captured for the async pickers, so a pick lands where it started.
-fn icon_row(
+/// An image picker row (key icons, dial and strip backgrounds). `set` gets the target
+/// captured for the async picker, so a pick lands where it started.
+pub(crate) fn image_row(
     app: &Rc<App>,
-    icon: Option<&str>,
+    title: &str,
+    hint: &str,
+    current: Option<&str>,
+    preview_img: Option<omadeck_core::render::RgbaImage>,
     target: impl Fn(&Rc<App>) -> Target + Clone + 'static,
-    set_icon: impl Fn(&Rc<App>, Target, Option<String>) + Clone + 'static,
+    set: impl Fn(&Rc<App>, Target, Option<String>) + Clone + 'static,
 ) -> adw::ActionRow {
-    let subtitle = icon
+    let subtitle = current
         .map(|p| paths::resolve(p).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default())
         .unwrap_or_else(|| "None".into());
-    let row = adw::ActionRow::builder().title("Icon").subtitle(subtitle).use_markup(false).build();
+    let row = adw::ActionRow::builder().title(title).subtitle(subtitle).use_markup(false).build();
 
     let preview = gtk::Image::builder().pixel_size(40).css_classes(["icon-preview"]).build();
-    if let Some(img) = icon.and_then(|p| omadeck_core::render::load_icon(&paths::resolve(p), 80)) {
-        preview.set_paintable(Some(&media::texture(img)));
-    } else {
-        preview.set_icon_name(Some("image-x-generic-symbolic"));
+    match preview_img {
+        Some(img) => preview.set_paintable(Some(&media::texture(img))),
+        None => preview.set_icon_name(Some("image-x-generic-symbolic")),
     }
     row.add_prefix(&preview);
 
-    if icon.is_some() {
+    if current.is_some() {
         let clear = gtk::Button::builder()
             .icon_name("edit-clear-symbolic")
-            .tooltip_text("Remove icon")
+            .tooltip_text("Remove image")
             .valign(gtk::Align::Center)
             .css_classes(["flat"])
             .build();
         clear.connect_clicked({
             let a = app.clone();
             let target = target.clone();
-            let set_icon = set_icon.clone();
+            let set = set.clone();
             move |_| {
                 let at = target(&a);
-                set_icon(&a, at, None);
+                set(&a, at, None);
                 a.rebuild_editor();
             }
         });
         row.add_suffix(&clear);
     }
 
-    let choose = gtk::Button::builder().label("Choose…").valign(gtk::Align::Center).build();
+    let choose = gtk::Button::builder().label("Choose…").tooltip_text(hint).valign(gtk::Align::Center).build();
     choose.connect_clicked({
         let a = app.clone();
         let target = target.clone();
-        let set_icon = set_icon.clone();
+        let set = set.clone();
         move |_| {
             let a2 = a.clone();
-            let set_icon = set_icon.clone();
+            let set = set.clone();
             let at = target(&a2);
-            let dialog = file_dialog("Choose an icon", Some(("Images", "image/*")));
+            let dialog = file_dialog("Choose an image", Some(("Images", "image/*")));
             glib::spawn_future_local(async move {
                 let Ok(file) = dialog.open_future(Some(&a2.window)).await else { return };
                 let Some(path) = file.path() else { return };
                 match media::import_icon(&path) {
                     Ok(rel) => {
-                        set_icon(&a2, at, Some(rel));
+                        set(&a2, at, Some(rel));
                         a2.rebuild_editor();
                     }
                     Err(e) => a2.toast(&format!("{e:#}")),
@@ -935,6 +959,17 @@ fn icon_row(
     });
     row.add_suffix(&choose);
     row
+}
+
+/// The key editor's icon row: an `image_row` with the icon's square preview.
+fn icon_row(
+    app: &Rc<App>,
+    icon: Option<&str>,
+    target: impl Fn(&Rc<App>) -> Target + Clone + 'static,
+    set_icon: impl Fn(&Rc<App>, Target, Option<String>) + Clone + 'static,
+) -> adw::ActionRow {
+    let preview = icon.and_then(|p| omadeck_core::render::load_icon(&paths::resolve(p), 80));
+    image_row(app, "Icon", "", icon, preview, target, set_icon)
 }
 
 /// The Nerd Font glyph row, shared by the key and dial editors; edits through `set_glyph`.
@@ -975,9 +1010,11 @@ fn color_row(
     title: &str,
     current: Rgb,
     overridden: bool,
+    extra_subtitle: Option<&str>,
     set: impl Fn(&Rc<App>, Option<String>) + Clone + 'static,
 ) -> adw::ActionRow {
-    let row = adw::ActionRow::builder().title(title).subtitle(if overridden { "Custom" } else { "From theme" }).build();
+    let subtitle = extra_subtitle.unwrap_or(if overridden { "Custom" } else { "From theme" });
+    let row = adw::ActionRow::builder().title(title).subtitle(subtitle).build();
     if overridden {
         let reset = gtk::Button::builder()
             .icon_name("edit-undo-symbolic")
@@ -1013,7 +1050,7 @@ fn color_row(
     row
 }
 
-fn file_dialog(title: &str, filter: Option<(&str, &str)>) -> gtk::FileDialog {
+pub(crate) fn file_dialog(title: &str, filter: Option<(&str, &str)>) -> gtk::FileDialog {
     let dialog = gtk::FileDialog::builder().title(title).modal(true).build();
     if let Some((name, mime)) = filter {
         let f = gtk::FileFilter::new();
