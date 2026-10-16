@@ -303,9 +303,9 @@ fn run() -> Result<()> {
     let mut hid = device::new_hidapi().context("initialising hidapi")?;
     let audio = start_audio_worker();
     let (brightness_tx, brightness_rx) = mpsc::channel::<u8>();
-    std::thread::Builder::new()
+    let saver = std::thread::Builder::new()
         .name("brightness".into())
-        .spawn(move || brightness_saver(brightness_rx))
+        .spawn(move || brightness_saver(brightness_rx, save_brightness))
         .expect("spawning the brightness saver");
     let mut deck: Option<Deck> = None;
     let mut last_scan: Option<Instant> = None;
@@ -346,8 +346,12 @@ fn run() -> Result<()> {
         if reload_at.is_some_and(|t| Instant::now() >= t) {
             reload_at = None;
             // A typo while hand-editing shouldn't wipe the deck: keep the last good config.
+            let mut hand_edit = None;
             match Config::load() {
-                Ok(new_cfg) => cfg = new_cfg,
+                Ok(new_cfg) => {
+                    hand_edit = hand_edited_brightness(&cfg, &new_cfg);
+                    cfg = new_cfg;
+                }
                 Err(e) => log::error!("{e:#}; keeping the previous config"),
             }
             renderer.update_style(&cfg.style);
@@ -370,6 +374,11 @@ fn run() -> Result<()> {
                 d.device_levels.retain(|dev, _| watched.contains(dev));
                 let _ = audio.cmd.send(AudioCmd::Watch(watched));
             }
+            // A hand edit of `brightness` in config.toml wins over the state file, like
+            // any other hot-reloaded field (it is also saved there).
+            if let Some(v) = hand_edit {
+                set_brightness(deck.as_mut(), &brightness_tx, v);
+            }
             if let Some(d) = &deck
                 && let Err(e) = paint_all(d, &cfg, nav.current(), &mut renderer)
             {
@@ -387,10 +396,8 @@ fn run() -> Result<()> {
                 Command::SetBrightness { value } => bright = Some(value),
             }
         }
-        if let Some(v) = bright
-            && let Some(d) = &mut deck
-        {
-            do_brightness(d, &brightness_tx, Some(v), 0);
+        if let Some(v) = bright {
+            set_brightness(deck.as_mut(), &brightness_tx, v);
         }
         if let Some(page) = show {
             wanted_page = None;
@@ -636,6 +643,9 @@ fn run() -> Result<()> {
         let _ = d.dev.reset();
     }
     hub.shutdown();
+    // Let the saver write a brightness that is still settling.
+    drop(brightness_tx);
+    let _ = saver.join();
     Ok(())
 }
 
@@ -736,6 +746,23 @@ fn dispatch(
 
 /// Apply a brightness action: set the panel, remember it in the state file (so it
 /// survives a restart, as in the Elgato app), and repaint the brightness dials' panels.
+/// The new start brightness when `new` changes the config's `brightness` (a hand edit,
+/// or the configurator with no daemon), else `None`.
+fn hand_edited_brightness(old: &Config, new: &Config) -> Option<u8> {
+    (new.brightness != old.brightness).then_some(new.brightness)
+}
+
+/// Set the brightness from outside the deck's own input (the configurator's slider, a
+/// config edit). With no deck it is only saved, and the next connect starts from it.
+fn set_brightness(deck: Option<&mut Deck>, saver: &mpsc::Sender<u8>, value: u8) {
+    match deck {
+        Some(d) => do_brightness(d, saver, Some(value), 0),
+        None => {
+            let _ = saver.send(value.min(100));
+        }
+    }
+}
+
 fn do_brightness(d: &mut Deck, brightness: &mpsc::Sender<u8>, set: Option<u8>, change: i32) {
     let next = apply_brightness(d.brightness, set, change);
     if next == d.brightness {
@@ -788,7 +815,7 @@ fn after_volume(d: &mut Deck, audio: &AudioWorker, act: &Action, steps: u8) {
 /// Write the brightness to the state file, debounced: one write per burst of turns,
 /// off the deck loop, so a hard spin doesn't serialize the file on every detent. The
 /// user's config.toml is never touched.
-fn brightness_saver(rx: mpsc::Receiver<u8>) {
+fn brightness_saver(rx: mpsc::Receiver<u8>, save: impl Fn(u8)) {
     let settle = Duration::from_millis(200);
     let mut pending = rx.recv().ok();
     while let Some(first) = pending {
@@ -797,11 +824,15 @@ fn brightness_saver(rx: mpsc::Receiver<u8>) {
         while let Ok(next) = rx.recv_timeout(settle) {
             v = next;
         }
-        if let Err(e) = (State { brightness: Some(v) }).save() {
-            log::warn!("saving brightness: {e:#}");
-        }
+        save(v);
         // Blocks for the next turn; ends when the daemon drops the sender.
         pending = rx.recv().ok();
+    }
+}
+
+fn save_brightness(v: u8) {
+    if let Err(e) = (State { brightness: Some(v) }).save() {
+        log::warn!("saving brightness: {e:#}");
     }
 }
 
@@ -909,6 +940,8 @@ fn snapshot(out: &Path, page: Option<&str>) -> Result<()> {
     let cfg = Config::load()?;
     let keys = cfg.page(page).with_context(|| format!("no page named {}", page.unwrap_or_default()))?;
     let info = device::detect().into_iter().next().unwrap_or_else(DeckInfo::fallback);
+    // The deck runs on the state file's brightness once it has run, as `connect` does.
+    let brightness = State::load().brightness.unwrap_or(cfg.brightness);
     let mut renderer = Renderer::new(&cfg.style);
     let size = 144u32;
     let gap = 18u32;
@@ -927,14 +960,14 @@ fn snapshot(out: &Path, page: Option<&str>) -> Result<()> {
     }
     let mut y = grid_h + gap;
     if let Some((sw, sh)) = info.strip {
-        // Brightness dials show the config's value (it is static); volume dials show a
-        // dash, as their level is live.
+        // Brightness dials show the live start value; volume dials show a dash, as their
+        // level is read by the running daemon.
         let status: Vec<DialStatus> = (0..info.dials as usize)
             .map(|i| {
                 let level = matches!(cfg.dial(i as u8).and_then(|d| d.level_source()), Some(LevelSource::Brightness))
                     .then_some(Level {
-                        value: cfg.brightness as f32 / 100.0,
-                        text: format!("{}%", cfg.brightness),
+                        value: brightness as f32 / 100.0,
+                        text: format!("{}%", brightness),
                         muted: false,
                     });
                 DialStatus { pressed: false, level }
@@ -968,5 +1001,34 @@ fn draw_circle(img: &mut image::RgbaImage, cx: u32, cy: u32, r: u32, c: image::R
                 img.put_pixel(x, y, c);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Arc;
+
+    #[test]
+    fn saver_writes_the_last_value_when_dropped() {
+        let saved = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let (tx, rx) = mpsc::channel::<u8>();
+        let out = saved.clone();
+        let saver = std::thread::spawn(move || brightness_saver(rx, move |v| out.lock().unwrap().push(v)));
+        for v in [30, 40, 50] {
+            tx.send(v).unwrap();
+        }
+        // Shutdown: drop the sender and join, as `run` does; the burst is saved once.
+        drop(tx);
+        saver.join().unwrap();
+        assert_eq!(*saved.lock().unwrap(), vec![50]);
+    }
+
+    #[test]
+    fn hand_edit_is_a_changed_brightness() {
+        let old = Config { brightness: 70, ..Default::default() };
+        let new = Config { brightness: 30, ..Default::default() };
+        assert_eq!(hand_edited_brightness(&old, &new), Some(30));
+        assert_eq!(hand_edited_brightness(&old, &old), None);
     }
 }
