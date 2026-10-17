@@ -767,7 +767,8 @@ Assumptions and changes from the plan:
 
 ## `fix/review-3` (BUGS.md 73–104)
 
-On top of `feat/strip-long-press`; `daily` is this branch (`746e326`). It fixes every
+On top of `feat/strip-long-press` (`746e326`). `daily` is now `pr/16-strip-long-press`
+(`e9ad538`): the same code, with these fixes folded into the PRs. It fixes every
 review 3 bug, adds `scripts/capture-fixtures.sh` (`33a7678`) and a socket-free test
 `Daemon` (`abad8d7`). The fix commits are listed in BUGS.md.
 

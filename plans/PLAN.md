@@ -54,7 +54,7 @@ stub `pkg-config`, see [review-2026-10-17c.md](review-2026-10-17c.md)) but was n
 linked or run, and nothing was run on the deck. **Review 3**
 ([review-2026-10-17c.md](review-2026-10-17c.md), BUGS.md 73–104): one high (73), four
 medium (74–77) and CI red from clippy (78); all 32 are fixed on `fix/review-3` (on top of
-`feat/strip-long-press`; `daily` is now that branch, `746e326`), most with regression
+`feat/strip-long-press`; `daily` was that branch, `746e326`, until the series was cleaned), most with regression
 tests, including a socket-free test `Daemon`. `scripts/capture-fixtures.sh` collects every
 machine capture into test fixtures. On the machine: run the capture script first, then
 VERIFY.md from the top. Next: work through [VERIFY.md](VERIFY.md) on the Omarchy
@@ -309,7 +309,7 @@ Useful pages (check they're still current when you use them):
 |--------|------|---------|
 | `master` | `upstream/master` | Pure mirror. Never commit here. |
 | `feat/*` | `upstream/master`, or the feature it depends on | One branch per PR. Small and self-contained. |
-| `daily` | `upstream/master` + every `feat/*` merged in | What I build and run. Today the chain is linear, so it is `fix/review-3` (`746e326`). |
+| `daily` | `upstream/master` + every `feat/*` merged in | What I build and run. Today it is the PR series' tip, `pr/16-strip-long-press` (`e9ad538`, force-pushed 2026-10-17; before that `fix/review-3`, `746e326`). |
 | `fix/bugs` | `feat/strip-backgrounds` | The 2026-10-17 bug pass (all 21 bugs closed). |
 | `fix/review` | `fix/bugs` | The 2026-10-17 review fixes, BUGS.md 22–43 (`87be396`). |
 | `pr/01-*` … `pr/16-*` | each on the previous | **The PR series (2026-10-17).** The `feat/*` branches with every fix folded in: each fix is its own commit at the end of the feature it fixes (`Folded from <sha>` in the message). `pr/07b-groundwork` is groundwork as its own PR, before PR 8. `pr/16-strip-long-press` has exactly `fix/review-3`'s tree; `pr/07-…` equals `fix/review`'s and `pr/08-…` equals `fix/review-2`'s. Every tip passes fmt, clippy (GUI type-checked) and the core and daemon tests. The old `feat/*` and `fix/*` branches stay as they were, so the SHAs in these notes still resolve. |
