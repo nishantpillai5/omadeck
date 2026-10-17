@@ -51,7 +51,7 @@ Written in Rust: a tiny background daemon drives the hardware, and a GTK4/libadw
   - Labels are rendered in your Omarchy font.
 - **Pages follow apps,** like Elgato's Smart Profiles. List window classes in a page's `apps` (or use **Follow apps** in the configurator's page bar), and the deck shows that page while one of those apps is focused, then goes back to where it was, open folder included, when you leave it. A page you pick by hand while the app is focused stays.
 - **Stream Deck + dials.** Each dial runs any of the action types on turn left, turn right and press — a workspace dial, a volume dial, a launch-on-press dial.
-- **Stream Deck + touch strip.** The strip shows each dial's label and icon in its own panel, in the theme's colours, following the same panel layouts as Elgato's own app. A volume dial shows its level and a groove bar in Elgato's `Indicator` layout, kept in sync when the volume changes elsewhere, and a brightness dial shows the panel's brightness. Tapping a panel presses its dial; the pressed panel highlights briefly. A flick pages through, like the Elgato app. The strip and each dial panel can have a background image, like the Elgato app.
+- **Stream Deck + touch strip.** The strip shows each dial's label and icon in its own panel, in the theme's colours, following the same panel layouts as Elgato's own app. A volume dial shows its level and a groove bar in Elgato's `Indicator` layout, kept in sync when the volume changes elsewhere, and a brightness dial shows the panel's brightness. Tapping a panel presses its dial; the pressed panel highlights briefly. Hold a panel on the touch strip for a second action (`long_press` on a `[[dial]]`, Elgato's "long touch"); unset, a hold does what a tap does. A flick pages through, like the Elgato app. The strip and each dial panel can have a background image, like the Elgato app.
 - **Theme aware.** Key backgrounds, labels, glyphs and the press highlight come from the active Omarchy theme. Run `omarchy theme set …` and the deck re-renders instantly.
 - **Live editing.** Changes land on the hardware as you type, and the deck shows whichever page you're editing. Drag keys to rearrange them. Press a physical key to jump to it in the editor.
 - **Robust.** Reconnects after unplug/replug, and a typo in a hand-edited config keeps the last good layout on the deck. Uses about 9 MB of RAM and 0% CPU at idle.
@@ -109,7 +109,7 @@ omadeck speaks to decks through the [`elgato-streamdeck`](https://crates.io/crat
 | Stream Deck Mini / Mini MK.2, 6 keys | Expected to work |
 | Stream Deck XL / XL V2, 32 keys | Expected to work |
 | Stream Deck Neo, 8 keys | Keys expected to work; info screen and touch keys unsupported |
-| Stream Deck +, 8 keys | Keys, dials (turn left/right, press) and the touch strip (one panel per dial; tap = press; a horizontal flick changes page) |
+| Stream Deck +, 8 keys | Keys, dials (turn left/right, press) and the touch strip (one panel per dial; tap = press; hold = the dial's long press, else press; a horizontal flick changes page) |
 | Stream Deck Pedal | Not supported (no display) |
 
 Got one of the untested models? Please [file a hardware report](https://github.com/thewizster/omadeck/issues/new?template=hardware_report.yml), whether it works or not.
@@ -248,6 +248,15 @@ dispatch = "workspace e+1"
 [dial.press]
 type = "app"
 command = "walker"
+```
+
+A fourth, `long_press`, runs when you press and hold the dial's panel on the touch strip
+(Elgato's "long touch"). Unset, a hold does what a tap does: it runs `press`.
+
+```toml
+[dial.long_press]
+type = "app"
+command = "omarchy-menu"
 ```
 
 A volume dial: turn to change the output volume, press to mute. Its panel on the
