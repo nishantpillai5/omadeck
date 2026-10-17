@@ -23,6 +23,7 @@ use crate::hypr::{self, HyprEvent};
 use crate::hypr_worker::{HyprJob, HyprWorker};
 use crate::nav::Nav;
 use crate::saver::StateSaver;
+use crate::sequence::{RunOf, Sequencer};
 use crate::watch::{WatchCmd, Watcher};
 
 /// The longest a pass waits for the deck; also the latency of hub commands and values.
@@ -172,6 +173,8 @@ pub enum Source {
     /// A control command run as itself (`omadeckd page`, `brightness`, Try it now): its
     /// reply carries a failure, so nothing is published for it.
     Ctl,
+    /// A multi action's step: `run_due_steps` reports its failure against the run.
+    Step,
 }
 
 impl fmt::Display for Source {
@@ -181,6 +184,7 @@ impl fmt::Display for Source {
             Source::Turn(i) | Source::Press(i) | Source::Tap(i) => write!(f, "dial {i}"),
             Source::Flick => write!(f, "strip flick"),
             Source::Ctl => write!(f, "omadeckd"),
+            Source::Step => write!(f, "step"),
         }
     }
 }
@@ -213,6 +217,8 @@ pub struct Daemon {
     in_flight: HashMap<AudioDevice, i32>,
     pub reload_at: Option<Instant>,
     pub repaint_at: Option<Instant>,
+    /// The multi actions running, timed by the loop.
+    seq: Sequencer,
 }
 
 impl Daemon {
@@ -243,6 +249,7 @@ impl Daemon {
             in_flight: HashMap::new(),
             reload_at: None,
             repaint_at: None,
+            seq: Sequencer::default(),
         }
     }
 
@@ -397,7 +404,8 @@ impl Daemon {
                         Err(e) => Reply::error(format!("{e:#}")),
                     };
                 }
-                if self.rt.jobs.contains_key(&KeyId { page: shown.clone(), index }) {
+                let id = KeyId { page: shown.clone(), index };
+                if self.rt.jobs.contains_key(&id) || self.seq.is_running(&RunOf::Key(id)) {
                     return Reply::error(format!("key {index} is still running"));
                 }
                 let res = self.key_down(index, false);
@@ -639,10 +647,10 @@ impl Daemon {
     }
 
     /// The next moment something is due: a tap flash ending, the post-connect repaint, a
-    /// debounced reload.
+    /// debounced reload, a multi action's next step.
     pub fn next_deadline(&self) -> Option<Instant> {
         let flash = self.deck.as_ref().and_then(Deck::flash_deadline);
-        [flash, self.repaint_at, self.reload_at].into_iter().flatten().min()
+        [flash, self.repaint_at, self.reload_at, self.seq.next_due()].into_iter().flatten().min()
     }
 
     /// One pass with a deck: read and handle its input until it's quiet, then paint what
@@ -817,6 +825,11 @@ impl Daemon {
         }
         let before = key_state(&self.cfg, &self.rt, page.as_deref(), i, false).state;
         let act = k.action_for(before == Toggle::On).clone();
+        // Like a running job: an ignored press never flips a toggle.
+        if matches!(act, Action::Multi { .. }) && self.seq.is_running(&RunOf::Key(id.clone())) {
+            log::info!("key {i}: multi action still running, press ignored");
+            return Ok(());
+        }
         if k.busy_while_running && act.is_trackable() {
             match action::run_tracked(&act) {
                 Ok(job) => {
@@ -919,6 +932,12 @@ impl Daemon {
     /// and on failure report it against `src` (nothing is published for `Ctl`: its reply
     /// carries it).
     pub fn try_input(&mut self, src: Source, act: &Action, steps: u8) -> Result<()> {
+        match act {
+            // Only meaningful inside a multi, where the sequencer times it.
+            Action::Delay { .. } => return Ok(()),
+            Action::Multi { steps } => return self.start_multi(src, steps),
+            _ => {}
+        }
         if steps > 1 {
             log::info!("{src} x{steps}: {}", act.summary());
         } else {
@@ -951,6 +970,61 @@ impl Daemon {
             // Only logged: the reply carries it (or, for a Hyprland dispatch that failed
             // later on the worker, the reply has already gone).
             Source::Flick | Source::Ctl => {}
+            // A step's failure is reported against its run by `run_due_steps`; a Hyprland
+            // step that fails later on the worker is only logged.
+            Source::Step => {}
+        }
+    }
+
+    /// The run a multi started by `src` belongs to: the key (on the shown page), the dial
+    /// (a press and a tap are one), or ctl. `None` for a flick and for a step: a step
+    /// can't start a multi.
+    fn run_of(&self, src: Source) -> Option<RunOf> {
+        match src {
+            Source::Key(index) => Some(RunOf::Key(KeyId { page: self.nav.current().map(str::to_string), index })),
+            Source::Turn(i) => Some(RunOf::Turn(i)),
+            Source::Press(i) | Source::Tap(i) => Some(RunOf::Press(i)),
+            Source::Ctl => Some(RunOf::Ctl),
+            Source::Flick | Source::Step => None,
+        }
+    }
+
+    /// Start a multi for `src` and run its leading steps now (so a page step shows at
+    /// once). Ignored while that input's last run is still going (an error for omadeckd,
+    /// which is answered). A turn runs
+    /// it once per turn event, whatever its steps.
+    fn start_multi(&mut self, src: Source, steps: &[Action]) -> Result<()> {
+        let Some(of) = self.run_of(src) else { anyhow::bail!("multi-actions can't be nested") };
+        log::info!("{src}: {}", Action::Multi { steps: steps.to_vec() }.summary());
+        let now = Instant::now();
+        if !self.seq.start(of.clone(), steps.to_vec(), now) {
+            log::info!("{of}: multi action still running; ignored");
+            if of == RunOf::Ctl {
+                anyhow::bail!("a multi action from omadeckd is still running");
+            }
+            return Ok(());
+        }
+        self.run_due_steps(now);
+        Ok(())
+    }
+
+    /// Run the steps whose time has come. `main.rs`'s `run()` calls it on every
+    /// iteration, right after `handle_commands`, deck or not. A failed step is reported
+    /// against the key or dial whose multi it is, with its number; the rest still run.
+    pub fn run_due_steps(&mut self, now: Instant) {
+        for (of, n, step) in self.seq.due(now) {
+            log::info!("{of} step {}: {}", n + 1, step.summary());
+            if let Err(e) = self.try_input(Source::Step, &step, 1) {
+                let message = format!("step {}: {e:#}", n + 1);
+                log::warn!("{of}: {message}");
+                match of {
+                    RunOf::Key(KeyId { page, index }) => self.hub.publish(Event::ActionFailed { index, page, message }),
+                    RunOf::Turn(index) | RunOf::Press(index) => {
+                        self.hub.publish(Event::DialActionFailed { index, message })
+                    }
+                    RunOf::Ctl => {}
+                }
+            }
         }
     }
 
@@ -1101,6 +1175,9 @@ impl Daemon {
     /// Hand the deck back to its logo, close the socket, write any pending state.
     pub fn shutdown(self) {
         log::info!("shutting down");
+        if !self.seq.is_empty() {
+            log::info!("dropping {} running multi actions", self.seq.len());
+        }
         if let Some(d) = self.deck {
             let _ = d.dev.reset();
         }
@@ -1398,6 +1475,13 @@ change = 5
         assert_eq!(Source::Turn(1).to_string(), "dial 1");
         assert_eq!(Source::Flick.to_string(), "strip flick");
         assert_eq!(Source::Ctl.to_string(), "omadeckd");
+    }
+
+    #[test]
+    fn step_and_ctl_sources_name_themselves() {
+        assert_eq!(Source::Step.to_string(), "step");
+        assert_eq!(Source::Ctl.to_string(), "omadeckd");
+        assert_eq!(Source::Tap(2).to_string(), "dial 2");
     }
 
     #[test]
