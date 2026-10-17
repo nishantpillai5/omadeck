@@ -7,6 +7,12 @@ All notable changes to omadeck are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- Pages can follow apps, like Elgato's Smart Profiles: `apps = ["spotify"]` on a
+  `[[page]]` (Hyprland window classes, `*` matches anything) shows that page while one of
+  those apps is focused, and goes back to where the deck was, open folder included, when
+  you move to an app that isn't linked. A page picked by hand meanwhile stays. The
+  configurator's page bar has a **Follow apps** dialog: add an installed app, an open
+  window or a class.
 - Media: a `media` action plays or pauses, skips to the next or previous track, stops,
   or seeks by a number of seconds. A media dial scrubs on a turn and plays or pauses on a
   press; its strip panel shows the track, artist, cover (local files) and a bar that

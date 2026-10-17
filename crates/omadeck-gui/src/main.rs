@@ -4,11 +4,14 @@ mod app;
 mod apps;
 mod editor;
 mod media;
+mod pages;
 mod starter;
 
 use adw::prelude::*;
 
-pub const APP_ID: &str = "dev.omadeck.Omadeck";
+/// The configurator's application id, which is also its window class: the daemon ignores
+/// focus on it.
+pub const APP_ID: &str = omadeck_core::follow::CONFIGURATOR_CLASS;
 
 fn main() -> gtk::glib::ExitCode {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).format_timestamp(None).init();
