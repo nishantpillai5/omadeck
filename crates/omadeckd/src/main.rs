@@ -3,6 +3,7 @@
 
 mod daemon;
 mod deck;
+mod follow;
 mod hub;
 mod hypr;
 mod hypr_worker;
