@@ -238,13 +238,42 @@ pub fn media_show(dial: Option<&DialConfig>, values: &Values) -> Option<MediaSho
     }
 }
 
-/// The player a media action should go to: the instance its panel or key shows (the
-/// last read of `Probe::Player(wanted)`), else `wanted` itself. `None`: no player set and
-/// none known, so the command goes untargeted.
-pub fn media_target(values: &Values, wanted: Option<&str>) -> Option<String> {
-    match values.probes.get(&Probe::Player(wanted.map(str::to_string))) {
-        Some(Value::Player(Ok(Some(t)))) if !t.player.is_empty() => Some(t.player.clone()),
-        _ => wanted.map(str::to_string),
+/// The player a media action names: its own `player`, trimmed, when not blank; else, for
+/// an action on a dial, the player the dial's panel follows (`DialConfig::media_player`),
+/// so the panel and the dial's actions follow the same player (BUGS.md 94). `None`:
+/// whatever plays.
+pub fn media_wanted<'a>(player: Option<&'a str>, dial: Option<&'a DialConfig>) -> Option<&'a str> {
+    player.map(str::trim).filter(|p| !p.is_empty()).or_else(|| dial.and_then(DialConfig::media_player))
+}
+
+/// Where a media action goes, from [`media_target`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MediaSend {
+    /// Send it to this `playerctl --player` instance or name; `None`: untargeted
+    /// (Omarchy's own command, or playerctl's choice).
+    To(Option<String>),
+    /// A seek while the player probe, watched, read "nothing playing": dropped.
+    NothingToSeek,
+}
+
+/// Where a media action goes. The one targeting rule; the daemon follows it for every
+/// media action, and the offline path (no values, nothing watched) gets rule 3.
+///
+/// 1. `wanted` (from [`media_wanted`]) names the player: the action's own, or its dial's.
+/// 2. If `Probe::Player(wanted)` is in `watched` and has read a track, the action goes
+///    to the instance that read shows (the one its panel or key shows). A value of a
+///    probe no longer watched is kept for faces but never targeted: it was read on
+///    another page and may name an instance that's gone (BUGS.md 76).
+/// 3. Otherwise it goes to `wanted` as given, untargeted when `None`.
+/// 4. A seek (`seek`) is dropped only when that watched probe read "nothing playing";
+///    with nothing known it is sent per 2–3, as without the daemon (BUGS.md 75).
+pub fn media_target(values: &Values, watched: &[Probe], wanted: Option<&str>, seek: bool) -> MediaSend {
+    let probe = Probe::Player(wanted.map(str::to_string));
+    let read = if watched.contains(&probe) { values.probes.get(&probe) } else { None };
+    match read {
+        Some(Value::Player(Ok(Some(t)))) if !t.player.is_empty() => MediaSend::To(Some(t.player.clone())),
+        Some(Value::Player(Ok(None))) if seek => MediaSend::NothingToSeek,
+        _ => MediaSend::To(wanted.map(str::to_string)),
     }
 }
 
@@ -963,20 +992,63 @@ live = { source = "workspace" }
 
     #[test]
     fn media_target_prefers_shown_player() {
+        use MediaSend::*;
         let mut values = Values::default();
-        assert_eq!(media_target(&values, None), None, "nothing known: untargeted");
-        assert_eq!(media_target(&values, Some("spotify")), Some("spotify".into()));
+        let any = Probe::Player(None);
+        let spot = Probe::Player(Some("spotify".into()));
+        let watched = [any.clone(), spot.clone()];
+        assert_eq!(media_target(&values, &watched, None, false), To(None), "nothing known: untargeted");
+        assert_eq!(media_target(&values, &watched, Some("spotify"), false), To(Some("spotify".into())));
         let mut t = media_track(player::PlayStatus::Playing, 0, 0);
         t.player = "chromium.instance4821".into();
-        values.probes.insert(Probe::Player(None), Value::Player(Ok(Some(t.clone()))));
-        assert_eq!(media_target(&values, None), Some("chromium.instance4821".into()));
+        values.probes.insert(any.clone(), Value::Player(Ok(Some(t.clone()))));
+        assert_eq!(media_target(&values, &watched, None, false), To(Some("chromium.instance4821".into())));
+        assert_eq!(media_target(&values, &watched, None, true), To(Some("chromium.instance4821".into())));
         // A pinned dial reads its own probe.
-        assert_eq!(media_target(&values, Some("spotify")), Some("spotify".into()));
-        t.player = "spotify".into();
-        values.probes.insert(Probe::Player(Some("spotify".into())), Value::Player(Ok(Some(t))));
-        assert_eq!(media_target(&values, Some("spotify")), Some("spotify".into()));
+        assert_eq!(media_target(&values, &watched, Some("spotify"), false), To(Some("spotify".into())));
+        t.player = "spotify.instance2".into();
+        values.probes.insert(spot, Value::Player(Ok(Some(t))));
+        assert_eq!(media_target(&values, &watched, Some("spotify"), false), To(Some("spotify.instance2".into())));
+        values.probes.insert(any, Value::Player(Ok(None)));
+        assert_eq!(media_target(&values, &watched, None, false), To(None), "nothing playing: untargeted");
+        assert_eq!(media_target(&values, &watched, None, true), NothingToSeek);
+    }
+
+    // BUGS.md 76: a value read on another page (its probe no longer watched) is never
+    // the target.
+    #[test]
+    fn media_target_ignores_a_probe_no_longer_watched() {
+        let mut values = Values::default();
+        let mut t = media_track(player::PlayStatus::Playing, 0, 0);
+        t.player = "chromium.instance4821".into();
+        values.probes.insert(Probe::Player(None), Value::Player(Ok(Some(t))));
+        assert_eq!(media_target(&values, &[], None, false), MediaSend::To(None));
         values.probes.insert(Probe::Player(None), Value::Player(Ok(None)));
-        assert_eq!(media_target(&values, None), None, "nothing playing: untargeted");
+        assert_eq!(media_target(&values, &[], None, true), MediaSend::To(None), "and doesn't drop a seek");
+    }
+
+    // BUGS.md 75: a seek key with nothing watching the player seeks untargeted.
+    #[test]
+    fn media_seek_with_nothing_watched_is_sent_untargeted() {
+        let values = Values::default();
+        assert_eq!(media_target(&values, &[], None, true), MediaSend::To(None));
+        assert_eq!(media_target(&values, &[Probe::Player(None)], None, true), MediaSend::To(None), "not read yet");
+        assert_eq!(media_target(&values, &[], Some("mpv"), true), MediaSend::To(Some("mpv".into())));
+    }
+
+    // BUGS.md 94: a dial's action with no player follows the dial's panel.
+    #[test]
+    fn media_wanted_falls_back_to_the_dial() {
+        let dial = DialConfig {
+            turn_right: Action::Media { command: crate::MediaCommand::Next, seek: 5, player: Some("spotify".into()) },
+            press: Action::Media { command: crate::MediaCommand::PlayPause, seek: 0, player: None },
+            ..DialConfig::new(0)
+        };
+        assert_eq!(media_wanted(None, Some(&dial)), Some("spotify"));
+        assert_eq!(media_wanted(Some("  "), Some(&dial)), Some("spotify"));
+        assert_eq!(media_wanted(Some(" mpv "), Some(&dial)), Some("mpv"));
+        assert_eq!(media_wanted(None, None), None, "a key: whatever plays");
+        assert_eq!(media_wanted(Some(" mpv "), None), Some("mpv"));
     }
 
     #[test]
