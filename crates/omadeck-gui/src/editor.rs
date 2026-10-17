@@ -4,7 +4,9 @@ use std::rc::Rc;
 
 use adw::prelude::*;
 use gtk::{gdk, gio, glib};
-use omadeck_core::{Action, AudioDevice, DialConfig, Direction, HOME, KeyConfig, Rgb, action, paths};
+use omadeck_core::{
+    Action, AudioDevice, DialConfig, Direction, FaceTab, HOME, KeyConfig, LookField, Rgb, action, paths,
+};
 
 use crate::app::{ActionTarget, App, Target};
 use crate::{apps, media};
@@ -85,51 +87,107 @@ pub fn build_key(app: &Rc<App>, i: u8) -> gtk::Widget {
 
     // --- appearance -----------------------------------------------------------------------
     let look = adw::PreferencesGroup::builder().title("Appearance").build();
-
-    let label = adw::EntryRow::builder().title("Label").text(&key.label).build();
-    let a = app.clone();
-    label.connect_changed(move |e| {
-        let text = e.text().to_string();
-        a.edit(i, |k| k.label = text);
-    });
-    look.add(&label);
-
-    let show = adw::SwitchRow::builder().title("Show label on key").active(key.show_label).build();
-    let a = app.clone();
-    show.connect_active_notify(move |r| {
-        let on = r.is_active();
-        a.edit(i, |k| k.show_label = on);
-    });
-    look.add(&show);
-
-    look.add(&icon_row(
-        app,
-        key.icon.as_deref(),
-        move |a| Target::Key(a.key_ref(i)),
-        move |a, t, v| {
-            if let Target::Key(k) = t {
-                a.edit_ref(&k, |k| k.icon = v);
-            }
-        },
-    ));
-    look.add(&glyph_row(app, key.glyph.as_deref(), move |a, v| a.edit(i, |k| k.glyph = v)));
-
-    let (bg, fg) = {
-        let cfg = app.config.borrow();
-        let r = app.renderer.borrow();
-        let face = key.face();
-        let bg = r.background(Some(&face), &cfg.style);
-        (bg, r.label_color(Some(&face), &cfg.style, bg))
-    };
-    look.add(&color_row(app, "Background", bg, key.background.is_some(), None, move |a, c| {
-        a.edit(i, |k| k.background = c)
-    }));
-    look.add(&color_row(app, "Label colour", fg, key.label_color.is_some(), None, move |a, c| {
-        a.edit(i, |k| k.label_color = c)
-    }));
+    appearance_tabs(app, &look, &key);
+    appearance_rows(app, &look, i, app.face_tab.get(), &key);
     page.add(&look);
 
     page.upcast()
+}
+
+/// The linked Off | On | Busy buttons in the Appearance header. On shows for toggles
+/// (a key with an on face); Busy for slow toggles and busy-while-running keys.
+fn appearance_tabs(app: &Rc<App>, group: &adw::PreferencesGroup, key: &KeyConfig) {
+    let tabs = vec![("Off", FaceTab::Off), ("On", FaceTab::On), ("Busy", FaceTab::Busy)]
+        .into_iter()
+        .filter(|(_, tab)| match tab {
+            FaceTab::Off => true,
+            FaceTab::On => key.on.is_some(),
+            FaceTab::Busy => key.is_slow_toggle() || key.busy_while_running,
+        })
+        .collect::<Vec<_>>();
+    if tabs.len() < 2 {
+        return;
+    }
+    let current = app.face_tab.get();
+    let buttons = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+    buttons.add_css_class("linked");
+    for (label, tab) in tabs {
+        let b = gtk::ToggleButton::builder().label(label).active(tab == current).build();
+        let a = app.clone();
+        let self_btn = b.clone();
+        b.connect_toggled(move |_| {
+            if self_btn.is_active() {
+                a.set_face_tab(tab);
+            }
+        });
+        buttons.append(&b);
+    }
+    group.set_header_suffix(Some(&buttons));
+}
+
+/// The look rows for the face tab being edited, through `KeyConfig::look`/`set_look`.
+fn appearance_rows(app: &Rc<App>, group: &adw::PreferencesGroup, i: u8, tab: FaceTab, key: &KeyConfig) {
+    let while_in = |base: &str| match tab {
+        FaceTab::Off => base.to_string(),
+        FaceTab::On => format!("{base} while on"),
+        FaceTab::Busy => format!("{base} while busy"),
+    };
+    let empty_says = match tab {
+        FaceTab::On => " (empty: the key's label)",
+        FaceTab::Busy => " (empty: the command's output)",
+        FaceTab::Off => "",
+    };
+
+    let label = adw::EntryRow::builder()
+        .title(format!("Label{empty_says}"))
+        .text(key.look(tab, LookField::Label).unwrap_or_default())
+        .build();
+    let a = app.clone();
+    label.connect_changed(move |e| {
+        let text = e.text().to_string();
+        a.edit(i, |k| k.set_look(tab, LookField::Label, Some(text)));
+    });
+    group.add(&label);
+
+    if tab == FaceTab::Off {
+        let show = adw::SwitchRow::builder().title("Show label on key").active(key.show_label).build();
+        let a = app.clone();
+        show.connect_active_notify(move |r| {
+            let on = r.is_active();
+            a.edit(i, |k| k.show_label = on);
+        });
+        group.add(&show);
+    }
+
+    group.add(&icon_row(
+        app,
+        key.look(tab, LookField::Icon).as_deref(),
+        move |a| Target::Key(a.key_ref(i)),
+        move |a, t, v| {
+            if let Target::Key(k) = t {
+                a.edit_ref(&k, |k| k.set_look(tab, LookField::Icon, v));
+            }
+        },
+    ));
+    group.add(&glyph_row(app, key.look(tab, LookField::Glyph).as_deref(), move |a, v| {
+        a.edit(i, |k| k.set_look(tab, LookField::Glyph, v))
+    }));
+
+    let (bg, fg) = {
+        let st = tab.preview();
+        let cfg = app.config.borrow();
+        let r = app.renderer.borrow();
+        let face = key.face_for(&st);
+        let bg = r.background(Some(&face), &cfg.style);
+        (bg, r.label_color(Some(&face), &cfg.style, bg))
+    };
+    let overridden = |f: LookField| key.look(tab, f).is_some();
+    group.add(&color_row(app, &while_in("Background"), bg, overridden(LookField::Background), None, move |a, c| {
+        a.edit(i, |k| k.set_look(tab, LookField::Background, c))
+    }));
+    group.add(&color_row(app, &while_in("Label colour"), fg, overridden(LookField::LabelColor), None, move |a, c| {
+        a.edit(i, |k| k.set_look(tab, LookField::LabelColor, c))
+    }));
 }
 
 pub fn build_dial(app: &Rc<App>, i: u8) -> gtk::Widget {
