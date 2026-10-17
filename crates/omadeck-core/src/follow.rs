@@ -105,4 +105,12 @@ mod tests {
         assert_eq!(got[1].0, "spotify");
         assert!(parse_clients("not json").is_empty());
     }
+
+    #[test]
+    fn parse_clients_on_a_real_capture() {
+        // A browser, the configurator itself and a terminal, on the machine (2026-10-17).
+        let got = parse_clients(include_str!("../tests/fixtures/hyprctl-clients.json"));
+        let classes: Vec<&str> = got.iter().map(|(c, _)| c.as_str()).collect();
+        assert_eq!(classes, vec!["brave-browser", "dev.omadeck.Omadeck", "kitty"]);
+    }
 }
