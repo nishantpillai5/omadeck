@@ -72,7 +72,7 @@ const STRIP_TITLE_PX: f32 = 16.0;
 const B1_VALUE_PX: f32 = 24.0;
 /// Default panel glyphs for a volume dial with no icon or glyph of its own.
 const OUTPUT_GLYPH: &str = "f057e"; // 󰕾 speaker
-const INPUT_GLYPH: &str = "f057f"; // 󰕿 microphone
+const INPUT_GLYPH: &str = "f036c"; // 󰎬 microphone
 const MUTE_GLYPH: &str = "f075f"; // 󰝟 muted
 
 /// Which dial panel a touch at `x` falls in, for a strip `width` pixels wide with

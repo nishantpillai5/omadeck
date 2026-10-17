@@ -100,7 +100,7 @@ command = "playerctl play-pause"
 # [[dial]]
 # index = 1
 # label = "Volume"
-# glyph = "f057e"            # a speaker; a mic ("f057f") for an input dial
+# glyph = "f057e"            # a speaker; a mic ("f036c") for an input dial
 # [dial.turn_left]
 # type = "volume"
 # change = -5
