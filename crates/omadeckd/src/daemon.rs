@@ -9,11 +9,12 @@ use anyhow::Result;
 use omadeck_core::config::apply_brightness;
 use omadeck_core::device::{DeviceStateUpdate, StreamDeckError};
 use omadeck_core::ipc::{Command, Event};
-use omadeck_core::probe::{self, Probe, Toggle, Value, Values};
+use omadeck_core::probe::{self, FAST_WINDOW, Probe, SETTLE, Toggle, Value, Values};
 use omadeck_core::proc;
 use omadeck_core::state::State;
 use omadeck_core::{
-    Action, AudioDevice, Config, KeyConfig, KeyStatus, Level, LevelSource, PanelStatus, Renderer, action, tap_to_dial,
+    Action, AudioDevice, Config, DialConfig, KeyConfig, KeyStatus, Level, LevelSource, PanelStatus, Renderer, action,
+    tap_to_dial,
 };
 
 use crate::deck::{self, Deck};
@@ -213,9 +214,13 @@ impl Daemon {
 
     // --- the deck coming and going ---------------------------------------------------------
 
-    /// A deck was found: paint it, watch what its dials show, tell the configurators.
+    /// A deck was found: paint it, watch what its dials and keys show, tell the
+    /// configurators.
     pub fn attach(&mut self, mut d: Deck) {
-        if let Err(e) = deck::paint_all(&mut d, &self.cfg, self.nav.current(), &mut self.renderer, &self.rt.values) {
+        let keys = self.key_states(d.info.key_count());
+        if let Err(e) =
+            deck::paint_all(&mut d, &self.cfg, self.nav.current(), &mut self.renderer, &self.rt.values, &keys)
+        {
             log::warn!("initial paint failed: {e}");
         }
         self.hub.publish(Event::Connected { deck: d.info.clone() });
@@ -237,12 +242,11 @@ impl Daemon {
         self.hub.publish(Event::Disconnected);
     }
 
-    /// Tell the watcher what the deck's dials show. Sent on connect and on every reload.
+    /// Tell the watcher what the deck's dials and the current page's keys show. Sent on
+    /// connect, on every reload and on every page change.
     fn watch(&mut self) {
         let dials = self.deck.as_ref().map_or(0, |d| d.info.dials as usize);
         let probes = probe::watched_probes(&self.cfg, self.nav.current(), dials);
-        // Keep what is still shown, so a reload's repaint draws it as it is.
-        self.rt.values.probes.retain(|p, _| probes.contains(p));
         let _ = self.watcher.cmd.send(WatchCmd::Watch(probes));
     }
 
@@ -256,6 +260,7 @@ impl Daemon {
             Ok(new_cfg) => {
                 hand_edit = self.rt.state.config_edit(new_cfg.brightness);
                 self.cfg = new_cfg;
+                self.keep_toggle_state();
             }
             Err(e) => log::error!("{e:#}; keeping the previous config"),
         }
@@ -320,11 +325,11 @@ impl Daemon {
     /// A read-back from the watcher: `applied` of what we sent is confirmed by this read.
     /// What's still in flight hasn't happened yet, so it's shown on top of the read — the
     /// bar only ever moves forward while a spin is in flight, and settles as the queue
-    /// drains, instead of snapping back to each stale read.
+    /// drains, instead of snapping back to each stale read. A read the daemon's own
+    /// guess is waiting to be confirmed by is dropped until it expires.
     pub fn apply_value(&mut self, probe: Probe, value: Option<Value>, applied: i32) {
-        // Every volume change is acknowledged exactly once, read or not: take its part off
-        // the in-flight total first, so the total can't drift.
-        #[allow(irrefutable_let_patterns)]
+        // Every volume change is acknowledged exactly once, read or not: take its part
+        // off the in-flight total first, so the total can't drift.
         if let Probe::Volume(dev) = &probe
             && applied != 0
         {
@@ -336,22 +341,103 @@ impl Daemon {
         }
         // An acknowledgement without a read: nothing to show.
         let Some(mut value) = value else { return };
-        #[allow(irrefutable_let_patterns)]
+        if let Some(s) = self.rt.settle.get(&probe) {
+            if !s.accepts(&value, Instant::now()) {
+                return;
+            }
+            self.rt.settle.remove(&probe);
+        }
         if let Probe::Volume(dev) = &probe
             && let Value::Level(read) = &value
         {
             value = Value::Level(settle_volume(self.in_flight.get(dev).copied().unwrap_or(0), read));
         }
+        if self.rt.values.probes.get(&probe) == Some(&value) {
+            return;
+        }
         self.store_value(probe, value);
     }
 
-    /// The one place a value is stored and what shows it marked for repainting at the end
-    /// of the pass.
+    /// The one place a value is stored and what shows it (the panels and the keys that
+    /// read the probe) marked for repainting at the end of the pass.
     fn store_value(&mut self, probe: Probe, value: Value) {
+        self.rt.values.probes.insert(probe.clone(), value);
+        self.mark_probe(&probe);
+    }
+
+    /// Everything on screen that shows `probe`: the dials and the current page's keys.
+    /// Nothing is published here: `flush` compares and publishes, for panels and keys
+    /// alike.
+    fn mark_probe(&mut self, probe: &Probe) {
         if let Some(d) = &mut self.deck {
-            d.dirty_where(&self.cfg, |dial| probe::shows(dial, &probe));
+            d.dirty_where(&self.cfg, |dial| probe::shows(dial, probe));
         }
-        self.rt.values.probes.insert(probe, value);
+        let page = self.nav.current().map(str::to_string);
+        let n = self.key_count();
+        for i in 0..n {
+            if self.cfg.key(page.as_deref(), i).and_then(KeyConfig::state_probe).as_ref() == Some(probe) {
+                self.mark_key(page.as_deref(), i);
+            }
+        }
+    }
+
+    /// Repaint key `i` at the end of this pass, if it is on the deck now.
+    fn mark_key(&mut self, page: Option<&str>, i: u8) {
+        if page == self.nav.current()
+            && let Some(d) = &mut self.deck
+        {
+            d.mark_key_dirty(i);
+        }
+    }
+
+    /// How many keys the deck has (0 with none).
+    fn key_count(&self) -> u8 {
+        self.deck.as_ref().map_or(0, |d| d.info.key_count())
+    }
+
+    /// What each of the current page's first `n` keys shows now (not pressed), for
+    /// painting.
+    fn key_states(&self, n: u8) -> Vec<KeyStatus> {
+        (0..n).map(|i| key_state(&self.cfg, &self.rt, self.nav.current(), i, false)).collect()
+    }
+
+    /// As for panels, for keys: build each key's status and publish the ones that differ
+    /// from what was last sent. Called first thing in `flush`, before its deck check, so a
+    /// job's progress reaches the configurator with no deck too. That covers watcher
+    /// values, guesses, jobs, connect, reload and page change in one place.
+    fn publish_keys(&mut self) {
+        let page = self.nav.current().map(str::to_string);
+        let mut ids: HashSet<KeyId> = self.published_keys.keys().chain(self.rt.jobs.keys()).cloned().collect();
+        for i in 0..self.key_count() {
+            if self.cfg.key(page.as_deref(), i).is_some_and(|k| k.on.is_some() || k.busy_while_running) {
+                ids.insert(KeyId { page: page.clone(), index: i });
+            }
+        }
+        for id in ids {
+            let status = key_state(&self.cfg, &self.rt, id.page.as_deref(), id.index, false);
+            let last = self.published_keys.get(&id).cloned().unwrap_or_default();
+            if last != status {
+                self.hub.publish(Event::KeyState { page: id.page.clone(), index: id.index, status: status.clone() });
+            }
+            if status == KeyStatus::default() {
+                self.published_keys.remove(&id);
+            } else {
+                self.published_keys.insert(id, status);
+            }
+        }
+    }
+
+    /// What a reload keeps of the toggle state: flips of keys that are still press
+    /// toggles, settles and values of probes the config still shows.
+    fn keep_toggle_state(&mut self) {
+        retain_flips(&self.cfg, &mut self.rt.flipped);
+        let n_dials = self.deck.as_ref().map_or(0, |d| d.info.dials as usize);
+        let watched = probe::watched_probes(&self.cfg, self.nav.current(), n_dials);
+        self.rt.settle.retain(|p, _| watched.contains(p));
+        // Values: the dials' probes plus every key's, on any page, so a page you return
+        // to shows the last known faces at once.
+        let all = config_probes(&self.cfg, n_dials);
+        self.rt.values.probes.retain(|p, _| all.contains(p));
     }
 
     /// The next moment something is due: a tap flash ending, the post-connect repaint, a
@@ -402,9 +488,7 @@ impl Daemon {
             DeviceStateUpdate::ButtonDown(i) => {
                 self.paint_key(i, true);
                 self.hub.publish(Event::KeyDown { index: i, page: self.nav.current().map(str::to_string) });
-                // Cloned out of the config: `run_input` needs `&mut self`.
-                let Some(act) = self.cfg.key(self.nav.current(), i).map(|k| k.action.clone()) else { return };
-                self.run_input(Source::Key(i), &act, 1);
+                self.press_key(i);
             }
             DeviceStateUpdate::ButtonUp(i) => {
                 self.paint_key(i, false);
@@ -480,10 +564,58 @@ impl Daemon {
 
     // --- actions ---------------------------------------------------------------------------
 
-    /// Run `act` for an input. The one entry point for keys, dials, strip taps and flicks
-    /// (and later ctl, multi-action steps and long presses): it logs, dispatches, moves the
-    /// page if the action did, and reports a failure against its source. Returns whether
-    /// the action ran.
+    /// A key was pressed: run its action (the on action while on), then show the press
+    /// as the new state at once and let the real state confirm it.
+    fn press_key(&mut self, i: u8) {
+        let page = self.nav.current().map(str::to_string);
+        // Clone: everything below takes &mut self, and cfg.key() borrows self.cfg.
+        let Some(k) = self.cfg.key(page.as_deref(), i).cloned() else { return };
+        let before = key_state(&self.cfg, &self.rt, page.as_deref(), i, false).state;
+        let act = k.action_for(before == Toggle::On).clone();
+        if !self.run_input(Source::Key(i), &act, 1) || k.on.is_none() {
+            return;
+        }
+        self.after_toggle_press(&KeyId { page, index: i }, &k, before);
+    }
+
+    /// Show the press at once, as Elgato does, then let the real state confirm it.
+    fn after_toggle_press(&mut self, id: &KeyId, k: &KeyConfig, before: Toggle) {
+        let now = Instant::now();
+        match k.state_probe() {
+            None => {
+                // A press toggle flips on each press.
+                if !self.rt.flipped.remove(id) {
+                    self.rt.flipped.insert(id.clone());
+                }
+                self.mark_key(id.page.as_deref(), id.index);
+            }
+            Some(Probe::Volume(_)) => {} // the watcher runs the change and re-reads
+            Some(p) if matches!(before, Toggle::Busy(_)) => {
+                // No guess while busy: just ask for the real state now.
+                let _ = self.watcher.cmd.send(WatchCmd::Refresh(p));
+            }
+            Some(p) if k.is_slow_toggle() => {
+                // A slow toggle shows busy at once and polls fast until the state moves.
+                self.rt.values.probes.insert(p.clone(), Value::Toggle(Toggle::Busy(String::new())));
+                self.rt.settle.insert(p.clone(), Settle::Leaving { from: before.clone(), until: now + FAST_WINDOW });
+                let _ = self.watcher.cmd.send(WatchCmd::Leave { probe: p.clone(), from: before });
+                self.mark_probe(&p);
+            }
+            Some(p) => {
+                // A fast toggle flips at once; the 300 ms read-back confirms or corrects.
+                let guess = Value::Toggle(if before == Toggle::On { Toggle::Off } else { Toggle::On });
+                self.rt.values.probes.insert(p.clone(), guess.clone());
+                self.rt.settle.insert(p.clone(), Settle::Expect { value: guess, until: now + SETTLE });
+                let _ = self.watcher.cmd.send(WatchCmd::Refresh(p.clone()));
+                self.mark_probe(&p);
+            }
+        }
+    }
+
+    /// Run `act` for an input. The one entry point for keys, dials, strip taps and
+    /// flicks (and later ctl, multi-action steps and long presses): it logs, dispatches,
+    /// moves the page if the action did, and reports a failure against its source.
+    /// Returns whether the action ran (a toggle flips only then).
     pub fn run_input(&mut self, src: Source, act: &Action, steps: u8) -> bool {
         if steps > 1 {
             log::info!("{src} x{steps}: {}", act.summary());
@@ -614,16 +746,21 @@ impl Daemon {
 
     // --- painting ----------------------------------------------------------------------------
 
-    /// Repaint the deck after `nav` moved to another page, and tell the configurators.
+    /// Repaint the deck after `nav` moved to another page, watch the new page's keys,
+    /// and tell the configurators.
     fn show_page(&mut self) {
         log::info!("page: {}", self.nav.current().unwrap_or(omadeck_core::HOME));
         self.paint_all();
+        self.watch();
         self.hub.publish(Event::PageChanged { page: self.nav.current().map(str::to_string) });
     }
 
     fn paint_all(&mut self) {
+        let n = self.key_count();
+        let keys = self.key_states(n);
         if let Some(d) = &mut self.deck
-            && let Err(e) = deck::paint_all(d, &self.cfg, self.nav.current(), &mut self.renderer, &self.rt.values)
+            && let Err(e) =
+                deck::paint_all(d, &self.cfg, self.nav.current(), &mut self.renderer, &self.rt.values, &keys)
         {
             log::warn!("repaint failed: {e}");
         }
@@ -631,15 +768,19 @@ impl Daemon {
 
     fn paint_key(&mut self, i: u8, pressed: bool) {
         if let Some(d) = &self.deck {
-            deck::paint_key(d, &self.cfg, self.nav.current(), &mut self.renderer, i, pressed);
+            let st = key_state(&self.cfg, &self.rt, self.nav.current(), i, pressed);
+            deck::paint_key(d, &self.cfg, self.nav.current(), &mut self.renderer, i, &st);
         }
     }
 
-    /// End of a pass: paint the dirty panels once, and tell the configurators about any
-    /// panel whose value changed.
+    /// End of a pass: publish the key states that changed, paint the dirty panels and
+    /// keys once, and tell the configurators about any panel whose value changed.
     pub fn flush(&mut self) {
+        self.publish_keys();
+        let n = self.key_count();
+        let keys = self.key_states(n);
         let Some(d) = &mut self.deck else { return };
-        deck::flush_dirty(d, &self.cfg, &mut self.renderer, &self.rt.values);
+        deck::flush_dirty(d, &self.cfg, self.nav.current(), &mut self.renderer, &self.rt.values, &keys);
         for i in 0..d.info.dials {
             let status = probe::dial_status(self.cfg.dial(i), &self.rt.values, false).panel;
             if self.published.get(&i) != Some(&status) {
@@ -671,6 +812,38 @@ fn settle_volume(f: i32, read: &Level) -> Level {
     }
     let guess = probe::guess_volume(read, f, false);
     if read.muted { Level { value: guess.value, ..read.clone() } } else { guess }
+}
+
+/// The flip state a reload keeps: only the keys that are still press toggles.
+fn retain_flips(cfg: &Config, flipped: &mut HashSet<KeyId>) {
+    flipped.retain(|id| cfg.key(id.page.as_deref(), id.index).is_some_and(KeyConfig::is_press_toggle));
+}
+
+/// Every probe the config can show: the dials' and every key's, on any page.
+fn config_probes(cfg: &Config, n_dials: usize) -> Vec<Probe> {
+    let mut out = Vec::new();
+    for i in 0..n_dials {
+        if let Some(LevelSource::Volume(dev)) = cfg.dial(i as u8).and_then(DialConfig::level_source) {
+            let p = Probe::Volume(dev);
+            if !out.contains(&p) {
+                out.push(p);
+            }
+        }
+    }
+    let mut pages: Vec<Option<&str>> = vec![None];
+    pages.extend(cfg.pages.iter().map(|p| Some(p.name.as_str())));
+    for page in pages {
+        if let Some(ks) = cfg.page(page) {
+            for k in ks.iter() {
+                if let Some(p) = k.state_probe()
+                    && !out.contains(&p)
+                {
+                    out.push(p);
+                }
+            }
+        }
+    }
+    out
 }
 
 /// How long to wait for input: until `deadline`, at most `READ_TIMEOUT`. Rounded up to
@@ -709,6 +882,19 @@ mod tests {
         assert!(s.accepts(&Value::Toggle(Toggle::Off), now + Duration::from_millis(100)));
         // And everything is accepted after the window.
         assert!(s.accepts(&Value::Toggle(Toggle::On), now + FAST_WINDOW));
+    }
+
+    #[test]
+    fn reload_drops_flips_of_keys_that_are_no_longer_press_toggles() {
+        let cfg =
+            Config::parse("[[key]]\nindex = 0\n[key.on]\n\n[[key]]\nindex = 1\n[key.on]\nstate = \"true\"\n").unwrap();
+        let mut flipped = HashSet::from([
+            KeyId { page: None, index: 0 }, // still a press toggle: kept
+            KeyId { page: None, index: 1 }, // now a command toggle: dropped
+            KeyId { page: None, index: 2 }, // no such key: dropped
+        ]);
+        retain_flips(&cfg, &mut flipped);
+        assert_eq!(flipped, HashSet::from([KeyId { page: None, index: 0 }]));
     }
 
     #[test]
