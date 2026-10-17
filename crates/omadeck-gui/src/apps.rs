@@ -114,15 +114,46 @@ pub fn pick(parent: &impl IsA<gtk::Widget>, on_pick: impl Fn(gio::AppInfo) + 'st
 }
 
 /// The app an installed app is found by in the audio streams: its executable's name,
-/// or, for a launcher (Flatpak, a shell), its desktop id without `.desktop`.
+/// or, for a launcher (Flatpak, a shell), its desktop id without `.desktop`. An app run
+/// through uwsm (`uwsm app -- foo`) is found by the program after `--`.
 fn audio_key(info: &gio::AppInfo) -> String {
+    let id = || {
+        let id = info.id().map(|s| s.to_string()).unwrap_or_default();
+        id.strip_suffix(".desktop").unwrap_or(&id).to_string()
+    };
     let exe = info.executable();
     let base = exe.file_name().map(|f| f.to_string_lossy().into_owned()).unwrap_or_default();
-    if base.is_empty() || matches!(base.as_str(), "flatpak" | "env" | "sh" | "bash" | "gtk-launch" | "uwsm-app") {
-        let id = info.id().map(|s| s.to_string()).unwrap_or_default();
-        return id.strip_suffix(".desktop").unwrap_or(&id).to_string();
+    if is_uwsm(&base) {
+        let line = info.commandline().map(|c| c.to_string_lossy().into_owned()).unwrap_or_default();
+        return uwsm_program(&line).filter(|p| !is_launcher(p)).unwrap_or_else(id);
+    }
+    if is_launcher(&base) {
+        return id();
     }
     base
+}
+
+fn is_uwsm(base: &str) -> bool {
+    matches!(base, "uwsm" | "uwsm-app")
+}
+
+/// Executables that start some other app, so their name says nothing about it.
+fn is_launcher(base: &str) -> bool {
+    base.is_empty() || is_uwsm(base) || matches!(base, "flatpak" | "env" | "sh" | "bash" | "gtk-launch")
+}
+
+/// The program a uwsm command line runs: the file name of the word after `--`
+/// (`uwsm app -- foo %U` gives `foo`). `None` when there is no `--`, or what follows is
+/// a desktop entry (`foo.desktop`, `foo.desktop:action`), which the desktop id covers.
+fn uwsm_program(line: &str) -> Option<String> {
+    let mut words = line.split_whitespace().map(|w| w.trim_matches(|c| c == '"' || c == '\''));
+    words.by_ref().find(|w| *w == "--")?;
+    let program = words.next()?;
+    let base = program.rsplit('/').next().unwrap_or(program);
+    if base.is_empty() || base.starts_with('%') || base.contains(".desktop") {
+        return None;
+    }
+    Some(base.to_string())
 }
 
 /// Choose an app for an app volume action. `on_pick` gets the app's key (what the
@@ -237,4 +268,23 @@ pub fn pick_audio(parent: &impl IsA<gtk::Widget>, on_pick: impl Fn(String, Strin
     });
 
     dialog.present(Some(&parent));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // BUGS.md 100: apps launched through uwsm were stored as "uwsm" and matched no stream.
+    #[test]
+    fn uwsm_lines_give_the_program_after_the_dashes() {
+        assert_eq!(uwsm_program("uwsm app -- spotify %U").as_deref(), Some("spotify"));
+        assert_eq!(uwsm_program("/usr/bin/uwsm-app -- /opt/foo/bin/foo").as_deref(), Some("foo"));
+        assert_eq!(uwsm_program("uwsm app -- \"firefox\" %u").as_deref(), Some("firefox"));
+        assert_eq!(uwsm_program("uwsm app -- foo.desktop"), None);
+        assert_eq!(uwsm_program("uwsm app -- foo.desktop:new-window"), None);
+        assert_eq!(uwsm_program("uwsm app foo"), None);
+        assert_eq!(uwsm_program("uwsm app --"), None);
+        assert!(is_launcher("uwsm") && is_launcher("uwsm-app") && is_launcher("flatpak") && is_launcher(""));
+        assert!(!is_launcher("spotify"));
+    }
 }
