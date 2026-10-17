@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::OnceLock;
 use std::thread;
+use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 
@@ -14,6 +15,9 @@ use crate::config::{Action, AudioDevice};
 use crate::{paths, proc};
 
 pub fn run(action: &Action) -> Result<()> {
+    if matches!(action, Action::Multi { .. }) && action.is_deck_owned() {
+        bail!("this multi action has page or brightness steps, which only work on the deck");
+    }
     if action.is_deck_owned() {
         bail!("{} only works on the deck", Action::KINDS[action.kind_index()]);
     }
@@ -26,11 +30,48 @@ pub fn run(action: &Action) -> Result<()> {
         Action::Hyprland { dispatch } => hypr_dispatch(dispatch),
         Action::Volume { device, change, mute } => run_volume(*device, *change, *mute),
         Action::AppVolume { change, mute, .. } => run_app_volume(action, i32::from(*change), *mute),
-        // Task 2 fills these in.
-        Action::Multi { .. } | Action::Delay { .. } => Ok(()),
+        // A delay on its own waits for nothing.
+        Action::Delay { .. } => Ok(()),
+        // The daemon never gets here with a multi: it times the steps on its loop.
+        Action::Multi { steps } => {
+            let steps = steps.clone();
+            thread::Builder::new().name("multi".into()).spawn(move || {
+                for (n, e) in run_multi_blocking(&steps) {
+                    log::warn!("step {}: {e:#}", n + 1);
+                }
+            })?;
+            Ok(())
+        }
         // Refused above; the daemon runs these itself.
         Action::Page { .. } | Action::Back | Action::PageStep { .. } | Action::Brightness { .. } => Ok(()),
     }
+}
+
+/// Run a multi's steps in order on this thread, for callers with no deck loop (the
+/// offline CLI and the configurator's Try it now with no daemon). Delays sleep; a volume
+/// step waits for its command; a Hyprland step waits for hyprctl's answer. Deck-owned
+/// steps fail (`run` bails), and so do nested multis. Returns each failed step's number
+/// (from 0) and error; the other steps still run.
+pub fn run_multi_blocking(steps: &[Action]) -> Vec<(usize, anyhow::Error)> {
+    let mut failed = Vec::new();
+    for (n, step) in steps.iter().enumerate() {
+        let res = match step {
+            Action::Delay { ms } => {
+                thread::sleep(Duration::from_millis(u64::from(*ms)));
+                Ok(())
+            }
+            Action::Multi { .. } => Err(anyhow::anyhow!("multi-actions can't be nested")),
+            Action::Volume { device, change, mute } => {
+                apply_volume(*device, *change, *mute);
+                Ok(())
+            }
+            a => run(a),
+        };
+        if let Err(e) = res {
+            failed.push((n, e));
+        }
+    }
+    failed
 }
 
 /// Run `action` `steps` times, once per detent for dial turns. The daemon caps `steps`
@@ -494,6 +535,31 @@ mod tests {
             let refused = run(&a).is_err_and(|e| e.to_string().ends_with("only works on the deck"));
             assert_eq!(refused, a.is_deck_owned(), "{a:?}");
         }
+    }
+
+    #[test]
+    fn multi_blocking_collects_errors() {
+        // None of these spawn anything: each fails before it would, or does nothing.
+        let steps = [
+            Action::App { command: "".into() },
+            Action::Delay { ms: 0 },
+            Action::Url { url: "".into() },
+            Action::Multi { steps: vec![] },
+            Action::Back,
+        ];
+        let failed = run_multi_blocking(&steps);
+        let got: Vec<(usize, String)> = failed.iter().map(|(n, e)| (*n, e.to_string())).collect();
+        assert_eq!(
+            got,
+            vec![
+                (0, "no application set".to_string()),
+                (2, "no URL set".to_string()),
+                (3, "multi-actions can't be nested".to_string()),
+                (4, "Go back only works on the deck".to_string()),
+            ]
+        );
+        let owned = Action::Multi { steps: vec![Action::Delay { ms: 10 }, Action::PageStep { change: 1 }] };
+        assert!(run(&owned).unwrap_err().to_string().contains("only work on the deck"));
     }
 
     #[test]
