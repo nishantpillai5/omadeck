@@ -128,7 +128,16 @@ impl Hub {
         let (tx, commands) = mpsc::channel();
         let shared = inner.clone();
         std::thread::Builder::new().name("ipc".into()).spawn(move || {
-            for stream in listener.incoming().flatten() {
+            loop {
+                let stream = match listener.accept() {
+                    Ok((stream, _)) => stream,
+                    // Out of fds (EMFILE) or similar: wait instead of spinning on `accept`.
+                    Err(e) => {
+                        log::warn!("accepting a client: {e}");
+                        std::thread::sleep(std::time::Duration::from_millis(100));
+                        continue;
+                    }
+                };
                 // The queue first: the reader sends replies into it.
                 let (queue, lines) = mpsc::sync_channel::<Arc<str>>(CLIENT_QUEUE);
                 if let (Ok(reader), Ok(closer)) = (stream.try_clone(), stream.try_clone()) {
@@ -177,6 +186,16 @@ impl Hub {
 /// parse errors itself. Ends when the client hangs up, sends a line longer than
 /// `ipc::MAX_LINE`, or the loop is gone.
 fn read_requests(stream: UnixStream, reply: ReplyTo, tx: mpsc::Sender<Request>) {
+    serve_requests(stream, &reply, tx);
+    // The client hung up (or was cut off): end its writer now, not at the next event,
+    // which an idle daemon may not publish for hours. Otherwise every short-lived ctl
+    // client would keep a thread and an fd (BUGS.md 74). Anything queued before this is
+    // still written first. If the queue is full, the writer is busy writing and ends on
+    // the failed write instead.
+    let _ = reply.queue.try_send(Arc::from(""));
+}
+
+fn serve_requests(stream: UnixStream, reply: &ReplyTo, tx: mpsc::Sender<Request>) {
     let mut reader = BufReader::new(stream);
     let mut line = String::new();
     loop {
@@ -205,11 +224,12 @@ fn read_requests(stream: UnixStream, reply: ReplyTo, tx: mpsc::Sender<Request>) 
 }
 
 /// A client's writer: the only place that writes to its socket, so a client that stops
-/// reading stalls this thread alone. Ends when a write fails (the client closed).
+/// reading stalls this thread alone. Ends when a write fails (the client closed) or on the
+/// empty line the reader queues when the client hangs up.
 fn spawn_writer(mut stream: UnixStream, lines: mpsc::Receiver<Arc<str>>) {
     let _ = std::thread::Builder::new().name("ipc-write".into()).spawn(move || {
         for line in lines {
-            if stream.write_all(line.as_bytes()).is_err() {
+            if line.is_empty() || stream.write_all(line.as_bytes()).is_err() {
                 break;
             }
         }
@@ -233,6 +253,27 @@ mod tests {
         theirs.set_read_timeout(Some(Duration::from_secs(1))).unwrap();
         let mut buf = String::new();
         assert_eq!(theirs.read_to_string(&mut buf).unwrap(), 0, "the client sees EOF at once, not a timeout");
+    }
+
+    #[test]
+    fn a_client_that_hangs_up_ends_its_writer() {
+        // An idle daemon publishes nothing: the writer must end when the reader sees the
+        // hang-up, not at the next event (BUGS.md 74).
+        let (ours, theirs) = UnixStream::pair().unwrap();
+        let (queue, lines) = mpsc::sync_channel::<Arc<str>>(CLIENT_QUEUE);
+        let reply = ReplyTo { queue: queue.clone(), stream: Arc::new(ours.try_clone().unwrap()) };
+        let (tx, _rx) = mpsc::channel();
+        let reader = ours.try_clone().unwrap();
+        let read = std::thread::spawn(move || read_requests(reader, reply, tx));
+        spawn_writer(ours, lines);
+        drop(theirs);
+        read.join().unwrap();
+        let start = Instant::now();
+        // Once the writer is gone, its queue reports Disconnected.
+        while !matches!(queue.try_send("{}\n".into()), Err(TrySendError::Disconnected(_))) {
+            assert!(start.elapsed() < Duration::from_secs(2), "the writer is still alive");
+            std::thread::sleep(Duration::from_millis(5));
+        }
     }
 
     /// Wait up to 3 s for the next request to reach the loop.
