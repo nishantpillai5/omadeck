@@ -7,6 +7,13 @@ All notable changes to omadeck are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- App volume: an `app_volume` action changes or mutes one app's audio (all its
+  streams), chosen by name or following the focused Hyprland window (staying on the
+  last focused app that played audio). On a dial the strip panel shows the app's icon,
+  name and level, dimmed while it plays nothing. The configurator has an app picker
+  listing what's playing, and the dial presets move into a Presets menu with App volume
+  and Focused app dials. Text on `$B1` panels now picks its contrast colour from what's
+  under it, not the whole panel.
 - Live keys: a key or a dial's strip panel can show the time, CPU, memory, battery, the
   active Hyprland workspace or a command's output, kept up to date by the daemon.
 - Toggle keys: a second face (`[key.on]`) that follows real state — a shell command's
