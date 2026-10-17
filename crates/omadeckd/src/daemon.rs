@@ -8,6 +8,7 @@ use std::time::{Duration, Instant};
 use anyhow::Result;
 use omadeck_core::config::apply_brightness;
 use omadeck_core::device::{DeviceStateUpdate, StreamDeckError};
+use omadeck_core::follow::CONFIGURATOR_CLASS;
 use omadeck_core::ipc::{Command, Event, Reply};
 use omadeck_core::player::{self, PlayStatus};
 use omadeck_core::probe::{self, FAST_WINDOW, Probe, SETTLE, Toggle, Value, Values};
@@ -19,6 +20,7 @@ use omadeck_core::{
 };
 
 use crate::deck::{self, BackHold, Deck};
+use crate::follow::AppFollow;
 use crate::hub::{Hub, Request};
 use crate::hypr::{self, HyprEvent};
 use crate::hypr_worker::{HyprJob, HyprWorker};
@@ -36,6 +38,9 @@ const FLICK_MIN_PX: i32 = 50;
 /// After a read that returned input, at most this many more queued HID reports are taken
 /// in the same pass (fix/review's), so a fast spin is handled together and painted once.
 const MAX_DRAIN: usize = 32;
+/// Hyprland sends a focus event for every window an alt-tab passes; act once focus has
+/// stayed put this long.
+const APP_FOCUS_SETTLE: Duration = Duration::from_millis(200);
 
 /// A key's place: its page (`None` is home) and index.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -95,7 +100,6 @@ pub struct Runtime {
     /// `busy_while_running` commands, per key.
     pub jobs: HashMap<KeyId, Running>,
     /// The focused Hyprland window, from the event listener.
-    #[allow(dead_code)] // read by PR 10 and PR 15
     pub window: Option<hypr::ActiveWindow>,
 }
 
@@ -232,6 +236,12 @@ pub struct Daemon {
     media_due: Option<Instant>,
     /// The multi actions running, timed by the loop.
     seq: Sequencer,
+    /// Pages that follow the focused app. Like `nav`, it outlives a replug.
+    follow: AppFollow,
+    /// The focused window's class once it settled; `""` when nothing has focus.
+    focus_class: Option<String>,
+    /// When the newest focus change settles; `rt.window` is then the one that counts.
+    focus_pending: Option<Instant>,
 }
 
 impl Daemon {
@@ -264,6 +274,9 @@ impl Daemon {
             repaint_at: None,
             media_due: None,
             seq: Sequencer::default(),
+            follow: AppFollow::default(),
+            focus_class: None,
+            focus_pending: None,
         }
     }
 
@@ -334,6 +347,8 @@ impl Daemon {
         if let Some(p) = self.wanted_page.take_if(|p| self.cfg.has_page(p)) {
             moved |= self.nav.go(Some(&p));
         }
+        // A link added or removed takes effect without a focus change.
+        moved |= self.follow_focus();
         if moved {
             self.hub.publish(Event::PageChanged { page: self.nav.current().map(str::to_string) });
         }
@@ -503,7 +518,6 @@ impl Daemon {
         for ev in events {
             match ev {
                 HyprEvent::Workspace { name, .. } => self.apply_value(Probe::Workspace, Some(Value::Text(name)), 0),
-                // PR 15 hooks in here too.
                 HyprEvent::ActiveWindow(w) => {
                     // Always, nothing focused included: the watcher only remembers it
                     // when no focused dial is watched, and a focused dial with no window
@@ -511,9 +525,38 @@ impl Daemon {
                     let focus = w.as_ref().map(|w| audio::Window { pid: w.pid, class: w.class.clone() });
                     let _ = self.watcher.cmd.send(WatchCmd::Focus(focus));
                     self.rt.window = w;
+                    // Pages that follow apps act on the window focus settles on.
+                    self.focus_pending = Some(Instant::now() + APP_FOCUS_SETTLE);
                 }
             }
         }
+        let now = Instant::now();
+        if self.focus_pending.take_if(|at| now >= *at).is_some() {
+            let class = self.rt.window.as_ref().map(|w| w.class.clone()).unwrap_or_default();
+            // Editing never moves the deck.
+            if !class.eq_ignore_ascii_case(CONFIGURATOR_CLASS) {
+                self.focus_class = Some(class);
+                if self.follow_focus() {
+                    self.show_page();
+                }
+            }
+        }
+    }
+
+    /// Move `nav` to the page the focused app is linked to, or back when it isn't linked.
+    /// Returns whether the page moved; the caller repaints.
+    fn follow_focus(&mut self) -> bool {
+        let Some(class) = self.focus_class.clone() else { return false };
+        let link = self.cfg.app_page(&class).map(str::to_string);
+        if !self.follow.focus(link.as_deref(), &mut self.nav, &self.cfg) {
+            return false;
+        }
+        let page = self.nav.current().unwrap_or(omadeck_core::HOME).to_string();
+        match &link {
+            Some(_) => log::info!("page {page} (follows {class})"),
+            None => log::info!("page {page} (left {class})"),
+        }
+        true
     }
 
     /// A read-back from the watcher: `applied` of what we sent is confirmed by this read.
@@ -656,7 +699,10 @@ impl Daemon {
     pub fn next_deadline(&self) -> Option<Instant> {
         let flash = self.deck.as_ref().and_then(Deck::flash_deadline);
         let hold = self.deck.as_ref().and_then(|d| d.back_held).map(|h| h.deadline());
-        [flash, hold, self.repaint_at, self.reload_at, self.seq.next_due(), self.media_due].into_iter().flatten().min()
+        [flash, hold, self.repaint_at, self.reload_at, self.seq.next_due(), self.media_due, self.focus_pending]
+            .into_iter()
+            .flatten()
+            .min()
     }
 
     /// One pass with a deck: read and handle its input until it's quiet, then paint what
