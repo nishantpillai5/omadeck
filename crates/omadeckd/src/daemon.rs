@@ -310,6 +310,9 @@ impl Daemon {
         self.published.clear();
         self.published_keys.clear();
         self.repaint_at = None;
+        // Only a deck pass clears it, and with no deck it would stay in the past: the
+        // no-deck loop would never sleep (BUGS.md 73).
+        self.media_due = None;
         // `in_flight` stays: the watcher still acknowledges every queued change.
         let _ = self.watcher.cmd.send(WatchCmd::Watch(Vec::new()));
         self.hub.publish(Event::Disconnected);
@@ -700,7 +703,9 @@ impl Daemon {
     pub fn next_deadline(&self) -> Option<Instant> {
         let flash = self.deck.as_ref().and_then(Deck::flash_deadline);
         let hold = self.deck.as_ref().and_then(|d| d.back_held).map(|h| h.deadline());
-        [flash, hold, self.repaint_at, self.reload_at, self.seq.next_due(), self.media_due, self.focus_pending]
+        // The media tick repaints the deck's panels: nothing to wait for without one.
+        let media = self.deck.as_ref().and(self.media_due);
+        [flash, hold, self.repaint_at, self.reload_at, self.seq.next_due(), media, self.focus_pending]
             .into_iter()
             .flatten()
             .min()
