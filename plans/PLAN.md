@@ -35,9 +35,14 @@ listed in each file.
 `pr/01-plus-input` … `pr/16-strip-long-press` (see Branches below). From here, a fix found
 on the machine goes on the `pr/*` branch it belongs to, and the branches above it are
 rebased (or, until the PRs are opened, on `daily` first and folded later).
-Still to do on the series, separately from the fold (the fold kept the content
-byte-identical): merge the CHANGELOG "Fixed" entries for unreleased features into their
-"Added" text, and tidy five duplicated or misplaced doc comments.
+**Cleaned (2026-10-17):** the `pr/*` branches were then rebuilt once more, changing only
+CHANGELOG.md and five doc comments: "Fixed" lines about our own unreleased features are
+gone (two folded into their "Added" entries); upstream's lines and our fixes to released
+or upstream behaviour (Hyprland actions, replugging a smaller deck) stay. The code is
+otherwise identical to `fix/review-3`. The tips before that pass, in case anything is
+needed from them: 01 `1a0506e`, 02 `73f6d3f`, 03 `5b8ddc3`, 04 `8a6211d`, 05 `b36a0ab`,
+06 `6c07d1a`, 07 `89abf9a`, 07b `509bc26`, 08 `5ef423e`, 09 `5bee4d0`, 10 `1bffb22`,
+11 `6a49497`, 12 `ac02546`, 13 `a48e4a9`, 14 `f51bfd6`, 15 `f1f7a5f`, 16 `412a906`.
 
 **Built, not verified (2026-10-17): `fix/review-2` and PRs 9–16.** All nine branches were
 built on the Mac in one go and pushed to the fork, each on the one before:
