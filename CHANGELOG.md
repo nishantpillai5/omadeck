@@ -39,6 +39,17 @@ All notable changes to omadeck are documented here. The format follows
   action and highlights the panel; the configurator previews the strip and edits each
   panel's look.
 
+### Changed
+- With the daemon running, the configurator's brightness slider goes through the daemon
+  instead of writing `config.toml`, and its strip preview shows what the deck shows
+  instead of reading the system itself. A configurator that stops reading the daemon's
+  socket can no longer hold up the deck.
+
+### Fixed
+- `hyprctl` and `pactl` calls time out, so a stalled Hyprland or audio server can't hang
+  the deck.
+- A tapped strip panel's highlight ends on time.
+
 ## [0.2.0] - 2026-10-18
 
 ### Added

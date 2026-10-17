@@ -167,7 +167,14 @@ fn run() -> Result<()> {
     }
 
     let mut hid = device::new_hidapi().context("initialising hidapi")?;
-    let mut daemon = Daemon::new(load_config(), hub, watch::start(), saver::start_saver());
+    let (cfg, cfg_loaded) = match Config::load() {
+        Ok(c) => (c, true),
+        Err(e) => {
+            log::error!("{e:#}; using an empty config");
+            (Config::default(), false)
+        }
+    };
+    let mut daemon = Daemon::new(cfg, cfg_loaded, hub, watch::start(), saver::start_saver());
     log::info!("theme: {}", daemon.renderer.theme.name);
     let mut last_scan: Option<Instant> = None;
 
@@ -216,9 +223,10 @@ fn run() -> Result<()> {
         if daemon.deck.is_none() {
             if last_scan.is_none_or(|t| t.elapsed() >= SCAN_INTERVAL) {
                 last_scan = Some(Instant::now());
-                match deck::open(&mut hid) {
-                    Some(d) => daemon.attach(d),
-                    None => daemon.hub.publish(omadeck_core::ipc::Event::Disconnected),
+                // `Disconnected` goes out once, from `detach` (and the hub's replay
+                // starts with it), not on every scan.
+                if let Some(d) = deck::open(&mut hid) {
+                    daemon.attach(d);
                 }
             } else {
                 std::thread::sleep(daemon::wait_for(Instant::now(), daemon.next_deadline()));
@@ -281,10 +289,11 @@ fn snapshot(out: &Path, page: Option<&str>) -> Result<()> {
     }
     let mut y = grid_h + gap;
     if let Some((sw, sh)) = info.strip {
-        // The deck runs on the state file's brightness once it has run, as `connect` does.
+        // The brightness the daemon would start at (the state file's, unless the
+        // config's value was edited since).
         // Brightness dials show the brightness the deck runs at; volume dials show a dash,
         // as their level is live and only the running daemon reads it.
-        let values = Values { brightness: State::load().brightness.unwrap_or(cfg.brightness), ..Values::default() };
+        let values = Values { brightness: State::load().start_brightness(cfg.brightness), ..Values::default() };
         let status: Vec<_> = (0..info.dials).map(|i| probe::dial_status(cfg.dial(i), &values, false)).collect();
         let strip = renderer.render_strip(&cfg, &status, (w, w * sh / sw));
         image::imageops::overlay(&mut canvas, &strip, 0, y as i64);
