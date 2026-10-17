@@ -1316,6 +1316,9 @@ fn action_rows(app: &Rc<App>, group: &adw::PreferencesGroup, slot: &ActionSlot) 
         }
 
         Action::Back => {}
+
+        // Task H fills this in.
+        Action::AppVolume { .. } => {}
     }
 }
 
