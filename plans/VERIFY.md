@@ -124,23 +124,25 @@ Build:
       (`windows-link`, already locked) and `omadeck-core` (`jiff`), and the
       `omadeckd` line for `serde_json`: no new `[[package]]`. (2026-10-17, machine; exactly those 3 lines.)
 
-Captures (the plan's "Capture on the machine first"; none were run):
-- [ ] 1. Record the socket2 transcript (plan's command), add it as
-      `crates/omadeckd/tests/fixtures/socket2.txt` and write the
-      `transcript_gives_events` test. Assumed for now: event addresses may or may not
-      have `0x` (both are normalised), and `activewindowv2` with nothing focused sends
-      an empty address or `,` (both mean no window). The test
-      `documented_lines_give_events` uses the wiki's forms instead.
-- [ ] 2. `j/activeworkspace` / `j/activewindow` JSON matches what `hypr.rs` reads
-      (`id`, `name`; `address`, `class`, `title`, `pid`; `{}` with nothing focused).
-- [ ] 3. `systemctl --user show-environment` has `XDG_RUNTIME_DIR` (without it the
-      listener doesn't start) and `ls $XDG_RUNTIME_DIR/hypr/` shows the instance.
-- [ ] 4. Battery sysfs layout matches the `battery_in` tests (`type`, `scope`,
-      `status`, `capacity`, `energy_now`/`energy_full`).
-- [ ] 5. `/proc/stat` and `/proc/meminfo` samples parse (CPU and memory keys show a %).
+Captures (the plan's "Capture on the machine first"; run on the Omarchy machine, Hyprland 0.56.2):
+- [x] 1. Record the socket2 transcript, add it as `crates/omadeckd/tests/fixtures/socket2.txt`
+      and write the test. (2026-10-17. 95 lines captured while switching workspaces 1–3,
+      focusing the terminal/browser, changing tabs, and empty workspaces. The test
+      `committed_transcript_gives_expected_events` walks all lines through parse/handle
+      against a canned query and asserts the exact 13-event sequence. Confirmed: event
+      addresses have **no** `0x` prefix (the request-socket JSON does — both normalise),
+      an empty `activewindowv2>>` (no comma) means no focus, and legacy + v2 lines are
+      both sent. Note: the request socket rejects a trailing `\n` ("unknown request");
+      `hypr.rs` writes without one, so it is unaffected. The capture-fixtures commit's
+      generic `transcript_gives_events` (reads the dated `captured/` folder) is a
+      separate test.)
+- [x] 2. `j/activeworkspace` / `j/activewindow` JSON matches what `hypr.rs` reads. (2026-10-17; `{"id":1,"name":"1",…}` and `{"address":"0x…","class":…,"title":…,"pid":…}` — the `0x` is present in the JSON, absent in events.)
+- [x] 3. `systemctl --user show-environment` has `XDG_RUNTIME_DIR` and the instance dir. (2026-10-17; `XDG_RUNTIME_DIR=/run/user/1000`, `HYPRLAND_INSTANCE_SIGNATURE` set, instance dir has `.socket.sock` + `.socket2.sock`.)
+- [~] 4. Battery sysfs. (2026-10-17: **no battery** — this is a desktop, `/sys/class/power_supply` is empty. The battery key shows `–` here; `battery_in`'s None path is the expected behaviour. Not testable on this machine.)
+- [x] 5. `/proc/stat` and `/proc/meminfo` samples parse. (2026-10-17; `cpu ` line has the 10 standard fields, `MemTotal`/`MemAvailable` present.)
 - [ ] 6. The seven glyphs (`f0150 f061a f035b f0079 f0084 f056e f018d`) render as a
       clock, chip, memory, battery, charging battery, workspace and console. Change a
-      constant in `render.rs` only if it shows the wrong symbol.
+      constant in `render.rs` only if it shows the wrong symbol. *(needs the user's eyes — see below)*
 - [x] 7. jiff `%n` gives a newline (`clock_formats_and_ticks` passes on the Mac).
 
 Task F (daemon, on the hardware):
