@@ -263,7 +263,7 @@ pub struct BusyFace {
     pub background: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub label_color: Option<String>,
-    /// Draw a progress bar when the busy text has a percentage (the last `NN%`).
+    /// Draw a progress bar when the busy text has a percentage (the first `NN%`).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub bar: bool,
 }
