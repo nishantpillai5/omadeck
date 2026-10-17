@@ -921,6 +921,7 @@ dependencies = [
  "portable-atomic",
  "portable-atomic-util",
  "serde_core",
+ "windows-link",
 ]
 
 [[package]]
@@ -1130,6 +1131,7 @@ dependencies = [
  "elgato-streamdeck",
  "hidapi",
  "image",
+ "jiff",
  "libc",
  "log",
  "resvg",
