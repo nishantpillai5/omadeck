@@ -1,6 +1,6 @@
 //! The right-hand panel: what a key or dial does and how it looks.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use adw::prelude::*;
@@ -1793,14 +1793,17 @@ fn media_rows(
             let a = app.clone();
             let get = slot.get.clone();
             let set_spin = slot.set.clone();
+            // The last value set, so a step onto 0 knows which way it was going.
+            let last = Cell::new(seek);
             // Edits in place: a rebuild would take the focus from the spin.
             move |r: &adw::SpinRow| {
                 let v = r.value().round() as i16;
                 if v == 0 {
-                    // 0 is no seek at all: back to the slot's default (this notifies again).
-                    r.set_value(f64::from(default_seek));
+                    // 0 is no seek at all: step over it (this notifies again).
+                    r.set_value(f64::from(seek_past_zero(last.get())));
                     return;
                 }
+                last.set(v);
                 let mut act = (get)(&a);
                 if let Action::Media { seek, .. } = &mut act {
                     *seek = v;
@@ -2250,9 +2253,24 @@ fn browse_button(
     btn
 }
 
+/// Where a media seek spin goes when it lands on 0 (no seek at all): one past zero in the
+/// direction it was moving, so 1 steps down to -1 and -1 steps up to 1. `last` is never 0.
+fn seek_past_zero(last: i16) -> i16 {
+    if last < 0 { 1 } else { -1 }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // BUGS.md 103: the Seconds spin could not cross zero with its +/- buttons.
+    #[test]
+    fn seek_spin_steps_over_zero() {
+        assert_eq!(seek_past_zero(1), -1);
+        assert_eq!(seek_past_zero(-1), 1);
+        assert_eq!(seek_past_zero(5), -1);
+        assert_eq!(seek_past_zero(-5), 1);
+    }
 
     #[test]
     fn try_it_routes() {
