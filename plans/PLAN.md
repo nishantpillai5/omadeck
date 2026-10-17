@@ -309,7 +309,7 @@ Useful pages (check they're still current when you use them):
 |--------|------|---------|
 | `master` | `upstream/master` | Pure mirror. Never commit here. |
 | `feat/*` | `upstream/master`, or the feature it depends on | One branch per PR. Small and self-contained. |
-| `daily` | `upstream/master` + every `feat/*` merged in | What I build and run. Today it is the PR series' tip, `pr/16-strip-long-press` (`e9ad538`, force-pushed 2026-10-17; before that `fix/review-3`, `746e326`). |
+| `daily` | `upstream/master` + every `feat/*` merged in | What I build and run. Today it is `fix/review-3` (`970b154`, after the 2026-10-18 re-stack; before that `pr/16-strip-long-press` `e9ad538`). |
 | `fix/bugs` | `feat/strip-backgrounds` | The 2026-10-17 bug pass (all 21 bugs closed). |
 | `fix/review` | `fix/bugs` | The 2026-10-17 review fixes, BUGS.md 22–43 (`87be396`). |
 | `pr/01-*` … `pr/16-*` | each on the previous | **The PR series (2026-10-17).** The `feat/*` branches with every fix folded in: each fix is its own commit at the end of the feature it fixes (`Folded from <sha>` in the message). `pr/07b-groundwork` is groundwork as its own PR, before PR 8. `pr/16-strip-long-press` has exactly `fix/review-3`'s tree; `pr/07-…` equals `fix/review`'s and `pr/08-…` equals `fix/review-2`'s. Every tip passes fmt, clippy (GUI type-checked) and the core and daemon tests. The old `feat/*` and `fix/*` branches stay as they were, so the SHAs in these notes still resolve. |
