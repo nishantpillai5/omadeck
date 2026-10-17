@@ -169,6 +169,10 @@ pub enum Source {
     Press(u8),
     Tap(u8),
     Flick,
+    /// A control command run as itself (`omadeckd page`, `brightness`, Try it now): its
+    /// reply carries a failure, so nothing is published for it.
+    #[allow(dead_code)]
+    Ctl,
 }
 
 impl fmt::Display for Source {
@@ -177,6 +181,7 @@ impl fmt::Display for Source {
             Source::Key(i) => write!(f, "key {i}"),
             Source::Turn(i) | Source::Press(i) | Source::Tap(i) => write!(f, "dial {i}"),
             Source::Flick => write!(f, "strip flick"),
+            Source::Ctl => write!(f, "omadeckd"),
         }
     }
 }
@@ -463,8 +468,12 @@ impl Daemon {
 
     /// What each of the current page's first `n` keys shows now (not pressed), for
     /// painting.
+    /// A key a ctl press is flashing is drawn pressed, so the end-of-pass paint keeps the
+    /// flash.
     fn key_states(&self, n: u8) -> Vec<KeyStatus> {
-        (0..n).map(|i| key_state(&self.cfg, &self.rt, self.nav.current(), i, false)).collect()
+        let flashing =
+            |i: u8| self.deck.as_ref().is_some_and(|d| d.key_flash.get(i as usize).is_some_and(Option::is_some));
+        (0..n).map(|i| key_state(&self.cfg, &self.rt, self.nav.current(), i, flashing(i))).collect()
     }
 
     /// As for panels, for keys: build each key's status and publish the ones that differ
@@ -528,6 +537,8 @@ impl Daemon {
         }
         let Some(d) = &mut self.deck else { return Ok(()) };
         d.expire_flashes(now);
+        // No `KeyUp`: only a ctl press flashes a key, and it published no `KeyDown`.
+        d.expire_key_flashes(now);
         // A clone of the `Arc`, so reading doesn't hold a borrow of `self` while the
         // updates are handled.
         let reader = d.reader.clone();
@@ -557,22 +568,16 @@ impl Daemon {
     fn handle_update(&mut self, u: DeviceStateUpdate) {
         match u {
             DeviceStateUpdate::ButtonDown(i) => {
-                self.paint_key(i, true);
-                self.hub.publish(Event::KeyDown { index: i, page: self.nav.current().map(str::to_string) });
-                self.press_key(i);
+                self.clear_key_flash(i);
+                let _ = self.key_down(i, true);
             }
             DeviceStateUpdate::ButtonUp(i) => {
+                self.clear_key_flash(i);
                 self.paint_key(i, false);
                 self.hub.publish(Event::KeyUp { index: i });
             }
             DeviceStateUpdate::EncoderTwist(i, delta) => {
-                log::debug!("dial {i} turned {delta}");
-                self.hub.publish(Event::DialTurn { index: i, delta });
-                let Some(dial) = self.cfg.dial(i) else { return };
-                let act = if delta >= 0 { dial.turn_right.clone() } else { dial.turn_left.clone() };
-                if !act.is_none() {
-                    self.run_input(Source::Turn(i), &act, delta.unsigned_abs().min(8));
-                }
+                let _ = self.turn_dial(i, delta, true);
             }
             DeviceStateUpdate::EncoderDown(i) => {
                 log::info!("dial {i} pressed");
@@ -597,12 +602,7 @@ impl Daemon {
                 let Some((w, _)) = d.info.strip else { return };
                 let Some(i) = tap_to_dial(x as u32, w, d.info.dials as usize) else { return };
                 log::info!("strip tap on dial {i}");
-                d.flash_until[i] = Some(Instant::now());
-                d.mark_dirty(i as u8);
-                let act = self.cfg.dial(i as u8).map(|d| d.press.clone()).unwrap_or_default();
-                if !act.is_none() {
-                    self.run_input(Source::Tap(i as u8), &act, 1);
-                }
+                let _ = self.tap_dial(i as u8);
             }
             DeviceStateUpdate::TouchScreenLongPress(x, y) => {
                 log::info!("strip long press at ({x}, {y})");
@@ -624,6 +624,56 @@ impl Daemon {
         }
     }
 
+    /// A key pressed on the deck (and ctl's `Press`): paint it pressed, publish `KeyDown`
+    /// only when `publish` (the hardware arm passes true, ctl false, so an open
+    /// configurator's selection doesn't move), then `press_key(i)`.
+    fn key_down(&mut self, i: u8, publish: bool) -> Result<()> {
+        self.paint_key(i, true);
+        if publish {
+            self.hub.publish(Event::KeyDown { index: i, page: self.nav.current().map(str::to_string) });
+        }
+        self.press_key(i)
+    }
+
+    /// A dial turned (and ctl's `Dial` left/right): publish `DialTurn` only when `publish`
+    /// (hardware true, ctl false), run its turn right (`delta >= 0`) or turn left with
+    /// `|delta|` steps, at most 8. An empty action does nothing and is Ok.
+    fn turn_dial(&mut self, i: u8, delta: i8, publish: bool) -> Result<()> {
+        log::debug!("dial {i} turned {delta}");
+        if publish {
+            self.hub.publish(Event::DialTurn { index: i, delta });
+        }
+        let Some(dial) = self.cfg.dial(i) else { return Ok(()) };
+        let act = if delta >= 0 { dial.turn_right.clone() } else { dial.turn_left.clone() };
+        if act.is_none() {
+            return Ok(());
+        }
+        self.try_input(Source::Turn(i), &act, delta.unsigned_abs().min(8))
+    }
+
+    /// A tap on panel `i` (a strip tap, and ctl's `Dial { dir: Press }`): flash the panel
+    /// and run the dial's press. Publishes nothing: the strip arm publishes `StripTap`.
+    fn tap_dial(&mut self, i: u8) -> Result<()> {
+        if let Some(d) = &mut self.deck
+            && let Some(f) = d.flash_until.get_mut(i as usize)
+        {
+            *f = Some(Instant::now());
+            d.mark_dirty(i);
+        }
+        let act = self.cfg.dial(i).map(|d| d.press.clone()).unwrap_or_default();
+        if act.is_none() {
+            return Ok(());
+        }
+        self.try_input(Source::Tap(i), &act, 1)
+    }
+
+    /// A hardware press or release ends a ctl press's flash on that key.
+    fn clear_key_flash(&mut self, i: u8) {
+        if let Some(f) = self.deck.as_mut().and_then(|d| d.key_flash.get_mut(i as usize)) {
+            *f = None;
+        }
+    }
+
     fn set_dial_pressed(&mut self, i: u8, pressed: bool) {
         if let Some(d) = &mut self.deck
             && let Some(p) = d.dial_pressed.get_mut(i as usize)
@@ -636,15 +686,16 @@ impl Daemon {
     // --- actions ---------------------------------------------------------------------------
 
     /// A key was pressed: run its action (the on action while on), then show the press
-    /// as the new state at once and let the real state confirm it.
-    fn press_key(&mut self, i: u8) {
+    /// as the new state at once and let the real state confirm it. The error is the
+    /// action's (already published against the key).
+    fn press_key(&mut self, i: u8) -> Result<()> {
         let page = self.nav.current().map(str::to_string);
         // Clone: everything below takes &mut self, and cfg.key() borrows self.cfg.
-        let Some(k) = self.cfg.key(page.as_deref(), i).cloned() else { return };
+        let Some(k) = self.cfg.key(page.as_deref(), i).cloned() else { return Ok(()) };
         let id = KeyId { page: page.clone(), index: i };
         if self.rt.jobs.contains_key(&id) {
             log::info!("key {i}: still running, press ignored");
-            return;
+            return Ok(());
         }
         let before = key_state(&self.cfg, &self.rt, page.as_deref(), i, false).state;
         let act = k.action_for(before == Toggle::On).clone();
@@ -657,19 +708,20 @@ impl Daemon {
                 Err(e) => {
                     let message = format!("{e:#}");
                     self.hub.publish(Event::ActionFailed { index: i, page, message });
+                    return Err(e);
                 }
             }
-            return; // the toggle's state catches up when the job ends (`finish_job`)
+            return Ok(()); // the toggle's state catches up when the job ends (`finish_job`)
         }
-        let ran = self.run_input(Source::Key(i), &act, 1);
+        self.try_input(Source::Key(i), &act, 1)?;
         // A live command key shows what the press changed (e.g. `playerctl status`) at once.
-        if ran && let Some(p @ Probe::Output { .. }) = k.live.as_ref().map(Live::probe) {
+        if let Some(p @ Probe::Output { .. }) = k.live.as_ref().map(Live::probe) {
             let _ = self.watcher.cmd.send(WatchCmd::Refresh(p));
         }
-        if !ran || k.on.is_none() {
-            return;
+        if k.on.is_some() {
+            self.after_toggle_press(&id, &k, before);
         }
-        self.after_toggle_press(&id, &k, before);
+        Ok(())
     }
 
     /// Every pass, with or without a deck: read the tracked jobs' output and reap the
@@ -742,6 +794,13 @@ impl Daemon {
     /// moves the page if the action did, and reports a failure against its source.
     /// Returns whether the action ran (a toggle flips only then).
     pub fn run_input(&mut self, src: Source, act: &Action, steps: u8) -> bool {
+        self.try_input(src, act, steps).is_ok()
+    }
+
+    /// What `run_input` does, with the error: log, dispatch, show the page if it moved,
+    /// and on failure report it against `src` (nothing is published for `Ctl`: its reply
+    /// carries it).
+    pub fn try_input(&mut self, src: Source, act: &Action, steps: u8) -> Result<()> {
         if steps > 1 {
             log::info!("{src} x{steps}: {}", act.summary());
         } else {
@@ -752,12 +811,12 @@ impl Daemon {
                 if moved {
                     self.show_page();
                 }
-                true
+                Ok(())
             }
             Err(e) => {
                 let page = self.nav.current().map(str::to_string);
                 self.report_failure(src, page, format!("{e:#}"));
-                false
+                Err(e)
             }
         }
     }
@@ -771,7 +830,9 @@ impl Daemon {
             Source::Turn(index) | Source::Press(index) | Source::Tap(index) => {
                 self.hub.publish(Event::DialActionFailed { index, message })
             }
-            Source::Flick => {}
+            // Only logged: the reply carries it (or, for a Hyprland dispatch that failed
+            // later on the worker, the reply has already gone).
+            Source::Flick | Source::Ctl => {}
         }
     }
 
@@ -1207,6 +1268,7 @@ change = 5
         assert_eq!(Source::Key(3).to_string(), "key 3");
         assert_eq!(Source::Turn(1).to_string(), "dial 1");
         assert_eq!(Source::Flick.to_string(), "strip flick");
+        assert_eq!(Source::Ctl.to_string(), "omadeckd");
     }
 
     fn level(percent: i32) -> Level {
