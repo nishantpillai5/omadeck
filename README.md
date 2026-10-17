@@ -29,7 +29,7 @@ Written in Rust: a tiny background daemon drives the hardware, and a GTK4/libadw
 
 ## Features
 
-- **Ten action types**
+- **Eleven action types**
   - **Launch app:** pick from your installed apps; the app's icon and name come along. Apps launch through `uwsm-app`, the same way Omarchy launches them.
   - **Run script:** optionally in a terminal so you can watch the output.
   - **Play sound:** through PipeWire (`pw-play`), with per-key volume.
@@ -40,6 +40,7 @@ Written in Rust: a tiny background daemon drives the hardware, and a GTK4/libadw
   - **Volume:** change the output or input (microphone) volume, or toggle mute. It goes through Omarchy's own volume commands when they're installed, so the same on-screen pop-up shows as your volume keys — otherwise it falls back to `wpctl`.
   - **Brightness:** change the panel brightness by ±%, or set it to an exact value. The value is remembered across restarts (in the state file, not your config), as in the Elgato app.
   - **App volume:** a dial or key for one app's volume (Spotify, a browser…), or for whichever app is focused. The strip shows the app's icon, name and level. A focused-app dial keeps controlling the last focused app that played audio when you move to a silent window.
+  - **Multi action:** several of the above from one key or dial, in order, with **delays** between them, like the Elgato app's Multi Action. The configurator edits the steps as a list.
 - **Toggle keys.** A second face (`[key.on]`) that follows real state: a shell command's exit status polled in the background (night light, stay awake, a service, …), the mute a volume mute key already changes, or a flip on each press. A command can report **busy** (exit 75) with a progress line — and a percentage for a bar — for things that take a while. Any key running a command or script can show the busy face for as long as it runs (`busy_while_running`). The configurator mirrors what the deck shows, and has toggle presets (mic mute, output mute, night light, stay awake, do-not-disturb, bluetooth, and a service… dialog).
 - **Live keys.** A key, or a dial's panel on the touch strip, can show a value the daemon keeps up to date (`[key.live]`, `[dial.live]`): the time and date (any [strftime format](https://docs.rs/jiff/latest/jiff/fmt/strtime/), e.g. `%H:%M%n%a %d`), CPU, memory or battery %, the active Hyprland workspace, or the first line of a command's output, re-run every few seconds (`source = "command"`, `command = "curl -s 'wttr.in/?format=%t'"`, `interval = 900`). The key still runs its action on press. On the strip, levels draw a bar (Elgato's `$B1` layout) and text doesn't (`$A1`).
 - **Icons your way**
@@ -223,6 +224,8 @@ Action types:
 | `page_step` | `change` (± pages, default 1) |
 | `brightness` | `change` (±%) and/or `set` (absolute 0–100) |
 | `app_volume` | `app` (a process name, app name, Flatpak id or desktop id), `focused` (follow the focused window instead), `change` (±%), `mute` |
+| `multi` | `steps`: a list of actions, run in order (see [Multi actions](#multi-actions)) |
+| `delay` | `ms`: wait this long before the next step (only inside a `multi`) |
 
 Per-key look overrides are `background`, `label_color` and `show_label`. Dials take the same fields (`icon`, `glyph`, `background`, `label_color`, `show_label`) for their panel on the touch strip, plus `background_image`: an image behind the panel (200 × 100), over the strip's image. The strip itself takes `[strip] background_image`, one image across all the panels (800 × 100 on a Plus). Images of any size fill their area and are centre-cropped; a dial's image shows through where it's transparent, and labels flip dark on bright images.
 
@@ -312,6 +315,47 @@ label = "Night on"
 state = "omarchy-toggle-nightlight --status | jq -e .enabled"
 ```
 
+### Multi actions
+
+A `multi` action runs its steps in order from one key, dial turn or dial press, as the
+Elgato app's Multi Action does. A `delay` step waits; the daemon times it, so the deck
+stays responsive. Each step is an ordinary action table:
+
+```toml
+[[key]]
+index = 5
+label = "Meeting"
+[key.action]
+type = "multi"
+[[key.action.steps]]
+type = "volume"
+device = "input"
+mute = true
+[[key.action.steps]]
+type = "app"
+command = "zoom.desktop"
+[[key.action.steps]]
+type = "delay"
+ms = 2000
+[[key.action.steps]]
+type = "hyprland"
+dispatch = "movetoworkspace 5"
+[[key.action.steps]]
+type = "page"
+page = "Meeting"
+```
+
+- Steps **start** in order; none waits for the one before it to finish. Apps, scripts,
+  sounds and websites have been launched before the next step runs.
+- Page, Go back, Next/previous page and Brightness steps have taken effect before the next
+  step.
+- Hyprland steps are queued in order (with every other Hyprland action), and volume steps
+  likewise, but the next step doesn't wait for them to land: put a `delay` (100 ms is
+  plenty for volume) after one when the next step depends on it.
+- A step that fails is reported with its number, and the rest still run.
+- Pressing the key again while its multi runs (delays included) does nothing.
+- A multi can't contain another multi; a hand-edited one fails that step.
+
 ## How it works
 
 ```
@@ -342,7 +386,7 @@ Ideas, roughly in order; [docs/ROADMAP.md](docs/ROADMAP.md) has the details. Wan
 - [ ] **Release actions**: keys that act on release too, for push-to-talk dictation
 - [ ] **Templates**: ready-made pages to add in one click, starting with Omarchy Basics (your AI agent, dictation and everyday Omarchy keys); save any page as a template and share it
 - [x] **Toggle keys** with on/off faces (mute, night light, …) that reflect real state
-- [ ] **Multi-actions**: run several actions from one key, with optional delays
+- [x] **Multi-actions**: run several actions from one key, with optional delays
 - [x] **Stream Deck +**: value layouts on the strip — volume and brightness — and page switching on swipe
 - [x] **Stream Deck +**: background images on the touch strip — one across the strip, one per dial
 - [ ] **OBS** scene and recording keys via obs-websocket
