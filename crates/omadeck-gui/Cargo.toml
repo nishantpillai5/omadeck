@@ -21,3 +21,8 @@ adw = { package = "libadwaita", version = "0.9", features = ["v1_7"] }
 async-channel = "2"
 ureq = "3"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "ico", "webp", "gif", "bmp"] }
+
+[dev-dependencies]
+# The bundled test font and `Renderer::with_font_bytes`, so pixel tests don't depend on
+# the machine's fonts.
+omadeck-core = { workspace = true, features = ["test-support"] }
