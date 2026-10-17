@@ -253,22 +253,43 @@ pub fn run_argv(argv: &[String]) -> bool {
     }
 }
 
-/// Read every player once and pick the one to show. Blocking (bounded by
-/// `COMMAND_TIMEOUT`): the watcher only. Art is not decoded here.
-pub fn read(wanted: Option<&str>) -> PlayerRead {
+/// What one `playerctl -a` read gives: every player's track (empty: no players), `Err`
+/// when `playerctl` isn't installed, or `None` when it didn't answer in time. A `None`
+/// is not "nothing playing": the caller keeps the last value and reads again at the next
+/// interval, as for a failed volume read (BUGS.md 82).
+pub type PlayersRead = Option<Result<Vec<Track>, String>>;
+
+/// Read every player once. Blocking (bounded by `COMMAND_TIMEOUT`): the watcher only.
+/// One read answers every player probe ([`pick`] per probe). Art is not decoded here.
+pub fn read_all() -> PlayersRead {
     let mut cmd = Command::new("playerctl");
     cmd.args(["-a", "metadata", "--format", FORMAT]).env("LC_ALL", "C").stdin(Stdio::null());
     let Some(out) = crate::proc::output_timeout(&mut cmd, crate::proc::COMMAND_TIMEOUT) else {
         if !crate::action::which("playerctl") {
-            return Err("Needs playerctl".into());
+            return Some(Err("Needs playerctl".into()));
         }
-        return Ok(None);
+        return None;
     };
-    if !out.status.success() {
-        // "No players found".
-        return Ok(None);
+    Some(Ok(players_from(&out, now_ms())))
+}
+
+/// The players in one `playerctl -a metadata` answer. Every line that parses counts,
+/// whatever the exit status: one player without metadata can make the whole call exit 1
+/// after the others printed theirs (BUGS.md 95). The status matters only when nothing
+/// parsed, and then both ways mean no players ("No players found").
+pub fn players_from(out: &std::process::Output, read_ms: u64) -> Vec<Track> {
+    let tracks = parse_playerctl(&String::from_utf8_lossy(&out.stdout), read_ms);
+    if tracks.is_empty() && !out.status.success() {
+        log::debug!("playerctl: no players ({})", out.status);
     }
-    Ok(pick(parse_playerctl(&String::from_utf8_lossy(&out.stdout), now_ms()), wanted))
+    tracks
+}
+
+/// Whether Omarchy 3's pop-up command, which takes the focused monitor, is the one that
+/// runs: an untargeted play/pause, next or previous. Everything else goes to `playerctl`
+/// and ignores the monitor, so the monitor is looked up only when this is true (BUGS.md 84).
+pub fn uses_monitor(backend: Backend, cmd: MediaCommand, seek: i32, targeted: bool) -> bool {
+    backend == Backend::Omarchy3 && seek == 0 && cmd != MediaCommand::Stop && !targeted
 }
 
 #[cfg(test)]
@@ -539,5 +560,44 @@ mod tests {
         assert_eq!(m.at(3_000).as_of_ms, 3_000);
         let paused = MediaShow { playing: false, ..m.clone() };
         assert_eq!(paused.at(9_000).position_ms, 10_000);
+    }
+
+    // BUGS.md 95: one player without metadata can make `playerctl -a` exit 1 after the
+    // others printed good lines; those still count.
+    #[test]
+    fn players_parse_even_when_playerctl_exits_non_zero() {
+        use std::os::unix::process::ExitStatusExt;
+        let good = line(["spotify", "spotify", "Playing", "1000000", "", "Song", "Band", ""]);
+        let out = |code: i32, stdout: &str| std::process::Output {
+            status: std::process::ExitStatus::from_raw(code << 8),
+            stdout: stdout.as_bytes().to_vec(),
+            stderr: Vec::new(),
+        };
+        let ts = players_from(&out(1, &format!("{good}\n")), 0);
+        assert_eq!(ts.len(), 1);
+        assert_eq!(ts[0].title, "Song");
+        assert!(players_from(&out(1, "No players found\n"), 0).is_empty());
+        assert_eq!(players_from(&out(0, &good), 0).len(), 1);
+    }
+
+    // BUGS.md 84: the monitor is looked up only for commands that pass it on.
+    #[test]
+    fn uses_monitor_only_where_media_argv_does() {
+        use MediaCommand::*;
+        for b in [Backend::Omarchy4, Backend::Omarchy3, Backend::Plain] {
+            for cmd in [PlayPause, Next, Previous, Stop] {
+                for seek in [0, 5] {
+                    for target in [None, Some("spotify")] {
+                        let with = media_argv(b, cmd, seek, target, Some("DP-1"));
+                        let without = media_argv(b, cmd, seek, target, None);
+                        assert_eq!(
+                            uses_monitor(b, cmd, seek, target.is_some()),
+                            with != without,
+                            "{b:?} {cmd:?} {seek} {target:?}"
+                        );
+                    }
+                }
+            }
+        }
     }
 }
