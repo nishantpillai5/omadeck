@@ -33,9 +33,14 @@ impl Nav {
         true
     }
 
-    /// The page we came from, if any: where Back would go. `None` outside a page.
-    pub fn parent(&self) -> Option<Option<String>> {
-        self.history.last().cloned()
+    /// The nearest page on the trail, current first, that `keep` accepts; `None` is Home.
+    /// Page steps use it to step from the page a folder hangs off, however deep.
+    pub fn nearest(&self, keep: impl Fn(&str) -> bool) -> Option<&str> {
+        std::iter::once(&self.current)
+            .chain(self.history.iter().rev())
+            .map(|p| p.as_deref())
+            .find(|p| p.is_none_or(&keep))
+            .flatten()
     }
 
     /// Move sideways to `page` (a flick or page step): replace the current page and clear
@@ -125,13 +130,18 @@ mod tests {
     }
 
     #[test]
-    fn parent_is_where_back_would_go() {
+    fn nearest_skips_nested_folders() {
         let mut n = Nav::default();
-        assert_eq!(n.parent(), None);
-        n.go(Some("A"));
-        assert_eq!(n.parent(), Some(None));
-        n.go(Some("B"));
-        assert_eq!(n.parent(), Some(Some("A".into())));
+        n.go(Some("Music"));
+        n.go(Some("F1"));
+        n.go(Some("F2"));
+        let not_folder = |p: &str| !p.starts_with('F');
+        assert_eq!(n.nearest(not_folder), Some("Music"), "two folders deep steps from Music");
+        n.go(None);
+        n.go(Some("F1"));
+        assert_eq!(n.nearest(not_folder), None, "a folder opened from Home steps from Home");
+        n.switch(Some("Music"));
+        assert_eq!(n.nearest(not_folder), Some("Music"), "a normal page is its own origin");
     }
 
     #[test]
