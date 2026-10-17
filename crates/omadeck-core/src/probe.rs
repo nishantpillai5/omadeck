@@ -7,8 +7,9 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
+use crate::audio::{AppLevel, AppQuery};
 use crate::config::{AudioDevice, Config, DialConfig, KeyConfig, LevelSource, Live};
-use crate::render::{DialStatus, KeyStatus, Level, LiveShow, PanelStatus};
+use crate::render::{AppShow, DialStatus, KeyStatus, Level, LiveShow, PanelStatus};
 
 /// A volume set from the keyboard or `pavucontrol` lands in well under this.
 const VOLUME_REFRESH: [Duration; 1] = [Duration::from_millis(150)];
@@ -46,6 +47,8 @@ pub enum Probe {
     /// `sh -c command`'s first output line, every `interval_ms`. Both fields are the hash
     /// key, as for `Command`.
     Output { command: String, interval_ms: u32 },
+    /// One app's playback streams. Every app probe is answered from one stream read.
+    AppVolume(AppQuery),
 }
 
 impl Probe {
@@ -64,6 +67,7 @@ impl Probe {
             Probe::Battery => Duration::from_secs(5),
             // Never used: the Hyprland listener feeds it.
             Probe::Workspace => Duration::from_secs(1),
+            Probe::AppVolume(_) => Duration::from_secs(1),
         }
     }
 
@@ -73,7 +77,13 @@ impl Probe {
         match self {
             Probe::Volume(_) => &VOLUME_REFRESH,
             Probe::Command { .. } | Probe::Output { .. } => &COMMAND_REFRESH,
-            Probe::Clock { .. } | Probe::Cpu | Probe::Memory | Probe::Battery | Probe::Workspace => &[],
+            // Nothing sends `Refresh` for an app: its own changes are read back at once.
+            Probe::Clock { .. }
+            | Probe::Cpu
+            | Probe::Memory
+            | Probe::Battery
+            | Probe::Workspace
+            | Probe::AppVolume(_) => &[],
         }
     }
 
@@ -115,6 +125,8 @@ pub enum Value {
     Percent(u8),
     /// The battery's charge, 0–100, and whether it is charging.
     Battery { percent: u8, charging: bool },
+    /// One app's streams added up.
+    App(AppLevel),
 }
 
 /// Everything the panels show: the last value of each probe, and the panel brightness.
@@ -133,6 +145,14 @@ impl Values {
             _ => None,
         }
     }
+
+    /// The last read of an app's streams.
+    pub fn app(&self, q: &AppQuery) -> Option<&AppLevel> {
+        match self.probes.get(&Probe::AppVolume(q.clone()))? {
+            Value::App(lv) => Some(lv),
+            _ => None,
+        }
+    }
 }
 
 /// What the live key or panel for `live` shows now; `None` until a value arrives.
@@ -143,7 +163,7 @@ pub fn live_show(live: &Live, values: &Values) -> Option<LiveShow> {
         Value::Battery { percent, charging } => {
             Some(LiveShow { text: format!("{percent}%"), bar: Some(*percent as f32 / 100.0), charging: *charging })
         }
-        Value::Level(_) | Value::Toggle(_) => None,
+        Value::Level(_) | Value::Toggle(_) | Value::App(_) => None,
     }
 }
 
@@ -156,13 +176,47 @@ pub fn brightness_level(value: u8) -> Level {
 /// the daemon, the configurator's preview and `snapshot` all call it. A dial that shows a
 /// level that isn't known yet gets `level: None` (the panel draws a dash).
 pub fn dial_status(dial: Option<&DialConfig>, values: &Values, pressed: bool) -> DialStatus {
-    let level = dial.and_then(DialConfig::level_source).and_then(|src| match src {
-        LevelSource::Volume(dev) => values.level(dev).cloned(),
-        LevelSource::Brightness => Some(brightness_level(values.brightness)),
-        LevelSource::App => None,
-    });
-    let live = dial.and_then(|d| d.live.as_ref()).and_then(|l| live_show(l, values));
-    DialStatus { pressed, panel: PanelStatus { level, live } }
+    let mut panel = PanelStatus {
+        live: dial.and_then(|d| d.live.as_ref()).and_then(|l| live_show(l, values)),
+        ..PanelStatus::default()
+    };
+    match dial.and_then(DialConfig::level_source) {
+        Some(LevelSource::Volume(dev)) => panel.level = values.level(dev).cloned(),
+        Some(LevelSource::Brightness) => panel.level = Some(brightness_level(values.brightness)),
+        Some(LevelSource::App) => {
+            if let Some((d, q)) = dial.zip(dial.and_then(DialConfig::app_query)) {
+                let (show, level) = app_show(d, &q, values.app(&q));
+                panel.app = Some(show);
+                panel.level = level;
+            }
+        }
+        None => {}
+    }
+    DialStatus { pressed, panel }
+}
+
+/// The face and level of an app volume panel. `lv` is the watcher's value, `None`
+/// before the first read. A chosen app keeps the dial's label as its title; a focused
+/// dial names the app it would change (the label only when there is none).
+pub fn app_show(dial: &DialConfig, q: &AppQuery, lv: Option<&AppLevel>) -> (AppShow, Option<Level>) {
+    let label = dial.label.trim();
+    let or_label = |x: &str| if label.is_empty() { x.to_string() } else { label.to_string() };
+    let level = lv.and_then(|lv| lv.level).map(|l| l.to_panel());
+    let dimmed = level.is_none();
+    let show = match (q, lv) {
+        (AppQuery::Named(app), None) => {
+            AppShow { title: or_label(&crate::audio::display_app(app)), icon: None, dimmed }
+        }
+        (AppQuery::Named(_), Some(lv)) => AppShow { title: or_label(&lv.name), icon: lv.icon.clone(), dimmed },
+        (AppQuery::Focused, Some(lv)) if lv.level.is_some() => {
+            AppShow { title: lv.name.clone(), icon: lv.icon.clone(), dimmed }
+        }
+        (AppQuery::Focused, Some(lv)) if !lv.name.trim().is_empty() => {
+            AppShow { title: lv.name.clone(), icon: None, dimmed }
+        }
+        (AppQuery::Focused, _) => AppShow { title: or_label("Focused app"), icon: None, dimmed },
+    };
+    (show, level)
 }
 
 /// The level a volume change will leave, guessed from the current one, so the bar moves
@@ -186,6 +240,7 @@ pub fn shows(dial: Option<&DialConfig>, probe: &Probe) -> bool {
     }
     match (dial.and_then(DialConfig::level_source), probe) {
         (Some(LevelSource::Volume(dev)), Probe::Volume(p)) => dev == *p,
+        (Some(LevelSource::App), Probe::AppVolume(q)) => dial.and_then(DialConfig::app_query).as_ref() == Some(q),
         _ => false,
     }
 }
@@ -261,7 +316,7 @@ fn number_at_end(part: &str) -> Option<u8> {
 /// value; then per key of the page the deck has, its toggle's state command (or the mute it
 /// follows), then its live value. A key past `n_keys` (a config made for a bigger deck) is
 /// not polled. Probes something else feeds (the workspace) are left out. No deck: both are
-/// 0, so nothing is.
+/// 0, so nothing is. An app volume dial's level is its app's streams.
 pub fn watched_probes(cfg: &Config, page: Option<&str>, n_dials: usize, n_keys: u8) -> Vec<Probe> {
     let mut out = Vec::new();
     let mut add = |p: Probe| {
@@ -271,8 +326,14 @@ pub fn watched_probes(cfg: &Config, page: Option<&str>, n_dials: usize, n_keys: 
     };
     for i in 0..n_dials {
         let dial = cfg.dial(i as u8);
-        if let Some(LevelSource::Volume(dev)) = dial.and_then(DialConfig::level_source) {
-            add(Probe::Volume(dev));
+        match dial.and_then(DialConfig::level_source) {
+            Some(LevelSource::Volume(dev)) => add(Probe::Volume(dev)),
+            Some(LevelSource::App) => {
+                if let Some(q) = dial.and_then(DialConfig::app_query) {
+                    add(Probe::AppVolume(q));
+                }
+            }
+            Some(LevelSource::Brightness) | None => {}
         }
         if let Some(l) = dial.and_then(|d| d.live.as_ref()) {
             add(l.probe());
@@ -322,6 +383,130 @@ mod tests {
         // The input's level doesn't leak into an output dial.
         let mic = volume_dial(1, AudioDevice::Input);
         assert_eq!(dial_status(Some(&mic), &values, false).panel.level, None);
+    }
+
+    fn app_dial(index: u8, app: &str, focused: bool) -> DialConfig {
+        DialConfig {
+            turn_right: Action::AppVolume { app: app.into(), focused, change: 5, mute: false },
+            ..DialConfig::new(index)
+        }
+    }
+
+    fn app_level(name: &str, level: Option<u8>) -> AppLevel {
+        AppLevel {
+            name: name.into(),
+            key: name.to_lowercase(),
+            icon: Some("/i.svg".into()),
+            icon_names: vec![],
+            level: level.map(|p| crate::audio::Level { percent: p, muted: false }),
+            ids: if level.is_some() { vec![87] } else { vec![] },
+        }
+    }
+
+    #[test]
+    fn app_show_cases() {
+        let named = AppQuery::Named("spotify".into());
+        let plain = app_dial(0, "spotify", false);
+        let labelled = DialConfig { label: " Music ".into(), ..plain.clone() };
+        let show = |title: &str, icon: Option<&str>, dimmed| AppShow {
+            title: title.into(),
+            icon: icon.map(Into::into),
+            dimmed,
+        };
+        let forty = Some(crate::audio::Level { percent: 40, muted: false }.to_panel());
+        // Named, playing.
+        assert_eq!(
+            app_show(&plain, &named, Some(&app_level("Spotify", Some(40)))),
+            (show("Spotify", Some("/i.svg"), false), forty.clone())
+        );
+        assert_eq!(app_show(&labelled, &named, Some(&app_level("Spotify", Some(40)))).0.title, "Music");
+        // Named, no stream.
+        assert_eq!(
+            app_show(&plain, &named, Some(&app_level("Spotify", None))),
+            (show("Spotify", Some("/i.svg"), true), None)
+        );
+        assert_eq!(app_show(&labelled, &named, Some(&app_level("Spotify", None))).0.title, "Music");
+        // Named, no value yet.
+        assert_eq!(app_show(&plain, &named, None), (show("Spotify", None, true), None));
+        assert_eq!(app_show(&labelled, &named, None).0.title, "Music");
+        // Focused, playing: the app's name, the label ignored.
+        let focused = DialConfig { label: "Here".into(), ..app_dial(0, "", true) };
+        assert_eq!(
+            app_show(&focused, &AppQuery::Focused, Some(&app_level("Firefox", Some(40)))),
+            (show("Firefox", Some("/i.svg"), false), forty)
+        );
+        // Focused, no audio: the window's class, else the label, else "Focused app".
+        let mut silent = app_level("Alacritty", None);
+        assert_eq!(app_show(&focused, &AppQuery::Focused, Some(&silent)), (show("Alacritty", None, true), None));
+        silent.name = String::new();
+        assert_eq!(app_show(&focused, &AppQuery::Focused, Some(&silent)).0, show("Here", None, true));
+        assert_eq!(
+            app_show(&app_dial(0, "", true), &AppQuery::Focused, Some(&silent)).0,
+            show("Focused app", None, true)
+        );
+        // Focused, no value yet.
+        assert_eq!(app_show(&focused, &AppQuery::Focused, None), (show("Here", None, true), None));
+        assert_eq!(app_show(&app_dial(0, "", true), &AppQuery::Focused, None).0.title, "Focused app");
+    }
+
+    #[test]
+    fn dial_status_app_named() {
+        let dial = DialConfig {
+            turn_right: Action::AppVolume { app: "spotify".into(), focused: false, change: 5, mute: false },
+            ..DialConfig::new(0)
+        };
+        let q = AppQuery::Named("spotify".into());
+        let mut values = Values::default();
+        // No value yet: dimmed, the app's display name, a dash.
+        let st = dial_status(Some(&dial), &values, false).panel;
+        assert_eq!(st.app, Some(AppShow { title: "Spotify".into(), icon: None, dimmed: true }));
+        assert_eq!(st.level, None);
+        // Playing: lit, its level.
+        let lv = AppLevel {
+            name: "Spotify".into(),
+            key: "spotify".into(),
+            icon: None,
+            icon_names: vec![],
+            level: Some(crate::audio::Level { percent: 40, muted: false }),
+            ids: vec![87],
+        };
+        values.probes.insert(Probe::AppVolume(q), Value::App(lv));
+        let st = dial_status(Some(&dial), &values, false).panel;
+        assert!(!st.app.unwrap().dimmed);
+        assert_eq!(st.level.unwrap().text, "40%");
+        // Another dial type has no app.
+        assert_eq!(dial_status(Some(&volume_dial(0, AudioDevice::Output)), &values, false).panel.app, None);
+    }
+
+    #[test]
+    fn shows_app_matches_its_query() {
+        let spotify = app_dial(0, "spotify", false);
+        assert!(shows(Some(&spotify), &Probe::AppVolume(AppQuery::Named("spotify".into()))));
+        assert!(!shows(Some(&spotify), &Probe::AppVolume(AppQuery::Named("mpv".into()))));
+        assert!(!shows(Some(&spotify), &Probe::AppVolume(AppQuery::Focused)));
+        assert!(!shows(Some(&spotify), &Probe::Volume(AudioDevice::Output)));
+        assert!(shows(Some(&app_dial(1, "", true)), &Probe::AppVolume(AppQuery::Focused)));
+        assert!(!shows(Some(&volume_dial(0, AudioDevice::Output)), &Probe::AppVolume(AppQuery::Focused)));
+    }
+
+    #[test]
+    fn watched_probes_adds_app_dials() {
+        let cfg = Config {
+            dials: vec![
+                app_dial(0, "spotify", false),
+                app_dial(1, "", true),
+                app_dial(2, "spotify", false),
+                app_dial(3, "", true),
+            ],
+            ..Config::default()
+        };
+        assert_eq!(
+            watched_probes(&cfg, None, 4, 32),
+            vec![Probe::AppVolume(AppQuery::Named("spotify".into())), Probe::AppVolume(AppQuery::Focused)]
+        );
+        // No app set: nothing to read.
+        let cfg = Config { dials: vec![app_dial(0, " ", false)], ..Config::default() };
+        assert_eq!(watched_probes(&cfg, None, 4, 32), vec![]);
     }
 
     #[test]

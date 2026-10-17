@@ -344,6 +344,8 @@ impl Poller {
                 }
                 // Fed by the Hyprland listener, never watched.
                 Probe::Workspace => {}
+                // Read in task F.
+                Probe::AppVolume(_) => {}
                 Probe::Command { .. } | Probe::Output { .. } => {
                     if self.in_flight.len() >= MAX_IN_FLIGHT {
                         // Not due again until something finishes: a `Done` wakes the
