@@ -643,6 +643,8 @@ impl App {
         if tab != FaceTab::Off {
             let mut st = probe::key_status(key, &Values::default(), false);
             st.state = tab.preview();
+            // The live value is the daemon's: designing the On face still shows it.
+            st.live = self.key_states.borrow().get(&(self.page.borrow().clone(), i)).and_then(|m| m.live.clone());
             return st;
         }
         self.key_states
