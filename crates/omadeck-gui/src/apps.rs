@@ -1,9 +1,11 @@
-//! "Choose an application" dialog listing installed desktop apps.
+//! "Choose an application" dialog listing installed desktop apps, and the app volume
+//! picker listing what's playing now.
 
 use std::rc::Rc;
 
 use adw::prelude::*;
-use gtk::gio;
+use gtk::{gio, glib};
+use omadeck_core::audio;
 
 pub fn find(id: &str) -> Option<gio::AppInfo> {
     gio::AppInfo::all().into_iter().find(|a| a.id().is_some_and(|i| i == id))
@@ -109,4 +111,180 @@ pub fn pick(parent: &impl IsA<gtk::Widget>, on_pick: impl Fn(gio::AppInfo) + 'st
 
     dialog.present(Some(parent));
     search.grab_focus();
+}
+
+/// The app an installed app is found by in the audio streams: its executable's name,
+/// or, for a launcher (Flatpak, a shell), its desktop id without `.desktop`. An app run
+/// through uwsm (`uwsm app -- foo`) is found by the program after `--`.
+fn audio_key(info: &gio::AppInfo) -> String {
+    let id = || {
+        let id = info.id().map(|s| s.to_string()).unwrap_or_default();
+        id.strip_suffix(".desktop").unwrap_or(&id).to_string()
+    };
+    let exe = info.executable();
+    let base = exe.file_name().map(|f| f.to_string_lossy().into_owned()).unwrap_or_default();
+    if is_uwsm(&base) {
+        let line = info.commandline().map(|c| c.to_string_lossy().into_owned()).unwrap_or_default();
+        return uwsm_program(&line).filter(|p| !is_launcher(p)).unwrap_or_else(id);
+    }
+    if is_launcher(&base) {
+        return id();
+    }
+    base
+}
+
+fn is_uwsm(base: &str) -> bool {
+    matches!(base, "uwsm" | "uwsm-app")
+}
+
+/// Executables that start some other app, so their name says nothing about it.
+fn is_launcher(base: &str) -> bool {
+    base.is_empty() || is_uwsm(base) || matches!(base, "flatpak" | "env" | "sh" | "bash" | "gtk-launch")
+}
+
+/// The program a uwsm command line runs: the file name of the word after `--`
+/// (`uwsm app -- foo %U` gives `foo`). `None` when there is no `--`, or what follows is
+/// a desktop entry (`foo.desktop`, `foo.desktop:action`), which the desktop id covers.
+fn uwsm_program(line: &str) -> Option<String> {
+    let mut words = line.split_whitespace().map(|w| w.trim_matches(|c| c == '"' || c == '\''));
+    words.by_ref().find(|w| *w == "--")?;
+    let program = words.next()?;
+    let base = program.rsplit('/').next().unwrap_or(program);
+    if base.is_empty() || base.starts_with('%') || base.contains(".desktop") {
+        return None;
+    }
+    Some(base.to_string())
+}
+
+/// Choose an app for an app volume action. `on_pick` gets the app's key (what the
+/// action stores) and its display name. The apps playing now are read once, off the
+/// GTK thread, as the dialog opens; "Installed apps…" offers every app instead.
+pub fn pick_audio(parent: &impl IsA<gtk::Widget>, on_pick: impl Fn(String, String) + 'static) {
+    let on_pick: Rc<dyn Fn(String, String)> = Rc::new(on_pick);
+    let parent: gtk::Widget = parent.upcast_ref::<gtk::Widget>().clone();
+
+    let heading = gtk::Label::builder().label("Playing now").xalign(0.0).css_classes(["heading"]).build();
+    let playing = gtk::ListBox::builder()
+        .selection_mode(gtk::SelectionMode::None)
+        .css_classes(["boxed-list"])
+        .valign(gtk::Align::Start)
+        .build();
+    let status = adw::ActionRow::builder().title("Looking for apps playing audio…").activatable(false).build();
+    playing.append(&status);
+
+    let others = gtk::ListBox::builder()
+        .selection_mode(gtk::SelectionMode::None)
+        .css_classes(["boxed-list"])
+        .valign(gtk::Align::Start)
+        .build();
+    let installed = adw::ActionRow::builder()
+        .title("Installed apps…")
+        .subtitle("Choose any application, playing or not")
+        .activatable(true)
+        .build();
+    installed.add_suffix(&gtk::Image::from_icon_name("go-next-symbolic"));
+    others.append(&installed);
+
+    let content = gtk::Box::builder()
+        .orientation(gtk::Orientation::Vertical)
+        .spacing(12)
+        .margin_start(12)
+        .margin_end(12)
+        .margin_top(6)
+        .margin_bottom(12)
+        .build();
+    content.append(&heading);
+    content.append(&playing);
+    content.append(&others);
+    let scroller =
+        gtk::ScrolledWindow::builder().hscrollbar_policy(gtk::PolicyType::Never).vexpand(true).child(&content).build();
+    let view = adw::ToolbarView::new();
+    view.add_top_bar(&adw::HeaderBar::new());
+    view.set_content(Some(&scroller));
+    let dialog =
+        adw::Dialog::builder().title("Choose an app").content_width(420).content_height(480).child(&view).build();
+
+    {
+        let d = dialog.clone();
+        let cb = on_pick.clone();
+        let parent = parent.clone();
+        installed.connect_activated(move |_| {
+            d.close();
+            let cb = cb.clone();
+            pick(&parent, move |info: gio::AppInfo| {
+                cb(audio_key(&info), info.display_name().to_string());
+            });
+        });
+    }
+
+    // One read of the streams, never on the GTK thread and never repeated.
+    let d = dialog.clone();
+    let list = playing.clone();
+    glib::spawn_future_local(async move {
+        let res = gio::spawn_blocking(audio::streams).await;
+        let streams = match res {
+            Ok(Some(s)) => s,
+            Ok(None) | Err(_) => {
+                status.set_title("Couldn't read what's playing (is pactl installed?)");
+                return;
+            }
+        };
+        let mut seen: Vec<String> = Vec::new();
+        let mut apps: Vec<(String, String)> = Vec::new();
+        for s in &streams {
+            let Some(lv) = audio::app_level(&[s]) else { continue };
+            if lv.key.is_empty() || seen.contains(&lv.key) {
+                continue;
+            }
+            seen.push(lv.key.clone());
+            apps.push((lv.key, lv.name));
+        }
+        if apps.is_empty() {
+            status.set_title("Nothing is playing now");
+            return;
+        }
+        list.remove(&status);
+        for (key, name) in apps {
+            let row = adw::ActionRow::builder()
+                .title(name.as_str())
+                .subtitle(key.as_str())
+                .use_markup(false)
+                .activatable(true)
+                .build();
+            let icon = match find(&format!("{key}.desktop")).and_then(|a| a.icon()) {
+                Some(gicon) => gtk::Image::from_gicon(&gicon),
+                None => gtk::Image::from_icon_name("audio-x-generic"),
+            };
+            icon.set_pixel_size(32);
+            row.add_prefix(&icon);
+            let d = d.clone();
+            let cb = on_pick.clone();
+            row.connect_activated(move |_| {
+                d.close();
+                cb(key.clone(), name.clone());
+            });
+            list.append(&row);
+        }
+    });
+
+    dialog.present(Some(&parent));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Apps launched through uwsm were stored as "uwsm" and matched no stream.
+    #[test]
+    fn uwsm_lines_give_the_program_after_the_dashes() {
+        assert_eq!(uwsm_program("uwsm app -- spotify %U").as_deref(), Some("spotify"));
+        assert_eq!(uwsm_program("/usr/bin/uwsm-app -- /opt/foo/bin/foo").as_deref(), Some("foo"));
+        assert_eq!(uwsm_program("uwsm app -- \"firefox\" %u").as_deref(), Some("firefox"));
+        assert_eq!(uwsm_program("uwsm app -- foo.desktop"), None);
+        assert_eq!(uwsm_program("uwsm app -- foo.desktop:new-window"), None);
+        assert_eq!(uwsm_program("uwsm app foo"), None);
+        assert_eq!(uwsm_program("uwsm app --"), None);
+        assert!(is_launcher("uwsm") && is_launcher("uwsm-app") && is_launcher("flatpak") && is_launcher(""));
+        assert!(!is_launcher("spotify"));
+    }
 }

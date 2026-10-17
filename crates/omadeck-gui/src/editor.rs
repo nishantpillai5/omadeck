@@ -7,7 +7,7 @@ use adw::prelude::*;
 use gtk::{gdk, gio, glib};
 use omadeck_core::{
     Action, AudioDevice, BusyFace, DialConfig, Direction, FaceTab, HOME, KeyConfig, Live, LookField, OnFace, Rgb,
-    StateChoice, action, paths,
+    StateChoice, action, audio, paths,
 };
 
 use crate::app::{ActionTarget, App, Target};
@@ -411,45 +411,7 @@ pub fn build_dial(app: &Rc<App>, i: u8) -> gtk::Widget {
         .description("Dials are numbered left to right, from 0")
         .build();
 
-    let presets = gtk::Box::new(gtk::Orientation::Horizontal, 6);
-    let preset = gtk::Button::builder()
-        .label("Volume dial")
-        .tooltip_text("Set this dial to the output volume: turn to change it, press to mute")
-        .valign(gtk::Align::Center)
-        .css_classes(["flat"])
-        .build();
-    let a = app.clone();
-    preset.connect_clicked(move |_| {
-        a.edit_dial(i, |d| {
-            d.label = "Volume".into();
-            d.glyph = Some("f057e".into());
-            d.turn_left = Action::Volume { device: AudioDevice::Output, change: -5, mute: false };
-            d.turn_right = Action::Volume { device: AudioDevice::Output, change: 5, mute: false };
-            d.press = Action::Volume { device: AudioDevice::Output, change: 0, mute: true };
-        });
-        a.rebuild_editor();
-    });
-    presets.append(&preset);
-    let preset = gtk::Button::builder()
-        .label("Brightness dial")
-        .tooltip_text("Set this dial to the panel brightness: turn to change it")
-        .valign(gtk::Align::Center)
-        .css_classes(["flat"])
-        .build();
-    let a = app.clone();
-    preset.connect_clicked(move |_| {
-        a.edit_dial(i, |d| {
-            d.label = "Brightness".into();
-            d.glyph = Some("f00de".into());
-            d.turn_left = Action::Brightness { change: -5, set: None };
-            d.turn_right = Action::Brightness { change: 5, set: None };
-            // A preset sets every slot: a Volume press left over from the Volume preset
-            // would make the panel show the volume.
-            d.press = Action::None;
-        });
-        a.rebuild_editor();
-    });
-    presets.append(&preset);
+    let presets = dial_presets_button(app, i);
     let clear = gtk::Button::builder()
         .icon_name("user-trash-symbolic")
         .tooltip_text("Clear this dial")
@@ -619,6 +581,99 @@ fn presets_button(app: &Rc<App>, i: u8) -> gtk::MenuButton {
         .build()
 }
 
+/// The dial group's Presets menu: a volume, brightness, chosen-app or focused-app dial
+/// in one click. Each preset sets all three slots.
+fn dial_presets_button(app: &Rc<App>, i: u8) -> gtk::MenuButton {
+    let group = gio::SimpleActionGroup::new();
+
+    let volume = gio::SimpleAction::new("volume", None);
+    let a = app.clone();
+    volume.connect_activate(move |_action, _param| {
+        a.edit_dial(i, |d| {
+            d.label = "Volume".into();
+            d.glyph = Some("f057e".into());
+            // A live value would hide the volume panel.
+            d.live = None;
+            d.turn_left = Action::Volume { device: AudioDevice::Output, change: -5, mute: false };
+            d.turn_right = Action::Volume { device: AudioDevice::Output, change: 5, mute: false };
+            d.press = Action::Volume { device: AudioDevice::Output, change: 0, mute: true };
+        });
+        a.rebuild_editor();
+    });
+    group.add_action(&volume);
+
+    let brightness = gio::SimpleAction::new("brightness", None);
+    let a = app.clone();
+    brightness.connect_activate(move |_action, _param| {
+        a.edit_dial(i, |d| {
+            d.label = "Brightness".into();
+            d.glyph = Some("f00de".into());
+            // A live value would hide the brightness panel.
+            d.live = None;
+            d.turn_left = Action::Brightness { change: -5, set: None };
+            d.turn_right = Action::Brightness { change: 5, set: None };
+            // A preset sets every slot: a Volume press left over from the Volume preset
+            // would make the panel show the volume.
+            d.press = Action::None;
+        });
+        a.rebuild_editor();
+    });
+    group.add_action(&brightness);
+
+    // Pick the app first; nothing changes if the picker is closed.
+    let app_dial = gio::SimpleAction::new("app", None);
+    let a = app.clone();
+    app_dial.connect_activate(move |_action, _param| {
+        let a2 = a.clone();
+        apps::pick_audio(&a.window, move |key: String, name: String| {
+            a2.edit_dial(i, |d| {
+                let act = |change: i8, mute: bool| Action::AppVolume { app: key.clone(), focused: false, change, mute };
+                d.label = name.clone();
+                d.glyph = None;
+                // A live value would hide the app's panel.
+                d.live = None;
+                d.turn_left = act(-5, false);
+                d.turn_right = act(5, false);
+                d.press = act(0, true);
+            });
+            a2.rebuild_editor();
+        });
+    });
+    group.add_action(&app_dial);
+
+    let focused = gio::SimpleAction::new("focused", None);
+    let a = app.clone();
+    focused.connect_activate(move |_action, _param| {
+        a.edit_dial(i, |d| {
+            let act = |change: i8, mute: bool| Action::AppVolume { app: String::new(), focused: true, change, mute };
+            // The panel names the focused app itself.
+            d.label = String::new();
+            d.glyph = None;
+            d.live = None;
+            d.turn_left = act(-5, false);
+            d.turn_right = act(5, false);
+            d.press = act(0, true);
+        });
+        a.rebuild_editor();
+    });
+    group.add_action(&focused);
+
+    let menu = gio::Menu::new();
+    menu.append(Some("Volume dial"), Some("dial-presets.volume"));
+    menu.append(Some("Brightness dial"), Some("dial-presets.brightness"));
+    menu.append(Some("App volume dial…"), Some("dial-presets.app"));
+    menu.append(Some("Focused app dial"), Some("dial-presets.focused"));
+    let popover = gtk::PopoverMenu::from_model(Some(&menu));
+    popover.insert_action_group("dial-presets", Some(&group));
+    gtk::MenuButton::builder()
+        .label("Presets")
+        .tooltip_text("Make this dial a volume, brightness or app volume dial")
+        .popover(&popover)
+        .css_classes(["flat"])
+        .valign(gtk::Align::Center)
+        .build()
+}
+
 /// The Service… dialog: a systemd user unit and an optional health URL.
 fn service_dialog(app: &Rc<App>, i: u8) {
     let unit = gtk::Entry::builder().placeholder_text("llm.service").build();
@@ -726,6 +781,9 @@ fn test_button(app: &Rc<App>, _slot: &ActionSlot, run: ActionRun) -> gtk::Button
     let act = (run)(app);
     let (tip, sensitive) = match &act {
         Action::Page { page } => ("Try it now".to_string(), app.config.borrow().has_page(page)),
+        Action::AppVolume { focused: true, .. } => {
+            ("Follows the focused window — here that would be the configurator".to_string(), false)
+        }
         a if a.is_deck_owned() => (format!("{} only works on the deck", Action::KINDS[a.kind_index()]), false),
         a => ("Try it now".to_string(), !a.is_none()),
     };
@@ -1317,8 +1375,136 @@ fn action_rows(app: &Rc<App>, group: &adw::PreferencesGroup, slot: &ActionSlot) 
 
         Action::Back => {}
 
-        // Task H fills this in.
-        Action::AppVolume { .. } => {}
+        Action::AppVolume { app: app_name, focused, change, mute } => {
+            group
+                .add(&hint_row("Changes one app's volume. On a dial, the strip shows the app's icon, name and level."));
+
+            let follow = adw::SwitchRow::builder()
+                .title("Follow the focused window")
+                .subtitle("The app with the focused window, or the last focused one that played audio")
+                .active(*focused)
+                .build();
+            follow.connect_active_notify({
+                let a = app.clone();
+                let get = slot.get.clone();
+                let set_follow = slot.set.clone();
+                move |r: &adw::SwitchRow| {
+                    let on = r.is_active();
+                    // Read the action out of the borrow before editing.
+                    let mut act = (get)(&a);
+                    if let Action::AppVolume { focused, .. } = &mut act {
+                        *focused = on;
+                    }
+                    (set_follow)(&a, act);
+                    a.rebuild_editor();
+                }
+            });
+            group.add(&follow);
+
+            if !*focused {
+                let shown = |name: &str| {
+                    if name.trim().is_empty() { "None chosen".to_string() } else { audio::display_app(name) }
+                };
+                let row = adw::ActionRow::builder()
+                    .title("Application")
+                    .subtitle(shown(app_name.as_str()))
+                    .use_markup(false)
+                    .build();
+                let choose = gtk::Button::builder().label("Choose…").valign(gtk::Align::Center).build();
+                let a = app.clone();
+                // The slot's target, captured now: the selection may change while the
+                // picker is open.
+                let at = slot.target.clone();
+                choose.connect_clicked(move |_| {
+                    let a2 = a.clone();
+                    let at = at.clone();
+                    apps::pick_audio(&a.window, move |key: String, name: String| {
+                        let mut act = a2.action_at(&at).unwrap_or_default();
+                        match &mut act {
+                            Action::AppVolume { app, .. } => *app = key.clone(),
+                            // Changed to another kind meanwhile: nothing to set.
+                            _ => return,
+                        }
+                        if !a2.set_action_at(&at, act) {
+                            return;
+                        }
+                        // A dial with no label is named after the app; key labels are
+                        // left alone.
+                        if let Some((i, _)) = at.dial_slot() {
+                            let unlabelled = a2.config.borrow().dial(i).is_none_or(|d| d.label.trim().is_empty());
+                            if unlabelled {
+                                a2.edit_dial(i, |d| d.label = name.clone());
+                            }
+                        }
+                        a2.rebuild_editor();
+                    });
+                });
+                row.add_suffix(&choose);
+                row.set_activatable_widget(Some(&choose));
+                group.add(&row);
+
+                let entry =
+                    adw::EntryRow::builder().title("App (process, name or Flatpak id)").text(app_name.as_str()).build();
+                entry.connect_changed({
+                    let a = app.clone();
+                    let get = slot.get.clone();
+                    let set_app = slot.set.clone();
+                    let row = row.clone();
+                    move |e: &adw::EntryRow| {
+                        let text = e.text().to_string();
+                        row.set_subtitle(&shown(text.as_str()));
+                        let mut act = (get)(&a);
+                        if let Action::AppVolume { app, .. } = &mut act {
+                            *app = text;
+                        }
+                        // No `rebuild_editor` here: it would take the focus away.
+                        (set_app)(&a, act);
+                    }
+                });
+                group.add(&entry);
+            }
+
+            let mute_row = adw::SwitchRow::builder()
+                .title("Toggle mute")
+                .subtitle("Press toggles the app's mute instead of changing its level")
+                .active(*mute)
+                .build();
+            mute_row.connect_active_notify({
+                let a = app.clone();
+                let get = slot.get.clone();
+                let set_mute = slot.set.clone();
+                move |r: &adw::SwitchRow| {
+                    let on = r.is_active();
+                    let mut act = (get)(&a);
+                    if let Action::AppVolume { mute, .. } = &mut act {
+                        *mute = on;
+                    }
+                    (set_mute)(&a, act);
+                    a.rebuild_editor();
+                }
+            });
+            group.add(&mute_row);
+
+            if !*mute {
+                let spin = adw::SpinRow::with_range(-25.0, 25.0, 1.0);
+                spin.set_title("Change per turn (%)");
+                spin.set_value(*change as f64);
+                spin.connect_value_notify({
+                    let a = app.clone();
+                    let get = slot.get.clone();
+                    let set_spin = slot.set.clone();
+                    move |r: &adw::SpinRow| {
+                        let change = r.value().round() as i8;
+                        let mut act = (get)(&a);
+                        if let Action::AppVolume { change: c, .. } = &mut act {
+                            *c = change;
+                        }
+                        (set_spin)(&a, act);
+                    }
+                });
+                group.add(&spin);
+            }
+        }
     }
 }
 
