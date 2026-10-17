@@ -29,7 +29,7 @@ Written in Rust: a tiny background daemon drives the hardware, and a GTK4/libadw
 
 ## Features
 
-- **Nine action types**
+- **Ten action types**
   - **Launch app:** pick from your installed apps; the app's icon and name come along. Apps launch through `uwsm-app`, the same way Omarchy launches them.
   - **Run script:** optionally in a terminal so you can watch the output.
   - **Play sound:** through PipeWire (`pw-play`), with per-key volume.
@@ -39,6 +39,7 @@ Written in Rust: a tiny background daemon drives the hardware, and a GTK4/libadw
   - **Next/previous page:** the next or previous page — for a key, a dial turn, or a flick of the Stream Deck +'s touch strip (left is next, right is previous, wrapping). Folders are skipped.
   - **Volume:** change the output or input (microphone) volume, or toggle mute. It goes through Omarchy's own volume commands when they're installed, so the same on-screen pop-up shows as your volume keys — otherwise it falls back to `wpctl`.
   - **Brightness:** change the panel brightness by ±%, or set it to an exact value. The value is remembered across restarts (in the state file, not your config), as in the Elgato app.
+  - **App volume:** a dial or key for one app's volume (Spotify, a browser…), or for whichever app is focused. The strip shows the app's icon, name and level. A focused-app dial keeps controlling the last focused app that played audio when you move to a silent window.
 - **Toggle keys.** A second face (`[key.on]`) that follows real state: a shell command's exit status polled in the background (night light, stay awake, a service, …), the mute a volume mute key already changes, or a flip on each press. A command can report **busy** (exit 75) with a progress line — and a percentage for a bar — for things that take a while. Any key running a command or script can show the busy face for as long as it runs (`busy_while_running`). The configurator mirrors what the deck shows, and has toggle presets (mic mute, output mute, night light, stay awake, do-not-disturb, bluetooth, and a service… dialog).
 - **Live keys.** A key, or a dial's panel on the touch strip, can show a value the daemon keeps up to date (`[key.live]`, `[dial.live]`): the time and date (any [strftime format](https://docs.rs/jiff/latest/jiff/fmt/strtime/), e.g. `%H:%M%n%a %d`), CPU, memory or battery %, the active Hyprland workspace, or the first line of a command's output, re-run every few seconds (`source = "command"`, `command = "curl -s 'wttr.in/?format=%t'"`, `interval = 900`). The key still runs its action on press. On the strip, levels draw a bar (Elgato's `$B1` layout) and text doesn't (`$A1`).
 - **Icons your way**
@@ -202,6 +203,7 @@ Action types:
 | `volume` | `device` (`output`/`input`), `change` (±%), `mute` |
 | `page_step` | `change` (± pages, default 1) |
 | `brightness` | `change` (±%) and/or `set` (absolute 0–100) |
+| `app_volume` | `app` (a process name, app name, Flatpak id or desktop id), `focused` (follow the focused window instead), `change` (±%), `mute` |
 
 Per-key look overrides are `background`, `label_color` and `show_label`. Dials take the same fields (`icon`, `glyph`, `background`, `label_color`, `show_label`) for their panel on the touch strip, plus `background_image`: an image behind the panel (200 × 100), over the strip's image. The strip itself takes `[strip] background_image`, one image across all the panels (800 × 100 on a Plus). Images of any size fill their area and are centre-cropped; a dial's image shows through where it's transparent, and labels flip dark on bright images.
 
@@ -241,6 +243,18 @@ change = 5
 [dial.press]
 type = "volume"
 mute = true
+```
+
+An app volume dial: the same for one app's audio (all its streams together, capped at
+100%). Its panel shows the app's icon, name and level, dimmed with `–` while the app
+plays nothing. With `focused = true` instead of `app`, it follows the focused window:
+
+```toml
+[[dial]]
+index = 2
+turn_left = { type = "app_volume", app = "spotify", change = -5 }
+turn_right = { type = "app_volume", app = "spotify", change = 5 }
+press = { type = "app_volume", app = "spotify", mute = true }
 ```
 
 ### Toggle keys
@@ -314,6 +328,7 @@ Ideas, roughly in order; [docs/ROADMAP.md](docs/ROADMAP.md) has the details. Wan
 - [x] **Stream Deck +**: background images on the touch strip — one across the strip, one per dial
 - [ ] **OBS** scene and recording keys via obs-websocket
 - [x] **Live keys** that show a clock, CPU usage or the active workspace
+- [x] **Per-app volume** (chosen or focused app)
 - [ ] **Multiple decks** with a layout per serial number
 
 ## How this was built
