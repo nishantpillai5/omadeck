@@ -215,6 +215,7 @@ fn run() -> Result<()> {
         }
         daemon.handle_commands();
         daemon.apply_values();
+        daemon.poll_jobs();
 
         if daemon.deck.is_none() {
             // With no deck, `flush` only runs `publish_keys`: a job's progress and a
