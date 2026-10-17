@@ -30,6 +30,11 @@ fn back_key() -> KeyConfig {
     KeyConfig { label: "Back".into(), glyph: Some("\u{f004d}".into()), action: Action::Back, ..KeyConfig::new(0) }
 }
 
+/// The action in dial `i`'s slot `dir` (`None` for a dial that isn't configured).
+fn dial_action(cfg: &Config, i: u8, dir: Direction) -> Action {
+    cfg.dial(i).map(|d| d.action(dir).clone()).unwrap_or_default()
+}
+
 /// A key on a particular page. Work that finishes later (fetching an icon, a picker)
 /// holds one of these, so the result lands on the key it was started for even if the
 /// window has moved to another page since.
@@ -52,6 +57,8 @@ impl KeyRef {
 pub enum ActionTarget {
     /// A key's action.
     Key(KeyRef),
+    /// A toggle key's on action (its `on.action`).
+    KeyOn(KeyRef),
     DialTurnLeft(u8),
     DialTurnRight(u8),
     DialPress(u8),
@@ -68,9 +75,10 @@ impl ActionTarget {
     }
 
     /// The dial and slot, for a dial's action.
+    #[allow(dead_code)]
     pub fn dial_slot(&self) -> Option<(u8, Direction)> {
         match self {
-            ActionTarget::Key(_) => None,
+            ActionTarget::Key(_) | ActionTarget::KeyOn(_) => None,
             ActionTarget::DialTurnLeft(i) => Some((*i, Direction::Left)),
             ActionTarget::DialTurnRight(i) => Some((*i, Direction::Right)),
             ActionTarget::DialPress(i) => Some((*i, Direction::Press)),
@@ -573,6 +581,7 @@ impl App {
             let (Some(app), Ok(from)) = (weak.upgrade(), value.get::<u32>()) else { return false };
             if from as u8 != i {
                 app.with_page(|keys| keys.swap(from as u8, i));
+                app.swap_key_states(from as u8, i);
                 app.refresh_key(from as u8);
                 app.refresh_key(i);
                 app.select(Some(Selection::Key(i)));
@@ -844,7 +853,20 @@ impl App {
     }
 
     pub fn select(self: &Rc<Self>, sel: Option<Selection>) {
+        let prev = self.selected.get();
+        // Another key (or none): its editor starts on the Off tab, and both tiles redraw
+        // (only the selected key previews a face tab).
+        if sel != prev {
+            self.face_tab.set(FaceTab::Off);
+        }
         self.selected.set(sel);
+        if sel != prev {
+            for s in [prev, sel] {
+                if let Some(Selection::Key(i)) = s {
+                    self.refresh_key(i);
+                }
+            }
+        }
         for (n, (button, _)) in self.keys.borrow().iter().enumerate() {
             if Some(Selection::Key(n as u8)) == sel {
                 button.add_css_class("selected");
@@ -870,7 +892,19 @@ impl App {
                 .build()
                 .upcast(),
         };
+        // A rebuild for the same selection (a face tab, an edit) keeps the editor's scroll.
+        let scroll = (sel == prev)
+            .then(|| self.editor_slot.ancestor(gtk::ScrolledWindow::static_type()))
+            .flatten()
+            .and_then(|w| w.downcast::<gtk::ScrolledWindow>().ok())
+            .map(|s| s.vadjustment());
+        let at = scroll.as_ref().map(|a| a.value());
         self.editor_slot.set_child(Some(&widget));
+        if let (Some(adj), Some(v)) = (scroll, at) {
+            adj.set_value(v);
+            // And once the new rows are laid out: layout runs before idle callbacks.
+            glib::idle_add_local_once(move || adj.set_value(v));
+        }
     }
 
     /// Rebuild the editor for the selected key on the next idle (safe from signal handlers
@@ -939,9 +973,26 @@ impl App {
         true
     }
 
+    /// Two keys of the page being edited swapped places: so do their mirrored states,
+    /// until the daemon reloads and says what each shows now.
+    fn swap_key_states(&self, a: u8, b: u8) {
+        let page = self.page.borrow().clone();
+        let mut states = self.key_states.borrow_mut();
+        let sa = states.remove(&(page.clone(), a));
+        let sb = states.remove(&(page.clone(), b));
+        if let Some(s) = sa {
+            states.insert((page.clone(), b), s);
+        }
+        if let Some(s) = sb {
+            states.insert((page, a), s);
+        }
+    }
+
     pub fn clear_key(self: &Rc<Self>, i: u8) {
         let at = self.key_ref(i);
         let old = self.key(i).filter(|k| !k.is_blank());
+        // Before `refresh_key`, which borrows `key_states` itself.
+        self.key_states.borrow_mut().remove(&(self.page.borrow().clone(), i));
         self.with_page(|keys| keys.clear(i));
         self.refresh_key(i);
         self.schedule_save();
@@ -974,29 +1025,47 @@ impl App {
     /// The action `at` names; `None` if its page has gone.
     pub fn action_at(&self, at: &ActionTarget) -> Option<Action> {
         let cfg = self.config.borrow();
-        match at.dial_slot() {
-            Some((i, dir)) => Some(cfg.dial(i).map(|d| d.action(dir).clone()).unwrap_or_default()),
-            None => {
-                let ActionTarget::Key(k) = at else { return None };
+        // One arm per target, no wildcard: a new `ActionTarget` variant doesn't compile
+        // until it is handled here.
+        match at {
+            ActionTarget::Key(k) => {
                 cfg.page(k.page()).map(|keys| keys.get(k.index).map(|kc| kc.action.clone()).unwrap_or_default())
             }
+            ActionTarget::KeyOn(k) => cfg.page(k.page()).map(|keys| {
+                keys.get(k.index).and_then(|kc| kc.on.as_ref().map(|f| f.action.clone())).unwrap_or_default()
+            }),
+            ActionTarget::DialTurnLeft(i) => Some(dial_action(&cfg, *i, Direction::Left)),
+            ActionTarget::DialTurnRight(i) => Some(dial_action(&cfg, *i, Direction::Right)),
+            ActionTarget::DialPress(i) => Some(dial_action(&cfg, *i, Direction::Press)),
         }
     }
 
     /// Replace the action `at` names. False when it can't: config.toml is broken (both
-    /// edit paths drop late results then) or the key's page has gone.
+    /// edit paths drop late results then), the key's page has gone, or an on action's
+    /// key is no longer a toggle.
     pub fn set_action_at(self: &Rc<Self>, at: &ActionTarget, act: Action) -> bool {
-        match at.dial_slot() {
-            Some((i, dir)) => {
-                let ok = self.locked.borrow().is_none();
-                self.edit_dial(i, |d| *d.action_mut(dir) = act);
-                ok
+        match at {
+            ActionTarget::Key(k) => self.edit_ref(k, |kc| kc.action = act),
+            ActionTarget::KeyOn(k) => {
+                // "Two faces" switched off while a picker was open: nothing to set.
+                let has_on = self.config.borrow().key(k.page(), k.index).is_some_and(|kc| kc.on.is_some());
+                has_on
+                    && self.edit_ref(k, |kc| {
+                        if let Some(on) = &mut kc.on {
+                            on.action = act;
+                        }
+                    })
             }
-            None => match at {
-                ActionTarget::Key(k) => self.edit_ref(k, |kc| kc.action = act),
-                _ => false,
-            },
+            ActionTarget::DialTurnLeft(i) => self.set_dial_action(*i, Direction::Left, act),
+            ActionTarget::DialTurnRight(i) => self.set_dial_action(*i, Direction::Right, act),
+            ActionTarget::DialPress(i) => self.set_dial_action(*i, Direction::Press, act),
         }
+    }
+
+    fn set_dial_action(self: &Rc<Self>, i: u8, dir: Direction, act: Action) -> bool {
+        let ok = self.locked.borrow().is_none();
+        self.edit_dial(i, |d| *d.action_mut(dir) = act);
+        ok
     }
 
     pub fn clear_dial(self: &Rc<Self>, i: u8) {
@@ -1526,17 +1595,20 @@ impl App {
                 self.banner.set_revealed(false);
             }
             Msg::DaemonDown => {
+                // Sent after every failed connect, every 2 s while the daemon is stopped:
+                // clear and repaint only when it was up.
+                let was_up = self.daemon_up.replace(false);
                 self.daemon.borrow_mut().take();
-                self.daemon_up.set(false);
-                self.connected.set(false);
                 self.banner.set_revealed(true);
-                self.live_brightness.set(None);
-                self.panel_status.borrow_mut().clear();
-                self.key_states.borrow_mut().clear();
-                let b = self.config.borrow().brightness;
-                self.sync_slider(b);
-                self.refresh_strip();
-                self.refresh_all();
+                if was_up {
+                    self.connected.set(false);
+                    self.live_brightness.set(None);
+                    self.panel_status.borrow_mut().clear();
+                    self.key_states.borrow_mut().clear();
+                    let b = self.config.borrow().brightness;
+                    self.sync_slider(b);
+                    self.refresh_all(); // the strip too
+                }
             }
             Msg::Event(Event::Connected { deck }) => {
                 self.connected.set(true);

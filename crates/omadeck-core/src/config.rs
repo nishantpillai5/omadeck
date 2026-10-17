@@ -377,6 +377,57 @@ impl KeyConfig {
     }
 }
 
+/// Where a toggle key's state comes from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StateChoice {
+    /// No source of truth: it flips on each press.
+    Press,
+    /// A shell command's exit status, polled.
+    Command,
+    /// The mute a volume mute key already changes.
+    Mute,
+}
+
+impl KeyConfig {
+    /// The choices the State-from combo offers, in order.
+    pub fn state_choices(&self) -> &'static [StateChoice] {
+        match &self.action {
+            Action::Volume { mute: true, .. } => &[StateChoice::Mute, StateChoice::Command],
+            _ => &[StateChoice::Press, StateChoice::Command],
+        }
+    }
+
+    /// `on.state` set (even blank) → Command; else Mute for a volume mute action; else
+    /// Press. Only called for keys with an on face.
+    pub fn state_choice(&self) -> StateChoice {
+        let on = self.on.as_ref().expect("a state choice only exists with an on face");
+        if on.state.is_some() {
+            StateChoice::Command
+        } else if matches!(self.action, Action::Volume { mute: true, .. }) {
+            StateChoice::Mute
+        } else {
+            StateChoice::Press
+        }
+    }
+
+    /// Command keeps any old text (an empty command is still the choice, just nothing to
+    /// poll yet); Press and Mute clear `state` and `slow` (slow needs a command).
+    pub fn set_state_choice(&mut self, c: StateChoice) {
+        let on = self.on.get_or_insert_with(OnFace::default);
+        match c {
+            StateChoice::Command => {
+                if on.state.as_deref().map(str::trim).is_none_or(str::is_empty) {
+                    on.state = Some(String::new());
+                }
+            }
+            StateChoice::Press | StateChoice::Mute => {
+                on.state = None;
+                on.slow = false;
+            }
+        }
+    }
+}
+
 /// Which face of a key the configurator's editor is showing.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum FaceTab {
@@ -1363,6 +1414,23 @@ slow = true
         // A blank busy.label falls through to the text.
         let k = KeyConfig { busy: Some(BusyFace { label: Some("  ".into()), ..BusyFace::default() }), ..base() };
         assert_eq!(k.face_for(&crate::probe::Toggle::Busy("43%".into())).label, "43%");
+    }
+
+    #[test]
+    fn state_choice_follows_the_action_and_survives_an_empty_command() {
+        let mut k = KeyConfig { on: Some(OnFace::default()), ..KeyConfig::new(0) };
+        assert_eq!(k.state_choices(), &[StateChoice::Press, StateChoice::Command]);
+        assert_eq!(k.state_choice(), StateChoice::Press);
+        k.set_state_choice(StateChoice::Command);
+        assert_eq!(k.state_choice(), StateChoice::Command, "an empty command is still the choice");
+        assert_eq!(k.state_probe(), None, "but there is nothing to poll yet");
+        k.on.as_mut().unwrap().slow = true;
+        k.set_state_choice(StateChoice::Press);
+        assert_eq!(k.on.as_ref().unwrap().state, None);
+        assert!(!k.on.as_ref().unwrap().slow, "slow needs a command");
+        k.action = Action::Volume { device: AudioDevice::Input, change: 0, mute: true };
+        assert_eq!(k.state_choices(), &[StateChoice::Mute, StateChoice::Command]);
+        assert_eq!(k.state_choice(), StateChoice::Mute);
     }
 
     #[test]
