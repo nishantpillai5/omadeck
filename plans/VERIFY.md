@@ -430,41 +430,26 @@ Commits: `9978f6a` (task 1), `a09db77` (task 2), `b05fb0e` (task 3, GUI and docs
 compiled).
 
 Build:
-- [ ] `cargo clippy --all-targets -- -D warnings` clean, the GUI included (core and
-      daemon were clean on the Mac; the GUI was never compiled).
-- [ ] `cargo test`: core 221 (+1: `config::tests::page_path_follows_folder_openers`),
-      omadeckd 88 (+3, -1: `nav::tests::nearest_skips_nested_folders` replaces
-      `parent_is_where_back_would_go`, plus `nav::tests::home_clears_a_nested_trail`,
-      `deck::tests::back_hold_deadline`, `daemon::tests::only_a_back_press_waits_for_release`),
-      gui 7 (unchanged).
-- [ ] The three socket tests still fail here only on bind (`Operation not permitted`); no
-      new socket test.
-- [ ] `git diff --stat feat/multi-actions -- Cargo.lock` is empty (no new crates).
+- [x] `cargo clippy --all-targets -- -D warnings` clean, the GUI included. (2026-10-17, machine.)
+- [x] `cargo test`: core 221, omadeckd 88, gui 7. (2026-10-17, machine; core 221 and gui 7 exact; omadeckd 89 = 88 + the live-keys `committed_transcript_gives_expected_events` test inherited from below.)
+- [x] The three socket tests pass here (Mac failed only on bind). (2026-10-17, machine.)
+- [x] `git diff --stat feat/multi-actions -- Cargo.lock` is empty (no new crates). (2026-10-17, machine; empty.)
 
-Task 1 and 2 (daemon), on the deck:
-- [ ] Tap Back in a folder: goes up one level on release.
-- [ ] Hold Back ~0.5 s two folders deep: the deck goes Home while the key is still held
-      (log: `key <i>: held Back, going Home`); releasing does nothing more.
-- [ ] A Back key on a normal page (not a folder) works the same.
-- [ ] Hold a toggle key (e.g. the mic mute): its face flips to the new state and stays
-      drawn pressed until you let go (BUGS.md 65).
-- [ ] Two folders deep (Music → Media → Spotify), flick left: the deck shows the page
-      after Music, not the page after Home.
-- [ ] `omadeckd press 0` (PR 11) on a Back key goes back at once.
-- [ ] Unplug while holding Back, replug: no stray Home or Back.
+Task 1 and 2 (daemon), on the deck (2026-10-17, machine; test tree Music(folder) → Media(folder) → Spotify(leaf)):
+- [x] Tap Back in a folder: goes up one level on release. (User.)
+- [x] Hold Back ~0.5 s two folders deep: the deck goes Home while still held; release does nothing more. (First attempt was just under the 500 ms threshold — not a bug. A temporary debug build traced it: `back_held SET on key 0` → `deadline fired, held 500.8ms` → `held Back, going Home` → release took nothing. Debug logs removed.)
+- [ ] A Back key on a normal page (not a folder) works the same. *(not done — Spotify's Back is a leaf, not a normal page; skipped with the rest at the user's request)*
+- [ ] Hold a toggle key: its face flips and stays drawn pressed until release. *(skipped — no toggle key in the config; user's request)*
+- [x] Two folders deep, flick: skips the nested folder pages. (Flicks cycled `Spotify → Home → Meeting → Spotify → Home` — Music and Media never appeared. **Note:** the plan's "the page after Music" assumed Music was a *normal* page; here Music is itself a folder, so the cycle anchors on the leaf/`Home` instead. The folder-skipping behaviour is correct; the "empty page" the user saw was the Meeting page, since deleted.)
+- [x] `omadeckd press 0 [PAGE]` on a Back key goes back at once. (`press 0 Spotify` → `key 0: Go back`, deck went Spotify → Media. Note: `press 0` with no page targets **Home's** key 0, not the showing page — it hit the dangling `Terminal 3` page ref.)
+- [ ] Unplug while holding Back, replug: no stray Home or Back. *(skipped at the user's request)*
 
-Task 3 (GUI):
-- [ ] It compiles: check first `app.rs` `rebuild_grid` (the double-click `GestureClick`
-      builder with `.button(gdk::BUTTON_PRIMARY)` and `.propagation_phase(..)`, the typed
-      `connect_pressed` closure, `g.set_state(gtk::EventSequenceState::Claimed)`) and
-      `key_target` (`?` on `current_page()`, the guard borrowing `config`).
-- [ ] Double-click a folder key in the configurator: it opens, and the deck follows.
-      Double-click its Back key: back to the page that opens it. A single click still
-      selects; dragging keys still works; after the double-click no key is selected on
-      the new page.
-- [ ] The page switcher shows `Music › Media › Spotify` for a nested folder; ticking or
-      unticking the folder button updates the label at once. Check the dropdown doesn't
-      get uncomfortably wide with long paths.
+Task 3 (GUI) — 2026-10-17, machine, GUI linked and run:
+- [x] It compiles (the double-click `GestureClick`, `key_target`). (Linked and run.)
+- [ ] Double-click a folder key: it opens and the deck follows; double-click its Back key:
+      back to the opener; single click still selects; dragging works. *(skipped at the user's request)*
+- [ ] The page switcher shows `Music › Media › Spotify` for a nested folder; the folder
+      button updates the label at once. *(skipped at the user's request)*
 
 Assumptions and changes from the plan:
 - Unconfirmed Elgato behaviour, taken as the plan's defaults: Back acts on release; the
