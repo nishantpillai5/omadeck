@@ -76,6 +76,7 @@ pub fn build_key(app: &Rc<App>, i: u8) -> gtk::Widget {
         a.key(i).map(|k| k.action_for(a.face_tab.get() == FaceTab::On).clone()).unwrap_or_default()
     });
     buttons.append(&test_button(app, &slot, run));
+    buttons.append(&presets_button(app, i));
     let clear = gtk::Button::builder()
         .icon_name("user-trash-symbolic")
         .tooltip_text("Clear this key")
@@ -495,6 +496,87 @@ fn dial_action_group(app: &Rc<App>, i: u8, dir: Direction) -> adw::PreferencesGr
 type FaviconHandler = Rc<dyn Fn(&Rc<App>, ActionTarget, String, String) + 'static>;
 /// What the Try-it-now button executes.
 type ActionRun = Rc<dyn Fn(&Rc<App>) -> Action>;
+
+/// The key group's Presets menu: one click makes the key a working toggle. A preset
+/// whose binary is missing is insensitive ("needs <bin>"); Service… asks for the unit.
+fn presets_button(app: &Rc<App>, i: u8) -> gtk::MenuButton {
+    let a = app.clone();
+    let group = gio::SimpleActionGroup::new();
+    for (n, p) in omadeck_core::PRESETS.iter().enumerate() {
+        let name = format!("preset-{n}");
+        let action = gio::SimpleAction::new(name.as_str(), None);
+        let a2 = a.clone();
+        action.connect_activate(move |_action, _param| {
+            let p = &omadeck_core::PRESETS[n];
+            a2.edit(i, |k| (p.apply)(k));
+            a2.rebuild_editor();
+        });
+        if let Some(bin) = p.needs
+            && !omadeck_core::on_path(bin)
+        {
+            action.set_enabled(false);
+        }
+        group.add_action(&action);
+    }
+    let service = gio::SimpleAction::new("service", None);
+    let a3 = a.clone();
+    service.connect_activate(move |_action, _param| service_dialog(&a3, i));
+    group.add_action(&service);
+    let menu = gio::Menu::new();
+    for (n, p) in omadeck_core::PRESETS.iter().enumerate() {
+        let label = match p.needs.filter(|bin| !omadeck_core::on_path(bin)) {
+            Some(bin) => format!("{} (needs {bin})", p.name),
+            None => p.name.to_string(),
+        };
+        let action = format!("presets.preset-{n}");
+        let item = gio::MenuItem::new(Some(label.as_str()), Some(action.as_str()));
+        menu.append_item(&item);
+    }
+    let service_item = gio::MenuItem::new(Some("Service…"), Some("presets.service"));
+    menu.append_item(&service_item);
+    let popover = gtk::PopoverMenu::from_model(Some(&menu));
+    popover.insert_action_group("presets", Some(&group));
+    gtk::MenuButton::builder()
+        .icon_name("emblem-ok-symbolic")
+        .tooltip_text("Make this key a working toggle")
+        .popover(&popover)
+        .css_classes(["flat"])
+        .valign(gtk::Align::Center)
+        .build()
+}
+
+/// The Service… dialog: a systemd user unit and an optional health URL.
+fn service_dialog(app: &Rc<App>, i: u8) {
+    let unit = gtk::Entry::builder().placeholder_text("llm.service").build();
+    let url = gtk::Entry::builder().placeholder_text("http://127.0.0.1:8000/health (optional)").build();
+    let entries = gtk::Box::new(gtk::Orientation::Vertical, 6);
+    entries.append(&unit);
+    entries.append(&url);
+    let a = app.clone();
+    let dialog = adw::AlertDialog::builder()
+        .heading("Service toggle")
+        .body("A slow toggle for a systemd user unit. Optionally check a health URL while it comes up.")
+        .build();
+    dialog.set_extra_child(Some(&entries));
+    dialog.add_response("ok", "OK");
+    let a2 = a.clone();
+    dialog.connect_response(None, move |d: &adw::AlertDialog, response: &str| {
+        if response == "ok" {
+            let u = unit.text().to_string();
+            let u2 = url.text().to_string();
+            let mut k = KeyConfig::new(0);
+            match omadeck_core::apply_service(&mut k, &u, (!u2.trim().is_empty()).then_some(u2.trim())) {
+                Ok(()) => {
+                    a2.edit(i, |k2| *k2 = k);
+                    a2.rebuild_editor();
+                }
+                Err(e) => a2.toast(&format!("{e:#}")),
+            }
+        }
+        d.unparent();
+    });
+    dialog.present(Some(&a.window));
+}
 
 /// One action an editor edits: a key's action, one of a dial's three, and later a toggle's
 /// on action, a multi-action step or a long press.
