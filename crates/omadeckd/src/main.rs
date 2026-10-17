@@ -4,6 +4,7 @@
 mod daemon;
 mod deck;
 mod hub;
+mod hypr;
 mod hypr_worker;
 mod nav;
 mod saver;
