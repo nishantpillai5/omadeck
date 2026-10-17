@@ -71,6 +71,11 @@ pub struct Page {
     /// Skipped by flicks and `page_step`.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub folder: bool,
+    /// Show this page while a window of one of these apps is focused (Elgato's Smart
+    /// Profiles). Hyprland window classes, case-insensitive; `*` matches any run. Ignored on
+    /// folders.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub apps: Vec<String>,
 }
 
 /// The keys on one page. Keys that aren't listed are blank.
@@ -1478,13 +1483,23 @@ impl Config {
     /// **+** makes normal pages, "New page" on an Open-page action makes folders.
     pub fn add_page(&mut self, base: &str, folder: bool, first: KeyConfig) -> String {
         let name = self.unique_page_name(base);
-        self.pages.push(Page { name: name.clone(), keys: Keys(vec![first]), folder });
+        self.pages.push(Page { name: name.clone(), keys: Keys(vec![first]), folder, apps: Vec::new() });
         name
     }
 
     /// Whether the page `name` is a folder (skipped by page steps).
     pub fn is_folder(&self, name: &str) -> bool {
         self.pages.iter().any(|p| p.folder && p.name == name)
+    }
+
+    /// The page to show while a window of `class` is focused: the first non-folder page, in
+    /// file order, with a matching `apps` pattern.
+    pub fn app_page(&self, class: &str) -> Option<&str> {
+        self.pages
+            .iter()
+            .filter(|p| !p.folder)
+            .find(|p| p.apps.iter().any(|a| crate::follow::class_matches(a, class)))
+            .map(|p| p.name.as_str())
     }
 
     /// The page holding the first key that opens `name` (any action the key owns: its
@@ -1998,11 +2013,11 @@ slow = true
         c.keys.get_mut(3).action = Action::Sound { file: "~/a.wav".into(), volume: Some(0.5) };
         c.keys.get_mut(4).action = Action::Script { path: "x.sh".into(), terminal: true };
         c.keys.get_mut(5).action = Action::Page { page: "Media".into() };
-        let mut media = Page { name: "Media".into(), keys: Keys::default(), folder: false };
+        let mut media = Page { name: "Media".into(), keys: Keys::default(), folder: false, apps: Vec::new() };
         media.keys.get_mut(0).action = Action::Back;
         media.keys.get_mut(1).label = "Play".into();
         c.pages.push(media);
-        c.pages.push(Page { name: "Empty".into(), keys: Keys::default(), folder: false });
+        c.pages.push(Page { name: "Empty".into(), keys: Keys::default(), folder: false, apps: Vec::new() });
         let s = toml::to_string_pretty(&c).unwrap();
         let back: Config = toml::from_str(&s).unwrap();
         assert_eq!(c, back);
@@ -2011,9 +2026,9 @@ slow = true
     #[test]
     fn step_page() {
         let mut c = Config::default();
-        c.pages.push(Page { name: "A".into(), keys: Keys::default(), folder: false });
-        c.pages.push(Page { name: "F".into(), keys: Keys::default(), folder: true });
-        c.pages.push(Page { name: "B".into(), keys: Keys::default(), folder: false });
+        c.pages.push(Page { name: "A".into(), keys: Keys::default(), folder: false, apps: Vec::new() });
+        c.pages.push(Page { name: "F".into(), keys: Keys::default(), folder: true, apps: Vec::new() });
+        c.pages.push(Page { name: "B".into(), keys: Keys::default(), folder: false, apps: Vec::new() });
 
         // Home, A, B: folders are skipped.
         assert_eq!(c.step_page(None, 1), Some(Some("A".into())));
@@ -2030,8 +2045,10 @@ slow = true
 
         // Nothing to step through: Home only, or Home with only folders.
         assert_eq!(Config::default().step_page(None, 1), None);
-        let only_folders =
-            Config { pages: vec![Page { name: "F".into(), keys: Keys::default(), folder: true }], ..Config::default() };
+        let only_folders = Config {
+            pages: vec![Page { name: "F".into(), keys: Keys::default(), folder: true, apps: Vec::new() }],
+            ..Config::default()
+        };
         assert_eq!(only_folders.step_page(None, 1), None);
     }
 
@@ -2071,7 +2088,7 @@ slow = true
     #[test]
     fn pages() {
         let mut c = Config::default();
-        c.pages.push(Page { name: "Media".into(), keys: Keys::default(), folder: false });
+        c.pages.push(Page { name: "Media".into(), keys: Keys::default(), folder: false, apps: Vec::new() });
         c.keys.get_mut(0).action = Action::Page { page: "Media".into() };
         c.page_mut(Some("Media")).unwrap().get_mut(2).action = Action::Page { page: "Media".into() };
         assert_eq!(c.links_to("Media"), 2);
@@ -2388,13 +2405,48 @@ slow = true
     }
 
     #[test]
+    fn follow_apps_omitted_when_empty() {
+        let mut c = Config::default();
+        c.add_page("Work", false, KeyConfig::new(0));
+        let s = toml::to_string_pretty(&c).unwrap();
+        assert!(!s.contains("apps"), "{s}");
+        c.pages[0].apps.push("spotify".into());
+        let s = toml::to_string_pretty(&c).unwrap();
+        assert!(s.contains("apps = [\"spotify\"]"), "{s}");
+        assert_eq!(toml::from_str::<Config>(&s).unwrap(), c);
+    }
+
+    #[test]
+    fn follow_app_page_skips_folders_and_takes_first() {
+        let page = |name: &str, folder: bool, apps: &[&str]| Page {
+            name: name.into(),
+            keys: Keys::default(),
+            folder,
+            apps: apps.iter().map(|a| a.to_string()).collect(),
+        };
+        let c = Config {
+            pages: vec![
+                page("F", true, &["spotify"]),
+                page("Work", false, &[]),
+                page("Music", false, &["kitty", "Spotify"]),
+                page("Music 2", false, &["spotify"]),
+            ],
+            ..Config::default()
+        };
+        assert_eq!(c.app_page("spotify"), Some("Music"));
+        assert_eq!(c.app_page("kitty"), Some("Music"));
+        assert_eq!(c.app_page("firefox"), None);
+        assert_eq!(c.app_page(""), None);
+    }
+
+    #[test]
     fn save_tidies_every_page() {
         let dir = std::env::temp_dir().join(format!("omadeck-test-{}", std::process::id()));
         let path = dir.join("config.toml");
         let mut c = Config::default();
         c.keys.get_mut(4).label = "b".into();
         c.keys.get_mut(1).label = "a".into();
-        c.pages.push(Page { name: "P".into(), keys: Keys::default(), folder: false });
+        c.pages.push(Page { name: "P".into(), keys: Keys::default(), folder: false, apps: Vec::new() });
         c.page_mut(Some("P")).unwrap().get_mut(3);
         c.save_to(&path).unwrap();
         let back = Config::load_from(&path).unwrap();
@@ -2407,7 +2459,7 @@ slow = true
     fn undo_page_delete() {
         let mut c = Config::default();
         for n in ["A", "B", "C"] {
-            c.pages.push(Page { name: n.into(), keys: Keys::default(), folder: false });
+            c.pages.push(Page { name: n.into(), keys: Keys::default(), folder: false, apps: Vec::new() });
         }
         c.keys.get_mut(0).action = Action::Page { page: "B".into() };
         c.page_mut(Some("A")).unwrap().get_mut(2).action = Action::Page { page: "B".into() };
@@ -2466,7 +2518,7 @@ slow = true
     #[test]
     fn way_out() {
         let mut c = Config::default();
-        c.pages.push(Page { name: "P".into(), keys: Keys::default(), folder: false });
+        c.pages.push(Page { name: "P".into(), keys: Keys::default(), folder: false, apps: Vec::new() });
         assert!(c.has_way_out(None));
         assert!(!c.has_way_out(Some("P")));
         c.page_mut(Some("P")).unwrap().get_mut(3).action = Action::Page { page: "P".into() };
