@@ -1552,6 +1552,8 @@ fn action_rows(app: &Rc<App>, group: &adw::PreferencesGroup, slot: &ActionSlot) 
 
         Action::Back => {}
 
+        Action::Media { .. } => {}
+
         Action::Delay { ms } => {
             let spin = adw::SpinRow::with_range(0.0, f64::from(omadeck_core::config::MAX_DELAY_MS), 100.0);
             spin.set_title("Wait (ms)");

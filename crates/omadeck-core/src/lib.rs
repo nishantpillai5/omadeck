@@ -19,7 +19,7 @@ pub mod theme;
 pub use audio::{AppLevel, AppQuery};
 pub use config::{
     Action, AudioDevice, BusyFace, Config, DialConfig, Direction, FaceTab, HOME, KeyConfig, Keys, LevelSource, Live,
-    LookField, OnFace, Page, StateChoice, Style,
+    LookField, MediaCommand, OnFace, Page, StateChoice, Style,
 };
 pub use device::DeckInfo;
 pub use presets::{PRESETS, Preset, apply_service, on_path};

@@ -138,6 +138,10 @@ fn is_zero_i8(v: &i8) -> bool {
     *v == 0
 }
 
+fn is_zero_i16(v: &i16) -> bool {
+    *v == 0
+}
+
 fn default_step() -> i8 {
     1
 }
@@ -772,6 +776,25 @@ pub enum LevelSource {
     Brightness,
     /// One app's audio streams (`DialConfig::app_query` says which), read by the daemon.
     App,
+    /// The media player a `Media` action controls; which one is `DialConfig::media_player`.
+    Player,
+}
+
+/// What a media action does to the player.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MediaCommand {
+    #[default]
+    PlayPause,
+    Next,
+    Previous,
+    Stop,
+}
+
+impl MediaCommand {
+    pub fn is_play_pause(&self) -> bool {
+        matches!(self, Self::PlayPause)
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -859,10 +882,23 @@ pub enum Action {
         #[serde(default)]
         ms: u32,
     },
+    /// Control the media player (MPRIS), like the Elgato app's Multimedia actions.
+    Media {
+        /// Play/pause (default), next, previous or stop. Ignored when `seek` is set.
+        #[serde(default, skip_serializing_if = "MediaCommand::is_play_pause")]
+        command: MediaCommand,
+        /// Seek by this many seconds, signed (per detent on a dial). Wins over `command`.
+        #[serde(default, skip_serializing_if = "is_zero_i16")]
+        seek: i16,
+        /// Only this player (`playerctl --player` name, e.g. "spotify"). Default: the one
+        /// playing.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        player: Option<String>,
+    },
 }
 
 impl Action {
-    pub const KINDS: [&'static str; 14] = [
+    pub const KINDS: [&'static str; 15] = [
         "Nothing",
         "Launch app",
         "Run script",
@@ -877,12 +913,13 @@ impl Action {
         "App volume",
         "Multi action",
         "Delay",
+        "Media", // 14
     ];
 
     /// The kinds a key or dial action can be: everything but Delay.
-    pub const KEY_KINDS: &'static [usize] = &[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
+    pub const KEY_KINDS: &'static [usize] = &[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 14];
     /// The kinds a multi's step can be: everything but Multi.
-    pub const STEP_KINDS: &'static [usize] = &[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 13];
+    pub const STEP_KINDS: &'static [usize] = &[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 14];
 
     /// The combo row position of `kind` in `kinds`, or `None` when it isn't offered there
     /// (a hand-edited nested multi). The other way is `kinds[pos]`.
@@ -918,6 +955,7 @@ impl Action {
             Action::AppVolume { .. } => 11,
             Action::Multi { .. } => 12,
             Action::Delay { .. } => 13,
+            Action::Media { .. } => 14,
         }
     }
 
@@ -977,6 +1015,7 @@ impl Action {
             11 => Action::AppVolume { app: String::new(), focused: true, change: 5, mute: false },
             12 => Action::Multi { steps: vec![] },
             13 => Action::Delay { ms: 500 },
+            14 => Action::Media { command: MediaCommand::PlayPause, seek: 0, player: None },
             _ => Action::None,
         }
     }
@@ -999,6 +1038,12 @@ impl Action {
             }
             (Action::Brightness { change, set }, Direction::Left) => Action::Brightness { change: -change, set },
             (Action::PageStep { change }, Direction::Left) => Action::PageStep { change: -change },
+            (Action::Media { player, .. }, Direction::Left) => {
+                Action::Media { command: MediaCommand::PlayPause, seek: -5, player }
+            }
+            (Action::Media { player, .. }, Direction::Right) => {
+                Action::Media { command: MediaCommand::PlayPause, seek: 5, player }
+            }
             (act, _) => act,
         }
     }
@@ -1024,6 +1069,7 @@ impl Action {
             Action::AppVolume { app, focused, change, mute } => app_volume_summary(app, *focused, *change, *mute),
             Action::Multi { steps } => multi_summary(steps),
             Action::Delay { ms } => delay_summary(*ms),
+            Action::Media { command, seek, player } => media_summary(*command, *seek, player.as_deref()),
         }
     }
 
@@ -1083,6 +1129,23 @@ fn app_volume_summary(app: &str, focused: bool, change: i8, mute: bool) -> Strin
         (true, false) => format!("Focused app volume {sign}{change}%"),
         (false, true) => format!("Toggle mute ({name})"),
         (false, false) => format!("{name} volume {sign}{change}%"),
+    }
+}
+
+fn media_summary(command: MediaCommand, seek: i16, player: Option<&str>) -> String {
+    let what = if seek != 0 {
+        format!("Seek {}{} s", if seek > 0 { "+" } else { "" }, seek)
+    } else {
+        match command {
+            MediaCommand::PlayPause => "Play/Pause".into(),
+            MediaCommand::Next => "Next track".into(),
+            MediaCommand::Previous => "Previous track".into(),
+            MediaCommand::Stop => "Stop".into(),
+        }
+    };
+    match player.map(str::trim) {
+        Some(p) if !p.is_empty() => format!("{what} ({p})"),
+        _ => what,
     }
 }
 
@@ -1167,7 +1230,7 @@ impl DialConfig {
     pub fn volume_device(&self) -> Option<AudioDevice> {
         self.level_source().and_then(|s| match s {
             LevelSource::Volume(dev) => Some(dev),
-            LevelSource::Brightness | LevelSource::App => None,
+            LevelSource::Brightness | LevelSource::App | LevelSource::Player => None,
         })
     }
 
@@ -1208,12 +1271,16 @@ impl DialConfig {
     /// What this dial's strip panel shows: the first `Volume` action's device or `App`
     /// for the first app volume with an app set, in turn_right, turn_left, press order
     /// (the first wins), else `Brightness` when any of its actions is a brightness
-    /// action. `None` when `live` is set: an explicit live value wins.
+    /// action. `None` when `live` is set: an explicit live value wins. A media action
+    /// wins over the rest (`Player`): a dial that controls the player shows the player.
     pub fn level_source(&self) -> Option<LevelSource> {
         if self.live.is_some() {
             return None;
         }
         let actions = [&self.turn_right, &self.turn_left, &self.press];
+        if actions.iter().any(|a| matches!(a, Action::Media { .. })) {
+            return Some(LevelSource::Player);
+        }
         if let Some(src) = actions.into_iter().find_map(|a| match a {
             Action::Volume { device, .. } => Some(LevelSource::Volume(*device)),
             Action::AppVolume { .. } if a.app_query().is_some() => Some(LevelSource::App),
@@ -1228,6 +1295,18 @@ impl DialConfig {
     /// among turn_right, turn_left and press.
     pub fn app_query(&self) -> Option<AppQuery> {
         [&self.turn_right, &self.turn_left, &self.press].into_iter().find_map(Action::app_query)
+    }
+
+    /// The player a media dial follows: the first `Media` action's `player` among turn
+    /// right, turn left and press, trimmed; `None` when blank or there's no media action.
+    pub fn media_player(&self) -> Option<&str> {
+        [&self.turn_right, &self.turn_left, &self.press]
+            .into_iter()
+            .find_map(|a| match a {
+                Action::Media { player, .. } => Some(player.as_deref().map(str::trim).filter(|p| !p.is_empty())),
+                _ => None,
+            })
+            .flatten()
     }
 
     /// The look fields, shared with the key face renderer.
@@ -2225,7 +2304,9 @@ slow = true
         assert_eq!(Action::default_for(step, Direction::Left), Action::PageStep { change: -1 });
         let bright = Action::Brightness { change: 5, set: None }.kind_index();
         assert_eq!(Action::default_for(bright, Direction::Left), Action::Brightness { change: -5, set: None });
-        for kind in 0..Action::KINDS.len() {
+        // Media is the one kind whose right turn differs: it seeks +5 s, where a key's
+        // media action (and a press) is play/pause.
+        for kind in (0..Action::KINDS.len()).filter(|&k| k != 14) {
             assert_eq!(Action::default_for(kind, Direction::Right), Action::empty_of_kind(kind));
         }
     }
@@ -2659,5 +2740,100 @@ slow = true
         }
         assert!(Live::Battery.has_bar() && Live::Cpu.has_bar() && Live::Memory.has_bar());
         assert!(!Live::Workspace.has_bar() && !Live::of_kind(1).unwrap().has_bar());
+    }
+
+    #[test]
+    fn media_roundtrip_and_defaults() {
+        let src = r#"
+[[dial]]
+index = 2
+label = "Media"
+[dial.turn_left]
+type = "media"
+seek = -5
+[dial.turn_right]
+type = "media"
+seek = 5
+[dial.press]
+type = "media"
+
+[[key]]
+index = 7
+[key.action]
+type = "media"
+command = "next"
+player = "spotify"
+"#;
+        let cfg = Config::parse(src).unwrap();
+        let d = cfg.dial(2).unwrap();
+        assert_eq!(d.turn_left, Action::Media { command: MediaCommand::PlayPause, seek: -5, player: None });
+        assert_eq!(d.press, Action::Media { command: MediaCommand::PlayPause, seek: 0, player: None });
+        assert_eq!(d.level_source(), Some(LevelSource::Player));
+        let k = cfg.key(None, 7).unwrap();
+        assert_eq!(k.action, Action::Media { command: MediaCommand::Next, seek: 0, player: Some("spotify".into()) });
+        // Defaults are left out: a bare play/pause saves as just its type.
+        let out = toml::to_string_pretty(&cfg).unwrap();
+        assert!(out.contains("[dial.press]\ntype = \"media\"\n"), "{out}");
+        assert!(!out.contains("command = \"play_pause\""), "{out}");
+        assert!(!out.contains("seek = 0"), "{out}");
+        assert_eq!(Config::parse(&out).unwrap(), cfg);
+    }
+
+    #[test]
+    fn media_summary() {
+        let m = |command, seek, player: Option<&str>| Action::Media { command, seek, player: player.map(Into::into) };
+        assert_eq!(m(MediaCommand::PlayPause, 0, None).summary(), "Play/Pause");
+        assert_eq!(m(MediaCommand::Next, 0, None).summary(), "Next track");
+        assert_eq!(m(MediaCommand::Previous, 0, None).summary(), "Previous track");
+        assert_eq!(m(MediaCommand::Stop, 0, None).summary(), "Stop");
+        assert_eq!(m(MediaCommand::PlayPause, 5, None).summary(), "Seek +5 s");
+        assert_eq!(m(MediaCommand::Next, -5, None).summary(), "Seek -5 s", "seek wins over the command");
+        assert_eq!(m(MediaCommand::Next, 0, Some(" spotify ")).summary(), "Next track (spotify)");
+        assert_eq!(m(MediaCommand::Next, 0, Some("  ")).summary(), "Next track");
+    }
+
+    #[test]
+    fn level_source_media_wins() {
+        let d = DialConfig {
+            turn_right: Action::Volume { device: AudioDevice::Output, change: 5, mute: false },
+            turn_left: Action::Volume { device: AudioDevice::Output, change: -5, mute: false },
+            press: Action::Media { command: MediaCommand::PlayPause, seek: 0, player: None },
+            ..DialConfig::new(0)
+        };
+        assert_eq!(d.level_source(), Some(LevelSource::Player));
+        assert_eq!(d.volume_device(), None);
+        // A live value still wins.
+        let live = DialConfig { live: Some(Live::Cpu), ..d };
+        assert_eq!(live.level_source(), None);
+    }
+
+    #[test]
+    fn media_player_from_dial() {
+        let with = |player: Option<&str>| DialConfig {
+            press: Action::Media { command: MediaCommand::PlayPause, seek: 0, player: player.map(Into::into) },
+            ..DialConfig::new(0)
+        };
+        assert_eq!(with(Some(" spotify ")).media_player(), Some("spotify"));
+        assert_eq!(with(Some("  ")).media_player(), None);
+        assert_eq!(with(None).media_player(), None);
+        assert_eq!(DialConfig::new(0).media_player(), None);
+    }
+
+    #[test]
+    fn media_kind_index_and_empty() {
+        assert_eq!(Action::empty_of_kind(14).kind_index(), 14);
+        assert_eq!(Action::KINDS[14], "Media");
+        assert_eq!(Action::KEY_KINDS.last(), Some(&14));
+        assert_eq!(Action::STEP_KINDS.last(), Some(&14));
+        assert!(!Action::empty_of_kind(14).is_deck_owned());
+        assert_eq!(
+            Action::default_for(14, Direction::Left),
+            Action::Media { command: MediaCommand::PlayPause, seek: -5, player: None }
+        );
+        assert_eq!(
+            Action::default_for(14, Direction::Right),
+            Action::Media { command: MediaCommand::PlayPause, seek: 5, player: None }
+        );
+        assert_eq!(Action::default_for(14, Direction::Press), Action::empty_of_kind(14));
     }
 }
