@@ -393,7 +393,9 @@ fn run() -> Result<()> {
                             {
                                 log::info!("strip tap on dial {i}");
                                 if let Some(t) = d.flash_until.get_mut(i) {
-                                    *t = Some(Instant::now() + DIAL_FLASH);
+                                    // The tap time, not a deadline: `dial_status` and the
+                                    // expiry sweep both measure elapsed time since it.
+                                    *t = Some(Instant::now());
                                 }
                                 paint_dial(d, &cfg, &mut renderer, i as u8);
                                 if let Some(dc) = cfg.dial(i as u8)
