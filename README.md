@@ -40,6 +40,7 @@ Written in Rust: a tiny background daemon drives the hardware, and a GTK4/libadw
   - **Volume:** change the output or input (microphone) volume, or toggle mute. It goes through Omarchy's own volume commands when they're installed, so the same on-screen pop-up shows as your volume keys — otherwise it falls back to `wpctl`.
   - **Brightness:** change the panel brightness by ±%, or set it to an exact value. The value is remembered across restarts (in the state file, not your config), as in the Elgato app.
 - **Toggle keys.** A second face (`[key.on]`) that follows real state: a shell command's exit status polled in the background (night light, stay awake, a service, …), the mute a volume mute key already changes, or a flip on each press. A command can report **busy** (exit 75) with a progress line — and a percentage for a bar — for things that take a while. Any key running a command or script can show the busy face for as long as it runs (`busy_while_running`). The configurator mirrors what the deck shows, and has toggle presets (mic mute, output mute, night light, stay awake, do-not-disturb, bluetooth, and a service… dialog).
+- **Live keys.** A key, or a dial's panel on the touch strip, can show a value the daemon keeps up to date (`[key.live]`, `[dial.live]`): the time and date (any [strftime format](https://docs.rs/jiff/latest/jiff/fmt/strtime/), e.g. `%H:%M%n%a %d`), CPU, memory or battery %, the active Hyprland workspace, or the first line of a command's output, re-run every few seconds (`source = "command"`, `command = "curl -s 'wttr.in/?format=%t'"`, `interval = 900`). The key still runs its action on press. On the strip, levels draw a bar (Elgato's `$B1` layout) and text doesn't (`$A1`).
 - **Icons your way**
   - PNG, JPEG, SVG, WebP or GIF images.
   - App icons from your icon theme.
@@ -306,7 +307,7 @@ Ideas, roughly in order. Want one sooner? Open an issue or a PR; see [CONTRIBUTI
 - [x] **Stream Deck +**: value layouts on the strip — volume and brightness — and page switching on swipe
 - [x] **Stream Deck +**: background images on the touch strip — one across the strip, one per dial
 - [ ] **OBS** scene and recording keys via obs-websocket
-- [ ] **Live keys** that show a clock, CPU usage or the active workspace
+- [x] **Live keys** that show a clock, CPU usage or the active workspace
 - [ ] **Multiple decks** with a layout per serial number
 - [ ] **Import/export** of shareable layouts
 

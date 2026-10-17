@@ -7,6 +7,8 @@ All notable changes to omadeck are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- Live keys: a key or a dial's strip panel can show the time, CPU, memory, battery, the
+  active Hyprland workspace or a command's output, kept up to date by the daemon.
 - Toggle keys: a second face (`[key.on]`) that follows real state — a shell command's
   exit status polled in the background (exit 0 = on, 75 = busy with a progress line,
   else off), the mute a volume mute key already changes, or a flip on each press. A
