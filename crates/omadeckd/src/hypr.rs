@@ -502,4 +502,73 @@ mod tests {
             ]
         );
     }
+
+    // Captured on the machine by `scripts/capture-fixtures.sh` into
+    // `tests/fixtures/captured/<date>/`. A missing file prints a note and passes.
+    fn captured(name: &str) -> Option<String> {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/captured");
+        let mut dirs: Vec<PathBuf> = std::fs::read_dir(&root)
+            .map(|rd| rd.filter_map(|e| e.ok()).map(|e| e.path()).collect())
+            .unwrap_or_default();
+        dirs.sort();
+        let found = dirs.into_iter().rev().find_map(|d| std::fs::read_to_string(d.join(name)).ok());
+        if found.is_none() {
+            eprintln!("fixture {name} not captured yet (scripts/capture-fixtures.sh)");
+        }
+        found
+    }
+
+    #[test]
+    fn captured_request_json_parses() {
+        if let Some(json) = captured("j-activeworkspace.json") {
+            assert!(parse_workspace_json(&json).is_some(), "j/activeworkspace: {json}");
+        }
+        if let Some(json) = captured("j-activewindow.json") {
+            let w = parse_window_json(&json).unwrap_or_else(|| panic!("j/activewindow: {json}"));
+            assert!(!w.address.is_empty() && !w.class.is_empty() && w.pid.is_some(), "{w:?}");
+        }
+        if let Some(json) = captured("j-activewindow-empty.json") {
+            assert_eq!(parse_window_json(&json), None, "j/activewindow on an empty workspace: {json}");
+        }
+    }
+
+    /// Every line is `EVENT>>DATA`; the events `parse` reads all parse; the rest are
+    /// listed. Through `handle`, with the captured request JSON as the answers.
+    #[test]
+    fn transcript_gives_events() {
+        let Some(text) = captured("socket2.txt") else { return };
+        const READ: [&str; 6] =
+            ["workspacev2", "focusedmon", "renameworkspace", "activewindowv2", "windowtitlev2", "configreloaded"];
+        let workspace = captured("j-activeworkspace.json").unwrap_or_else(|| r#"{"id":1,"name":"1"}"#.into());
+        let win = captured("j-activewindow.json")
+            .unwrap_or_else(|| r#"{"address":"0x1","class":"c","title":"t","pid":2}"#.into());
+        let mut query = |c: &str| match c {
+            "j/activeworkspace" => Some(workspace.clone()),
+            "j/activewindow" => Some(win.clone()),
+            _ => None,
+        };
+        let (mut seen, mut evs, mut read, mut ignored) = (Seen::default(), 0, 0, std::collections::BTreeSet::new());
+        let mut empty_window = false;
+        for line in text.lines().filter(|l| !l.is_empty()) {
+            let (event, data) = line.split_once(">>").unwrap_or_else(|| panic!("not EVENT>>DATA: {line:?}"));
+            match parse(line) {
+                Some(p) => {
+                    read += 1;
+                    empty_window |= p == Parsed::NoWindow;
+                    evs += handle(p, &mut seen, &mut query).len();
+                }
+                None => {
+                    assert!(!READ.contains(&event), "a line parse should read didn't: {line:?}");
+                    ignored.insert(event);
+                }
+            }
+            if event == "activewindowv2" && !data.trim().is_empty() && data.trim() != "," {
+                eprintln!("activewindowv2 address form: {data:?}");
+            }
+        }
+        eprintln!("{read} lines read, {evs} events; ignored: {ignored:?}; empty activewindowv2: {empty_window}");
+        if read > 0 {
+            assert!(evs > 0, "lines were read but no event came out");
+        }
+    }
 }
