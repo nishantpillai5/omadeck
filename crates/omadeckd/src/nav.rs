@@ -2,7 +2,7 @@
 
 use omadeck_core::Config;
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone, PartialEq)]
 pub struct Nav {
     /// `None` is the home page.
     current: Option<String>,

@@ -8,6 +8,7 @@ use std::time::{Duration, Instant};
 use anyhow::Result;
 use omadeck_core::config::apply_brightness;
 use omadeck_core::device::{DeviceStateUpdate, StreamDeckError};
+use omadeck_core::follow::CONFIGURATOR_CLASS;
 use omadeck_core::ipc::{Command, Event, Reply};
 use omadeck_core::player::{self, PlayStatus};
 use omadeck_core::probe::{self, FAST_WINDOW, Probe, SETTLE, Toggle, Value, Values};
@@ -19,6 +20,7 @@ use omadeck_core::{
 };
 
 use crate::deck::{self, BackHold, Deck};
+use crate::follow::AppFollow;
 use crate::hub::{Hub, Request};
 use crate::hypr::{self, HyprEvent};
 use crate::hypr_worker::{HyprJob, HyprWorker};
@@ -36,6 +38,9 @@ const FLICK_MIN_PX: i32 = 50;
 /// After a read that returned input, at most this many more queued HID reports are taken in
 /// the same pass, so a fast spin is handled together and painted once.
 const MAX_DRAIN: usize = 32;
+/// Hyprland sends a focus event for every window an alt-tab passes; act once focus has
+/// stayed put this long.
+const APP_FOCUS_SETTLE: Duration = Duration::from_millis(200);
 
 /// A key's place: its page (`None` is home) and index.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -95,7 +100,6 @@ pub struct Runtime {
     /// `busy_while_running` commands, per key.
     pub jobs: HashMap<KeyId, Running>,
     /// The focused Hyprland window, from the event listener.
-    #[allow(dead_code)]
     pub window: Option<hypr::ActiveWindow>,
 }
 
@@ -231,6 +235,12 @@ pub struct Daemon {
     media_due: Option<Instant>,
     /// The multi actions running, timed by the loop.
     seq: Sequencer,
+    /// Pages that follow the focused app. Like `nav`, it outlives a replug.
+    follow: AppFollow,
+    /// The focused window's class once it settled; `""` when nothing has focus.
+    focus_class: Option<String>,
+    /// When the newest focus change settles; `rt.window` is then the one that counts.
+    focus_pending: Option<Instant>,
     /// What the watcher was last told to read (`watch`), so a media action targets only
     /// from a probe that is read now (`probe::media_target`).
     watched: Vec<Probe>,
@@ -286,6 +296,9 @@ impl Daemon {
             repaint_at: None,
             media_due: None,
             seq: Sequencer::default(),
+            follow: AppFollow::default(),
+            focus_class: None,
+            focus_pending: None,
             watched: Vec::new(),
         }
     }
@@ -367,6 +380,8 @@ impl Daemon {
         if let Some(p) = self.wanted_page.take_if(|p| self.cfg.has_page(p)) {
             moved |= self.nav.go(Some(&p));
         }
+        // A link added or removed takes effect without a focus change.
+        moved |= self.follow_focus();
         // The key under a held Back may be another one now: its release runs nothing.
         if let Some(d) = &mut self.deck {
             deck::forget_holds(&mut d.back_held, &mut d.key_pressed, moved);
@@ -552,15 +567,50 @@ impl Daemon {
             match ev {
                 HyprEvent::Workspace { name, .. } => self.apply_value(Probe::Workspace, Some(Value::Text(name)), 0),
                 HyprEvent::ActiveWindow(w) => {
-                    // Always, nothing focused included: the watcher only remembers it
-                    // when no focused dial is watched, and a focused dial with no window
-                    // falls back to its sticky app.
-                    let focus = w.as_ref().map(|w| audio::Window { pid: w.pid, class: w.class.clone() });
-                    let _ = self.watcher.cmd.send(WatchCmd::Focus(focus));
+                    // A retitle of the focused window comes as an `ActiveWindow` too. Only
+                    // another window counts: a window retitling faster than the settle
+                    // would never settle, and each retitle would re-read `pactl`.
+                    let moved = self.rt.window.as_ref().map(window_identity) != w.as_ref().map(window_identity);
+                    if moved {
+                        // Nothing focused included: the watcher only remembers it when no
+                        // focused dial is watched, and a focused dial with no window
+                        // falls back to its sticky app.
+                        let focus = w.as_ref().map(|w| audio::Window { pid: w.pid, class: w.class.clone() });
+                        let _ = self.watcher.cmd.send(WatchCmd::Focus(focus));
+                        // Pages that follow apps act on the window focus settles on.
+                        self.focus_pending = Some(Instant::now() + APP_FOCUS_SETTLE);
+                    }
                     self.rt.window = w;
                 }
             }
         }
+        let now = Instant::now();
+        if self.focus_pending.take_if(|at| now >= *at).is_some() {
+            let class = self.rt.window.as_ref().map(|w| w.class.clone()).unwrap_or_default();
+            // Editing never moves the deck.
+            if !class.eq_ignore_ascii_case(CONFIGURATOR_CLASS) {
+                self.focus_class = Some(class);
+                if self.follow_focus() {
+                    self.show_page();
+                }
+            }
+        }
+    }
+
+    /// Move `nav` to the page the focused app is linked to, or back when it isn't linked.
+    /// Returns whether the page moved; the caller repaints.
+    fn follow_focus(&mut self) -> bool {
+        let Some(class) = self.focus_class.clone() else { return false };
+        let link = self.cfg.app_page(&class).map(str::to_string);
+        if !self.follow.focus(link.as_deref(), &mut self.nav, &self.cfg) {
+            return false;
+        }
+        let page = self.nav.current().unwrap_or(omadeck_core::HOME).to_string();
+        match &link {
+            Some(_) => log::info!("page {page} (follows {class})"),
+            None => log::info!("page {page} (left {class})"),
+        }
+        true
     }
 
     /// A read-back from the watcher: `applied` of what we sent is confirmed by this read.
@@ -703,7 +753,10 @@ impl Daemon {
         let hold = self.deck.as_ref().and_then(|d| d.back_held).map(|h| h.deadline());
         // The media tick repaints the deck's panels: nothing to wait for without one.
         let media = self.deck.as_ref().and(self.media_due);
-        [flash, hold, self.repaint_at, self.reload_at, self.seq.next_due(), media].into_iter().flatten().min()
+        [flash, hold, self.repaint_at, self.reload_at, self.seq.next_due(), media, self.focus_pending]
+            .into_iter()
+            .flatten()
+            .min()
     }
 
     /// One pass with a deck: read and handle its input until it's quiet, then paint what
@@ -1338,6 +1391,11 @@ impl Daemon {
     }
 }
 
+/// What makes a focused window another one: a retitle keeps all three.
+fn window_identity(w: &hypr::ActiveWindow) -> (&str, &str, Option<u32>) {
+    (&w.address, &w.class, w.pid)
+}
+
 /// The reply line for a `Run` that went through: where the deck is now, or what ran.
 fn run_message(act: &Action, page: Option<&str>, brightness: u8) -> String {
     match act {
@@ -1801,11 +1859,12 @@ live = { source = "battery" }
     }
 
     /// A daemon with no deck, socket, watcher thread, Hyprland or user state: the hub is
-    /// detached, the watcher's commands come out of `cmds`, and the state saver writes
-    /// into a temp dir that is removed on drop.
+    /// detached, the watcher's commands come out of `cmds`, Hyprland events go in through
+    /// `hypr_tx`, and the state saver writes into a temp dir that is removed on drop.
     struct TestDaemon {
         d: Option<Daemon>,
         cmds: std::sync::mpsc::Receiver<WatchCmd>,
+        hypr_tx: std::sync::mpsc::Sender<HyprEvent>,
         dir: std::path::PathBuf,
     }
 
@@ -1839,13 +1898,14 @@ live = { source = "battery" }
         let saver = crate::saver::start_saver_at(dir.join("state.toml"));
         let (hub, _requests) = Hub::detached();
         let (watcher, cmds, _values) = Watcher::detached();
+        let (hypr_tx, hypr_rx) = std::sync::mpsc::channel();
         let env = Env {
             saved: State::default(),
             hypr: HyprWorker::start_with(|d| anyhow::bail!("no Hyprland in tests ({d})")),
-            hypr_events: None,
+            hypr_events: Some(hypr_rx),
         };
         let d = Daemon::with_env(Config::parse(toml).unwrap(), true, hub, watcher, saver, env);
-        TestDaemon { d: Some(d), cmds, dir }
+        TestDaemon { d: Some(d), cmds, hypr_tx, dir }
     }
 
     #[test]
@@ -1871,6 +1931,39 @@ live = { source = "battery" }
         t.detach(&omadeck_core::device::StreamDeckError::NoScreen);
         assert_eq!(t.media_due, None);
         assert!(wait_for(Instant::now(), t.next_deadline()) > Duration::ZERO);
+    }
+
+    fn window(address: &str, class: &str, title: &str) -> hypr::ActiveWindow {
+        hypr::ActiveWindow { address: address.into(), class: class.into(), title: title.into(), pid: Some(7) }
+    }
+
+    fn focus_sends(cmds: &std::sync::mpsc::Receiver<WatchCmd>) -> usize {
+        cmds.try_iter().filter(|c| matches!(c, WatchCmd::Focus(_))).count()
+    }
+
+    #[test]
+    fn a_retitle_does_not_restart_the_app_page_settle() {
+        // A window retitling faster than the settle never got its linked page, and each
+        // retitle re-read `pactl`.
+        let mut t = test_daemon("");
+        t.hypr_tx.send(HyprEvent::ActiveWindow(Some(window("a", "kitty", "one")))).unwrap();
+        t.apply_hypr();
+        let settle = t.focus_pending.expect("a new window starts the settle");
+        assert_eq!(focus_sends(&t.cmds), 1);
+        std::thread::sleep(Duration::from_millis(5));
+        t.hypr_tx.send(HyprEvent::ActiveWindow(Some(window("a", "kitty", "two")))).unwrap();
+        t.apply_hypr();
+        assert_eq!(t.focus_pending, Some(settle), "a retitle keeps the settle");
+        assert_eq!(focus_sends(&t.cmds), 0, "a retitle sends no Focus");
+        assert_eq!(t.rt.window.as_ref().map(|w| w.title.as_str()), Some("two"), "the title is still stored");
+        // Another window, or none, does restart it.
+        t.hypr_tx.send(HyprEvent::ActiveWindow(Some(window("b", "kitty", "two")))).unwrap();
+        t.apply_hypr();
+        assert!(t.focus_pending.is_some_and(|at| at > settle));
+        assert_eq!(focus_sends(&t.cmds), 1);
+        t.hypr_tx.send(HyprEvent::ActiveWindow(None)).unwrap();
+        t.apply_hypr();
+        assert_eq!(focus_sends(&t.cmds), 1);
     }
 
     #[test]
