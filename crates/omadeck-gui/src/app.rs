@@ -38,7 +38,7 @@ fn dial_action(cfg: &Config, i: u8, dir: Direction) -> Action {
 /// A key on a particular page. Work that finishes later (fetching an icon, a picker)
 /// holds one of these, so the result lands on the key it was started for even if the
 /// window has moved to another page since.
-#[derive(Clone)]
+#[derive(Clone, PartialEq)]
 pub struct KeyRef {
     page: Option<String>,
     index: u8,
@@ -58,7 +58,7 @@ impl KeyRef {
 
 /// Which action an editor edits, for work that finishes later (a picker, a file dialog, a
 /// fetch): the result lands on this action even if the window has moved on.
-#[derive(Clone)]
+#[derive(Clone, PartialEq)]
 pub enum ActionTarget {
     /// A key's action.
     Key(KeyRef),
@@ -67,6 +67,8 @@ pub enum ActionTarget {
     DialTurnLeft(u8),
     DialTurnRight(u8),
     DialPress(u8),
+    /// Step `n` (from 0) of the multi action at the inner target.
+    Step(Box<ActionTarget>, usize),
 }
 
 impl ActionTarget {
@@ -82,7 +84,7 @@ impl ActionTarget {
     /// The dial and slot, for a dial's action.
     pub fn dial_slot(&self) -> Option<(u8, Direction)> {
         match self {
-            ActionTarget::Key(_) | ActionTarget::KeyOn(_) => None,
+            ActionTarget::Key(_) | ActionTarget::KeyOn(_) | ActionTarget::Step(..) => None,
             ActionTarget::DialTurnLeft(i) => Some((*i, Direction::Left)),
             ActionTarget::DialTurnRight(i) => Some((*i, Direction::Right)),
             ActionTarget::DialPress(i) => Some((*i, Direction::Press)),
@@ -164,6 +166,9 @@ pub struct App {
     key_states: RefCell<std::collections::HashMap<(Option<String>, u8), KeyStatus>>,
     /// Which face the key editor is showing (its Off | On | Busy buttons).
     pub face_tab: Cell<FaceTab>,
+    /// The multi-action step whose editor is open (an `ActionTarget::Step`). A rebuild
+    /// keeps it; selecting another key or dial clears it.
+    pub selected_step: RefCell<Option<ActionTarget>>,
     /// The daemon's live brightness (`Event::Brightness`); `None` with no daemon.
     live_brightness: Cell<Option<u8>>,
     /// The settings slider, so `Event::Brightness` can move it.
@@ -360,6 +365,7 @@ impl App {
             panel_status: RefCell::default(),
             key_states: RefCell::default(),
             face_tab: Cell::default(),
+            selected_step: RefCell::default(),
             live_brightness: Cell::new(None),
             brightness_scale: RefCell::default(),
             syncing_brightness: Cell::new(false),
@@ -860,10 +866,11 @@ impl App {
 
     pub fn select(self: &Rc<Self>, sel: Option<Selection>) {
         let prev = self.selected.get();
-        // Another key (or none): its editor starts on the Off tab, and both tiles redraw
-        // (only the selected key previews a face tab).
+        // Another key (or none): its editor starts on the Off tab with no open multi-action
+        // step, and both tiles redraw (only the selected key previews a face tab).
         if sel != prev {
             self.face_tab.set(FaceTab::Off);
+            self.selected_step.borrow_mut().take();
         }
         self.selected.set(sel);
         if sel != prev {
@@ -1043,6 +1050,12 @@ impl App {
             ActionTarget::DialTurnLeft(i) => Some(dial_action(&cfg, *i, Direction::Left)),
             ActionTarget::DialTurnRight(i) => Some(dial_action(&cfg, *i, Direction::Right)),
             ActionTarget::DialPress(i) => Some(dial_action(&cfg, *i, Direction::Press)),
+            // A step that isn't there (removed, or the parent is no longer a multi) reads
+            // as Nothing.
+            ActionTarget::Step(of, n) => Some(match self.action_at(of)? {
+                Action::Multi { steps } => steps.get(*n).cloned().unwrap_or_default(),
+                _ => Action::None,
+            }),
         }
     }
 
@@ -1065,6 +1078,24 @@ impl App {
             ActionTarget::DialTurnLeft(i) => self.set_dial_action(*i, Direction::Left, act),
             ActionTarget::DialTurnRight(i) => self.set_dial_action(*i, Direction::Right, act),
             ActionTarget::DialPress(i) => self.set_dial_action(*i, Direction::Press, act),
+            ActionTarget::Step(of, n) => {
+                // An owned copy of the parent, so no borrow of the config is held while the
+                // parent is written back.
+                match self.action_at(of) {
+                    Some(Action::Multi { mut steps }) if *n < steps.len() => {
+                        steps[*n] = act;
+                        self.set_action_at(of, Action::Multi { steps })
+                    }
+                    None => {
+                        self.toast("That key's page was deleted, so the change was dropped");
+                        false
+                    }
+                    Some(_) => {
+                        self.toast("That step was removed, so the change was dropped");
+                        false
+                    }
+                }
+            }
         }
     }
 
@@ -1749,5 +1780,20 @@ impl App {
             "Waiting for a Stream Deck…".to_string()
         };
         self.title.set_subtitle(&sub);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn step_targets_compare_by_parent_and_index() {
+        let key = ActionTarget::Key(KeyRef { page: None, index: 5 });
+        let step = ActionTarget::Step(Box::new(key.clone()), 1);
+        assert!(step == ActionTarget::Step(Box::new(key.clone()), 1));
+        assert!(step != ActionTarget::Step(Box::new(key), 2));
+        assert!(step != ActionTarget::Step(Box::new(ActionTarget::DialPress(0)), 1));
+        assert_eq!(step.dial_slot(), None);
     }
 }
