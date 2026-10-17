@@ -467,4 +467,32 @@ mod tests {
         let none = Event::DialStatus { index: 1, status: PanelStatus::default() }.to_line();
         assert!(!none.contains("app"), "{none}");
     }
+
+    #[test]
+    fn dial_status_media_on_the_wire() {
+        let img = std::sync::Arc::new(image::RgbaImage::new(2, 2));
+        let media = crate::MediaShow {
+            title: "Song".into(),
+            artist: "Band".into(),
+            playing: true,
+            position_ms: 83_000,
+            length_ms: Some(225_000),
+            as_of_ms: 1_000,
+            art: Some("/tmp/cover.png".into()),
+            art_img: Some(img),
+            note: String::new(),
+        };
+        let st = PanelStatus { media: Some(media.clone()), ..Default::default() };
+        let line = Event::DialStatus { index: 2, status: st }.to_line();
+        assert!(line.contains("\"media\":{\"title\":\"Song\""), "{line}");
+        assert!(!line.contains("art_img") && !line.contains("note"), "{line}");
+        let back: Event = serde_json::from_str(&line).unwrap();
+        let without_img = crate::MediaShow { art_img: None, ..media };
+        assert_eq!(
+            back,
+            Event::DialStatus { index: 2, status: PanelStatus { media: Some(without_img), ..Default::default() } }
+        );
+        let none = Event::DialStatus { index: 1, status: PanelStatus::default() }.to_line();
+        assert!(!none.contains("media"), "{none}");
+    }
 }
