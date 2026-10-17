@@ -461,6 +461,10 @@ pub fn build_dial(app: &Rc<App>, i: u8) -> gtk::Widget {
     for dir in [Direction::Left, Direction::Right, Direction::Press] {
         page.add(&dial_action_group(app, i, dir));
     }
+    // Only a deck with a touch strip has panels to hold.
+    if app.deck_info().strip.is_some() {
+        page.add(&long_press_group(app, i));
+    }
 
     // --- panel value ----------------------------------------------------------------------
     let panel_group = adw::PreferencesGroup::builder().title("Panel value").build();
@@ -549,6 +553,19 @@ fn dial_action_group(app: &Rc<App>, i: u8, dir: Direction) -> adw::PreferencesGr
     group
 }
 
+/// The "Long press on the strip" group: what holding the dial's panel runs (Elgato's
+/// "long touch"), with a ▶ that runs that action only.
+fn long_press_group(app: &Rc<App>, i: u8) -> adw::PreferencesGroup {
+    let group = adw::PreferencesGroup::builder()
+        .title("Long press on the strip")
+        .description("Press and hold this dial's panel. Nothing set: same as Press.")
+        .build();
+    let slot = ActionSlot::dial_long_press(i);
+    group.set_header_suffix(Some(&test_button(app, &slot, slot.get.clone())));
+    action_editor(app, &group, "Action", &slot);
+    group
+}
+
 /// Handles a fetched website icon: (app, target, imported icon path, site name).
 type FaviconHandler = Rc<dyn Fn(&Rc<App>, ActionTarget, String, String) + 'static>;
 /// What the Try-it-now button executes.
@@ -618,6 +635,9 @@ fn dial_presets_button(app: &Rc<App>, i: u8) -> gtk::MenuButton {
             d.turn_left = Action::Volume { device: AudioDevice::Output, change: -5, mute: false };
             d.turn_right = Action::Volume { device: AudioDevice::Output, change: 5, mute: false };
             d.press = Action::Volume { device: AudioDevice::Output, change: 0, mute: true };
+            // A preset defines the whole dial: a long press left over would keep running
+            // and could decide what the panel shows.
+            d.long_press = Action::None;
         });
         a.rebuild_editor();
     });
@@ -636,6 +656,7 @@ fn dial_presets_button(app: &Rc<App>, i: u8) -> gtk::MenuButton {
             // A preset sets every slot: a Volume press left over from the Volume preset
             // would make the panel show the volume.
             d.press = Action::None;
+            d.long_press = Action::None;
         });
         a.rebuild_editor();
     });
@@ -656,6 +677,7 @@ fn dial_presets_button(app: &Rc<App>, i: u8) -> gtk::MenuButton {
                 d.turn_left = act(-5, false);
                 d.turn_right = act(5, false);
                 d.press = act(0, true);
+                d.long_press = Action::None;
             });
             a2.rebuild_editor();
         });
@@ -674,6 +696,7 @@ fn dial_presets_button(app: &Rc<App>, i: u8) -> gtk::MenuButton {
             d.turn_left = act(-5, false);
             d.turn_right = act(5, false);
             d.press = act(0, true);
+            d.long_press = Action::None;
         });
         a.rebuild_editor();
     });
@@ -693,6 +716,7 @@ fn dial_presets_button(app: &Rc<App>, i: u8) -> gtk::MenuButton {
             d.turn_left = act(-5);
             d.turn_right = act(5);
             d.press = act(0);
+            d.long_press = Action::None;
         });
         a.rebuild_editor();
     });
@@ -757,9 +781,9 @@ fn service_dialog(app: &Rc<App>, i: u8) {
     dialog.present(Some(&app.window));
 }
 
-/// One action an editor edits: a key's action, one of a dial's three, and later a toggle's
-/// on action, a multi-action step, and later a long press. Every action editor takes one,
-/// so editors nest: a multi's step editor builds a slot for the step (`ActionSlot::step`)
+/// One action an editor edits: a key's action, one of a dial's three or its long press,
+/// a toggle's on action, or a multi-action step. Every action editor takes one, so
+/// editors nest: a multi's step editor builds a slot for the step (`ActionSlot::step`)
 /// and calls `action_editor` again.
 #[derive(Clone)]
 #[allow(clippy::type_complexity)]
@@ -788,7 +812,16 @@ pub(crate) struct ActionSlot {
 impl ActionSlot {
     /// A dial slot: reads and writes through its target and only changes the action.
     pub fn dial(i: u8, dir: Direction) -> Self {
-        let target = ActionTarget::dial(i, dir);
+        Self::for_dial(i, ActionTarget::dial(i, dir), dir)
+    }
+
+    /// Dial `i`'s long press on the strip. Kind picks start from the press defaults.
+    pub fn dial_long_press(i: u8) -> Self {
+        Self::for_dial(i, ActionTarget::DialLongPress(i), Direction::Press)
+    }
+
+    /// A slot of dial `i` at `target`; `dir` sets the defaults a kind pick starts from.
+    fn for_dial(i: u8, target: ActionTarget, dir: Direction) -> Self {
         let (t1, t2) = (target.clone(), target.clone());
         ActionSlot {
             target,

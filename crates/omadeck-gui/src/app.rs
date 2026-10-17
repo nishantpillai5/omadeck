@@ -72,8 +72,8 @@ impl KeyRef {
     }
 }
 
-/// Which action an editor edits, for work that finishes later (a picker, a file dialog, a
-/// fetch): the result lands on this action even if the window has moved on.
+/// Which action an editor edits, for work that finishes later (a picker, a file
+/// dialog, a fetch): the result lands on this action even if the window has moved on.
 #[derive(Clone, PartialEq)]
 pub enum ActionTarget {
     /// A key's action.
@@ -83,6 +83,8 @@ pub enum ActionTarget {
     DialTurnLeft(u8),
     DialTurnRight(u8),
     DialPress(u8),
+    /// A dial's long press on its strip panel (`long_press`). Not a `Direction`.
+    DialLongPress(u8),
     /// Step `n` (from 0) of the multi action at the inner target.
     Step(Box<ActionTarget>, usize),
 }
@@ -97,10 +99,13 @@ impl ActionTarget {
         }
     }
 
-    /// The dial and slot, for a dial's action.
+    /// The dial and slot, for a dial's turn or press action. `None` for a long press:
+    /// `Direction` has none.
     pub fn dial_slot(&self) -> Option<(u8, Direction)> {
         match self {
-            ActionTarget::Key(_) | ActionTarget::KeyOn(_) | ActionTarget::Step(..) => None,
+            ActionTarget::Key(_) | ActionTarget::KeyOn(_) | ActionTarget::DialLongPress(_) | ActionTarget::Step(..) => {
+                None
+            }
             ActionTarget::DialTurnLeft(i) => Some((*i, Direction::Left)),
             ActionTarget::DialTurnRight(i) => Some((*i, Direction::Right)),
             ActionTarget::DialPress(i) => Some((*i, Direction::Press)),
@@ -920,6 +925,9 @@ impl App {
             cfg.dial(i).map(|d| d.label.clone()).filter(|l| !l.is_empty()).unwrap_or_else(|| format!("Dial {}", i + 1));
         label.set_text(&name);
         let tip = match cfg.dial(i).filter(|d| !d.is_blank()) {
+            Some(d) if !d.long_press.is_none() => {
+                format!("{} — press: {} · hold: {}", name, d.press.summary(), d.long_press.summary())
+            }
             Some(d) => format!("{} — press: {}", name, d.press.summary()),
             None => format!("Dial {} — empty", i + 1),
         };
@@ -1135,6 +1143,7 @@ impl App {
             ActionTarget::DialTurnLeft(i) => Some(dial_action(&cfg, *i, Direction::Left)),
             ActionTarget::DialTurnRight(i) => Some(dial_action(&cfg, *i, Direction::Right)),
             ActionTarget::DialPress(i) => Some(dial_action(&cfg, *i, Direction::Press)),
+            ActionTarget::DialLongPress(i) => Some(cfg.dial(*i).map(|d| d.long_press.clone()).unwrap_or_default()),
             // A step that isn't there (removed, or the parent is no longer a multi) reads
             // as Nothing.
             ActionTarget::Step(of, n) => Some(match self.action_at(of)? {
@@ -1163,6 +1172,11 @@ impl App {
             ActionTarget::DialTurnLeft(i) => self.set_dial_action(*i, Direction::Left, act),
             ActionTarget::DialTurnRight(i) => self.set_dial_action(*i, Direction::Right, act),
             ActionTarget::DialPress(i) => self.set_dial_action(*i, Direction::Press, act),
+            ActionTarget::DialLongPress(i) => {
+                let ok = self.locked.borrow().is_none();
+                self.edit_dial(*i, |d| d.long_press = act);
+                ok
+            }
             ActionTarget::Step(of, n) => {
                 // An owned copy of the parent, so no borrow of the config is held while the
                 // parent is written back.

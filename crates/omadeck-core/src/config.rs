@@ -2827,6 +2827,7 @@ slow = true
         assert!(!c.dials[0].turn_left.is_none());
         assert!(matches!(c.dials[1].turn_right, Action::Volume { .. }));
         assert!(matches!(c.dials[2].turn_right, Action::Brightness { .. }));
+        assert_eq!(c.dials[2].long_press, Action::Brightness { change: 0, set: Some(100) });
         assert!(c.dials[3].live.is_some());
         assert!(matches!(c.dials[4].turn_right, Action::AppVolume { focused: false, .. }));
         assert!(matches!(c.dials[5].turn_right, Action::AppVolume { focused: true, .. }));

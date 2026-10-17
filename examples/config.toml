@@ -268,7 +268,9 @@ glyph = "f036d"
 # mute = true                # toggle mute instead of changing the level
 #
 # A brightness dial: turn to change the panel brightness. Its panel on the strip
-# shows the current value, and the brightness is remembered across restarts.
+# shows the current value, and the brightness is remembered across restarts. Any
+# dial can have a long_press: it runs when you press and hold the dial's panel on
+# the strip (Elgato's "long touch"); unset, a hold does what a tap does (press).
 # [[dial]]
 # index = 3
 # label = "Brightness"
@@ -279,6 +281,9 @@ glyph = "f036d"
 # [dial.turn_right]
 # type = "brightness"
 # change = 5
+# [dial.long_press]          # hold the panel: full brightness
+# type = "brightness"
+# set = 100
 #
 # A live dial: its panel shows a value instead of a level (here the battery, with a
 # bar; text sources like the clock show no bar).
