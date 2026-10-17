@@ -118,11 +118,11 @@ Commits: `837c11e` (task A), `cdbaba1` (B), `056fd8a` (C), `faa2562` (D), `635a3
 `91167cd` (F), `969ab3a` (G, GUI, not compiled), `ab0df79` (H).
 
 Build:
-- [ ] `cargo clippy --all-targets -- -D warnings` clean, the GUI included.
-- [ ] `cargo test`: core 179, omadeckd 60 (the hub socket tests too), gui 3.
-- [ ] `git diff --stat fix/review-2 -- Cargo.lock` shows only lines added under `jiff`
+- [x] `cargo clippy --all-targets -- -D warnings` clean, the GUI included. (2026-10-17, machine; clippy 0.1.99. Needed BUGS.md 78's fix on this branch: cherry-picked `9df8df3` as `9abbf73`, chain rebased.)
+- [x] `cargo test`: core 179, omadeckd 60 (the hub socket tests too), gui 3. (2026-10-17, machine; counts exact.)
+- [x] `git diff --stat fix/review-2 -- Cargo.lock` shows only lines added under `jiff`
       (`windows-link`, already locked) and `omadeck-core` (`jiff`), and the
-      `omadeckd` line for `serde_json`: no new `[[package]]`.
+      `omadeckd` line for `serde_json`: no new `[[package]]`. (2026-10-17, machine; exactly those 3 lines.)
 
 Captures (the plan's "Capture on the machine first"; none were run):
 - [ ] 1. Record the socket2 transcript (plan's command), add it as

@@ -1051,8 +1051,11 @@ the code; *(plausible)* needs the machine to confirm. All 32 are fixed on `fix/r
 
 #### 78. `cargo clippy --all-targets -- -D warnings` fails for the GUI
 
-- **Status:** fixed in `9df8df3` on `fix/review-3`, not yet verified on the machine ([VERIFY.md](VERIFY.md)). **Found:** 2026-10-17, review 3 (GUI) *(test: GUI type-checked with a
-  stub pkg-config)*.
+- **Status:** fixed in `9df8df3` on `fix/review-3`; cherry-picked to `feat/live-keys`
+  (`9abbf73`, the branch the code lives on) and the chain rebased on it (2026-10-17,
+  machine: clippy 0.1.99 clean from `feat/live-keys` through `fix/review-3` and
+  `pr/09` … `pr/16`, GUI linked). **Found:** 2026-10-17, review 3 (GUI) *(test: GUI
+  type-checked with a stub pkg-config)*.
 - **Branch:** `feat/live-keys` (`969ab3a`: two `type_complexity` warnings on the `LiveEdit`
   closures in `editor.rs`); `feat/media-dial` (`large_enum_variant` on `app.rs` `Msg`:
   PR 14's events made `Event` 280 bytes).
