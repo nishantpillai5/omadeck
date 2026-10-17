@@ -335,6 +335,24 @@ impl KeyConfig {
         }
     }
 
+    /// Every action this key owns, nested ones included: `action`, then `on.action`.
+    pub fn actions(&self) -> Vec<&Action> {
+        let mut out = Vec::new();
+        self.action.walk(&mut |a| out.push(a));
+        if let Some(on) = &self.on {
+            on.action.walk(&mut |a| out.push(a));
+        }
+        out
+    }
+
+    /// `actions`, mutably: `f` sees each one in the same order.
+    pub fn actions_mut(&mut self, f: &mut dyn FnMut(&mut Action)) {
+        self.action.walk_mut(f);
+        if let Some(on) = &mut self.on {
+            on.action.walk_mut(f);
+        }
+    }
+
     /// The face for a state. Off: `face()`. On: the on face merged over it. Busy: the
     /// busy face merged over the *off* face; label = busy.label, else the text, else
     /// "…"; `show_label` forced on.
@@ -344,7 +362,10 @@ impl KeyConfig {
         match t {
             Toggle::Off => f,
             Toggle::On => {
-                let on = self.on.as_ref().expect("a key is on only with an on face");
+                // Only a key with `[key.on]` is ever on, but the configurator can draw a
+                // stale state for a moment (a mirrored state, a face tab) after the on
+                // face is removed: draw the off face then, never panic.
+                let Some(on) = self.on.as_ref() else { return f };
                 let mut f = merge_looks(
                     f,
                     on.icon.as_deref(),
@@ -461,6 +482,26 @@ pub enum LookField {
 }
 
 impl KeyConfig {
+    /// The face tabs the editor offers for this key, in order: Off always, On for a
+    /// toggle (a key with `[key.on]`), Busy for a slow toggle or a busy-while-running
+    /// key. A tab not in here must never be shown or written to.
+    pub fn face_tabs(&self) -> Vec<FaceTab> {
+        let mut tabs = vec![FaceTab::Off];
+        if self.on.is_some() {
+            tabs.push(FaceTab::On);
+        }
+        if self.is_slow_toggle() || self.busy_while_running {
+            tabs.push(FaceTab::Busy);
+        }
+        tabs
+    }
+
+    /// `tab` if this key offers it, else Off (the editor's tab outlived the face it
+    /// showed: another key was selected, or "Two faces" was switched off).
+    pub fn clamp_face_tab(&self, tab: FaceTab) -> FaceTab {
+        if self.face_tabs().contains(&tab) { tab } else { FaceTab::Off }
+    }
+
     /// The field as set on that tab's face; `None` when unset there.
     pub fn look(&self, tab: FaceTab, field: LookField) -> Option<String> {
         let on = self.on.as_ref();
@@ -485,7 +526,8 @@ impl KeyConfig {
     }
 
     /// Set the field on that tab's face; `None` or blank clears it (Off's label becomes
-    /// ""). On and Busy create their table if missing.
+    /// ""). Setting a field on On or Busy creates that table if missing; clearing never
+    /// does, and a busy face left with nothing set is dropped.
     pub fn set_look(&mut self, tab: FaceTab, field: LookField, v: Option<String>) {
         let Some(v) = v.as_deref().map(str::trim).filter(|s| !s.is_empty()).map(str::to_string) else {
             // Blank clears.
@@ -495,13 +537,20 @@ impl KeyConfig {
                 (FaceTab::Off, LookField::Glyph) => self.glyph = None,
                 (FaceTab::Off, LookField::Background) => self.background = None,
                 (FaceTab::Off, LookField::LabelColor) => self.label_color = None,
+                // Clearing never creates a face: an `[key.on]` would make the key a
+                // toggle, and an empty `[key.busy]` is only noise in the file.
                 (FaceTab::On, f) => {
-                    let on = self.on.get_or_insert_with(OnFace::default);
-                    on.clear(f);
+                    if let Some(on) = &mut self.on {
+                        on.clear(f);
+                    }
                 }
                 (FaceTab::Busy, f) => {
-                    let busy = self.busy.get_or_insert_with(BusyFace::default);
-                    busy.clear(f);
+                    if let Some(busy) = &mut self.busy {
+                        busy.clear(f);
+                    }
+                    if self.busy.as_ref().is_some_and(|b| *b == BusyFace::default()) {
+                        self.busy = None;
+                    }
                 }
             }
             return;
@@ -609,6 +658,12 @@ pub enum Direction {
     Left,
     Right,
     Press,
+}
+
+impl Direction {
+    /// Every slot, in the order the editor shows them. PR 16's long press is not a
+    /// `Direction`; it joins `DialConfig::actions` on its own.
+    pub const ALL: [Direction; 3] = [Direction::Left, Direction::Right, Direction::Press];
 }
 
 /// What a dial's strip panel shows a value for, if anything.
@@ -719,6 +774,18 @@ impl Action {
 
     pub fn is_none(&self) -> bool {
         matches!(self, Action::None)
+    }
+
+    /// Visit this action and every action nested in it. The one recursive walk: PR 12
+    /// adds an arm for a multi action's steps here, and every walker built on it
+    /// (`KeyConfig::actions`, `Config::all_actions`, …) follows.
+    pub fn walk<'a>(&'a self, f: &mut dyn FnMut(&'a Action)) {
+        f(self);
+    }
+
+    /// `walk`, mutably. `f` sees the outer action first, then what's nested in it.
+    pub fn walk_mut(&mut self, f: &mut dyn FnMut(&mut Action)) {
+        f(self);
     }
 
     /// True for actions that run a command we can watch while it runs (`busy_while_running`):
@@ -892,6 +959,23 @@ impl DialConfig {
             Direction::Left => &mut self.turn_left,
             Direction::Right => &mut self.turn_right,
             Direction::Press => &mut self.press,
+        }
+    }
+
+    /// Every action this dial owns, nested ones included, slot by slot in
+    /// `Direction::ALL` order. PR 16 adds the long press here.
+    pub fn actions(&self) -> Vec<&Action> {
+        let mut out = Vec::new();
+        for dir in Direction::ALL {
+            self.action(dir).walk(&mut |a| out.push(a));
+        }
+        out
+    }
+
+    /// `actions`, mutably.
+    pub fn actions_mut(&mut self, f: &mut dyn FnMut(&mut Action)) {
+        for dir in Direction::ALL {
+            self.action_mut(dir).walk_mut(f);
         }
     }
 
@@ -1083,21 +1167,28 @@ impl Config {
         }
     }
 
-    /// Every action in the config: each key's, on every page, and each dial's three.
-    fn all_actions(&self) -> impl Iterator<Item = &Action> {
-        let keys = self.keys.iter().chain(self.pages.iter().flat_map(|p| p.keys.iter())).map(|k| &k.action);
-        keys.chain(self.dials.iter().flat_map(|d| [&d.turn_left, &d.turn_right, &d.press]))
+    /// Every action in the config, nested ones included: each key's (its action and its
+    /// on action) on every page, then each dial's. Built on `KeyConfig::actions` and
+    /// `DialConfig::actions`, so a new place an action can live is added there once.
+    pub fn all_actions(&self) -> Vec<&Action> {
+        let keys = self.keys.iter().chain(self.pages.iter().flat_map(|p| p.keys.iter()));
+        keys.flat_map(KeyConfig::actions).chain(self.dials.iter().flat_map(DialConfig::actions)).collect()
     }
 
-    fn all_actions_mut(&mut self) -> impl Iterator<Item = &mut Action> {
-        let keys = self.keys.0.iter_mut().chain(self.pages.iter_mut().flat_map(|p| p.keys.0.iter_mut()));
-        keys.map(|k| &mut k.action)
-            .chain(self.dials.iter_mut().flat_map(|d| [&mut d.turn_left, &mut d.turn_right, &mut d.press]))
+    /// `all_actions`, mutably: `f` sees each one in the same order.
+    pub fn all_actions_mut(&mut self, f: &mut dyn FnMut(&mut Action)) {
+        for k in self.keys.0.iter_mut().chain(self.pages.iter_mut().flat_map(|p| p.keys.0.iter_mut())) {
+            k.actions_mut(f);
+        }
+        for d in &mut self.dials {
+            d.actions_mut(f);
+        }
     }
 
-    /// How many actions (keys, and dial turns and presses) open the page `name`.
+    /// How many actions (keys, their on actions, and dial turns and presses) open the
+    /// page `name`.
     pub fn links_to(&self, name: &str) -> usize {
-        self.all_actions().filter(|a| matches!(a, Action::Page { page } if page == name)).count()
+        self.all_actions().into_iter().filter(|a| matches!(a, Action::Page { page } if page == name)).count()
     }
 
     /// Rename a page and every action (key or dial) that opens it.
@@ -1108,24 +1199,24 @@ impl Config {
                 p.name = new.to_string();
             }
         }
-        for a in self.all_actions_mut() {
+        self.all_actions_mut(&mut |a| {
             if let Action::Page { page } = a
                 && page == old
             {
                 *page = new.to_string();
             }
-        }
+        });
     }
 
     /// Delete a page. Keys and dials that opened it keep their look but no longer do
     /// anything.
     pub fn remove_page(&mut self, name: &str) {
         self.pages.retain(|p| p.name != name);
-        for a in self.all_actions_mut() {
+        self.all_actions_mut(&mut |a| {
             if matches!(a, Action::Page { page } if page == name) {
                 *a = Action::None;
             }
-        }
+        });
     }
 
     pub fn dial(&self, index: u8) -> Option<&DialConfig> {
@@ -1340,6 +1431,33 @@ slow = true
     }
 
     #[test]
+    fn face_tabs_follow_the_key() {
+        let plain = KeyConfig::new(0);
+        assert_eq!(plain.face_tabs(), vec![FaceTab::Off]);
+        assert_eq!(plain.clamp_face_tab(FaceTab::On), FaceTab::Off, "a stale On tab falls back");
+        let toggle = KeyConfig { on: Some(OnFace::default()), ..KeyConfig::new(0) };
+        assert_eq!(toggle.face_tabs(), vec![FaceTab::Off, FaceTab::On]);
+        assert_eq!(toggle.clamp_face_tab(FaceTab::On), FaceTab::On);
+        assert_eq!(toggle.clamp_face_tab(FaceTab::Busy), FaceTab::Off);
+        let job = KeyConfig { busy_while_running: true, ..KeyConfig::new(0) };
+        assert_eq!(job.face_tabs(), vec![FaceTab::Off, FaceTab::Busy]);
+    }
+
+    #[test]
+    fn clearing_a_look_never_creates_a_face() {
+        let mut k = KeyConfig::new(0);
+        k.set_look(FaceTab::On, LookField::Glyph, None);
+        k.set_look(FaceTab::Busy, LookField::Label, Some("  ".into()));
+        assert_eq!((k.on.is_some(), k.busy.is_some()), (false, false), "a plain key stays plain");
+        k.set_look(FaceTab::Busy, LookField::Label, Some("Wait".into()));
+        k.set_look(FaceTab::Busy, LookField::Label, None);
+        assert!(k.busy.is_none(), "an empty busy face is dropped");
+        let mut k = KeyConfig { busy: Some(BusyFace { bar: true, ..BusyFace::default() }), ..KeyConfig::new(0) };
+        k.set_look(FaceTab::Busy, LookField::Glyph, None);
+        assert!(k.busy.is_some_and(|b| b.bar), "a busy face with a bar stays");
+    }
+
+    #[test]
     fn action_for_uses_on_action_only_when_on() {
         let k = KeyConfig {
             action: Action::Hyprland { dispatch: "togglefloating".into() },
@@ -1502,6 +1620,42 @@ slow = true
         c.remove_page("Music");
         assert_eq!(c.dial(0).unwrap().press, Action::None);
         assert_eq!(c.links_to("Music"), 0);
+    }
+
+    #[test]
+    fn page_links_include_on_actions() {
+        let mut c = Config::default();
+        c.add_page("Media", false, KeyConfig::new(0));
+        let on = OnFace { action: Action::Page { page: "Media".into() }, ..OnFace::default() };
+        *c.keys.get_mut(3) = KeyConfig { on: Some(on), ..KeyConfig::new(3) };
+        assert_eq!(c.links_to("Media"), 1, "the on action counts");
+        c.rename_page("Media", "Music");
+        let on_action = |c: &Config| c.key(None, 3).and_then(|k| k.on.as_ref()).map(|o| o.action.clone());
+        assert_eq!(on_action(&c), Some(Action::Page { page: "Music".into() }));
+        c.remove_page("Music");
+        assert_eq!(on_action(&c), Some(Action::None));
+        assert_eq!(c.links_to("Music"), 0);
+    }
+
+    #[test]
+    fn walkers_visit_every_slot_in_order() {
+        let d = DialConfig { turn_left: Action::Back, press: Action::PageStep { change: 1 }, ..DialConfig::new(0) };
+        assert_eq!(d.actions(), vec![&Action::Back, &Action::None, &Action::PageStep { change: 1 }]);
+        let k = KeyConfig {
+            action: Action::Back,
+            on: Some(OnFace { action: Action::PageStep { change: -1 }, ..OnFace::default() }),
+            ..KeyConfig::new(0)
+        };
+        assert_eq!(k.actions(), vec![&Action::Back, &Action::PageStep { change: -1 }]);
+        assert_eq!(KeyConfig::new(0).actions(), vec![&Action::None], "no on face, no on action");
+    }
+
+    #[test]
+    fn on_state_without_on_face_draws_the_off_face() {
+        let k = KeyConfig { label: "Plain".into(), glyph: Some("A".into()), ..KeyConfig::new(0) };
+        let on = k.face_for(&crate::probe::Toggle::On);
+        let off = k.face_for(&crate::probe::Toggle::Off);
+        assert_eq!((on.label, on.glyph, on.background), (off.label, off.glyph, off.background));
     }
 
     #[test]

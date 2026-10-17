@@ -38,8 +38,9 @@ pub fn run_steps(action: &Action, steps: u8) -> Result<()> {
     if let Action::Volume { device, change, mute } = action {
         return run_volume(*device, if *mute { 0 } else { folded_volume(*change, steps) }, *mute);
     }
-    // `hyprctl dispatch` waits for Hyprland's answer, so a fast spin must not run several
-    // on the caller's thread (the deck loop): more than one step runs in order on a helper
+    // `hyprctl dispatch` waits for Hyprland's answer. The daemon never gets here with a
+    // Hyprland action (it queues it on its ordered `HyprWorker`); for the other callers
+    // (`omadeckd dial` with no daemon) more than one step runs in order on a helper
     // thread, and a failure there is logged. One step stays inline so its error is shown.
     if let Action::Hyprland { dispatch } = action
         && steps > 1
@@ -202,7 +203,6 @@ fn detached<S: AsRef<std::ffi::OsStr>>(argv: &[S]) -> Command {
     c
 }
 
-/// Spawn in its own process group with no stdio, reaping it on a helper thread.
 /// Starts `action` as a job the daemon watches (a `busy_while_running` key). Only for
 /// `is_trackable()` kinds. Not through `uwsm-app`: it hands the command to systemd and
 /// returns at once, so there would be nothing to wait for. Instead the job gets its own
@@ -374,7 +374,10 @@ fn open_url(url: &str) -> Result<()> {
     spawn(detached(&["xdg-open".to_string(), normalize_url(url)]))
 }
 
-fn hypr_dispatch(dispatch: &str) -> Result<()> {
+/// Run one Hyprland dispatcher and wait for Hyprland's answer (up to `COMMAND_TIMEOUT`,
+/// twice on a Lua-config Hyprland). Blocking: the daemon runs it on its Hyprland worker
+/// (`omadeckd`'s `HyprWorker`), never on the deck loop.
+pub fn hypr_dispatch(dispatch: &str) -> Result<()> {
     let d = dispatch.trim();
     if d.is_empty() {
         bail!("no dispatcher set");

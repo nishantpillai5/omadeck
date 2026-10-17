@@ -69,10 +69,10 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("omadeck-saver-test-{}", std::process::id()));
         let path = dir.join("state.toml");
         let saver = start_saver_at(path.clone());
-        saver.send(State { brightness: Some(10) });
-        saver.send(State { brightness: Some(20) });
+        saver.send(State { brightness: Some(10), ..State::default() });
+        saver.send(State { brightness: Some(20), ..State::default() });
         saver.finish();
-        assert_eq!(State::load_from(&path), State { brightness: Some(20) });
+        assert_eq!(State::load_from(&path), State { brightness: Some(20), ..State::default() });
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
