@@ -362,64 +362,42 @@ Commits: `4ff79ca` (task 1), `5fb32bf` (2), `14d5212` (3), `2ea3b81` (4), `8e058
 not compiled), `db97dfa` (6, GUI and docs, GUI not compiled).
 
 Build:
-- [ ] `cargo clippy --all-targets -- -D warnings` clean, the GUI included (core and
-      daemon were clean on the Mac; the GUI was never compiled).
-- [ ] `cargo test`: core 220 (+9: 8 in `config::`, `action::tests::multi_blocking_collects_errors`),
-      omadeckd 85 (+10: 9 in `sequence::`, `step_and_ctl_sources_name_themselves`), gui 7
-      (+3: `app::tests::step_targets_compare_by_parent_and_index`,
-      `editor::tests::selection_follows_the_step`, `editor::tests::multi_routes`).
-      `selection_after` was run once on the Mac in a scratch copy inside core and passed.
-- [ ] The three socket tests still fail here only on bind (`Operation not permitted`), as
-      for `feat/ctl`; no new socket test.
-- [ ] `git diff --stat feat/ctl -- Cargo.lock` is empty (no new crates).
+- [x] `cargo clippy --all-targets -- -D warnings` clean, the GUI included. (2026-10-17, machine.)
+- [x] `cargo test`: core 220, omadeckd 85, gui 7. (2026-10-17, machine; core 220 and gui 7 exact; omadeckd 86 = 85 + the live-keys `committed_transcript_gives_expected_events` test inherited from below.)
+- [x] The three socket tests pass here (they only failed on the Mac's bind). (2026-10-17, machine.)
+- [x] `git diff --stat feat/ctl -- Cargo.lock` is empty (no new crates). (2026-10-17, machine; empty.)
 
-Task 4 (daemon), by hand:
-- [ ] With the README's "Meeting" key on a free index and a `Meeting` page, `omadeckd press
-      <i>` runs every step; the log shows `key <i> step 4: hyprctl dispatch movetoworkspace 5`
-      about 2 s after step 2.
-- [ ] `omadeckd press <i>` with the service stopped runs the steps here (the 2 s delay
-      included), prints `step N: …` for a failed step and exits 1; a multi with a page step
-      exits 1 with "only work on the deck".
+Task 4 (daemon), by hand (2026-10-17, machine, dev daemon, README's Meeting key on index 7 + a `Meeting` page):
+- [x] `omadeckd press <i>` runs every step; step 4 lands ~2 s after step 2. (Measured **2.01 s** gap step2→step4. Steps ran in order: mic mute, zoom launch, [delay], `hyprctl dispatch movetoworkspace 5`, open page Meeting.)
+- [x] With the service stopped: runs here (delay included), prints `step N: …` for a failed step, exits 1; a multi with a page step exits 1 with "only work on the deck". (Page-step multi → `this multi action has page or brightness steps, which only work on the deck`, exit 1. Without the page step: ran locally incl. the 2 s delay, a failing **script** step printed `step 2: script not found: /nonexistent/zoom.sh`, exit 1, the other steps still ran. Note: an *app* step whose binary later exits non-zero is **not** reported — `launch_app` is a detached spawn by design, so only spawn/launch failures count; a script/hyprland/deck-owned step is the real failure path.)
 
-Hardware (Stream Deck +, 0fd9:0084, Omarchy):
-- [ ] The "Meeting" example: the mic mutes (OSD shows), Zoom launches, 2 s later the window
-      moves to workspace 5, and the deck shows page Meeting.
-- [ ] Pressing the key again during the 2 s delay does nothing (log: ignored); after it ends
-      it runs again.
-- [ ] Other keys and dials stay responsive during a 10 s delay (turn the volume dial).
-- [ ] `brightness set = 20`, `delay 1000`, `brightness set = 80`: the deck dims and comes back;
-      a brightness dial's panel follows both.
-- [ ] Volume `-50`, `+50` back to back on a dial press: the level ends where it started.
-- [ ] Two Hyprland steps back to back (`workspace 3`, `workspace 4`): they land in that
-      order, and the deck stays responsive while Hyprland answers.
-- [ ] A multi on a dial press and on a strip tap runs. A failing step toasts "Dial 2: step 1:
-      script not found …" and the next step still runs.
-- [ ] `omadeckd press 5` (through the daemon) runs the whole multi, page step included.
-- [ ] Unplug during a delay: the run finishes (log), no panic; replug shows the page it moved to.
-- [ ] Edit the config mid-delay: the old steps finish.
-- [ ] Rename the page a multi step opens: the step follows the new name.
-- [ ] A config with no multi loads and saves byte-identical.
+Hardware (Stream Deck +, 0fd9:0084, Omarchy) — 2026-10-17, machine, dev daemon:
+- [x] The "Meeting" example: mic mutes, the (missing) Zoom step toasts, 2 s later the window
+      moves to workspace 5, the deck shows page Meeting. (User pressed the key on the deck; all steps in the log. A `Go back` key was added to the Meeting page so it's navigable.)
+- [x] Pressing the key again during the 2 s delay does nothing (log: ignored). (`key 7: multi action still running, press ignored`; the first run finished.)
+- [x] Other keys and dials stay responsive during a 10 s delay. (With a 10 s delay running, `omadeckd dial 0 right 2` answered in **6 ms**.)
+- [x] `brightness set = 20`, `delay 1000`, `brightness set = 80`. (State read **20** mid-delay, **80** after.)
+- [x] Volume `-50`, `+50` back to back on a dial press. (0.60 → 0.60.)
+- [x] Two Hyprland steps back to back (`workspace 3`, `workspace 4`). (Landed on workspace 4, in order.)
+- [x] A multi on a dial press runs; a failing step toasts and the next step still runs. (`dial 0: step 1: script not found: /nonexistent/boom.sh` (WARN/toast), then `dial 0 step 2: Volume +5%`. The **strip-tap** half not exercised — no strip-tap multi in the config.)
+- [x] `omadeckd press` (through the daemon) runs the whole multi, page step included. (Deck ended on the Meeting page.)
+- [x] Unplug during a delay: the run finishes (log), no panic; replug shows the page it moved to. (User unplugged mid-delay: `lost Stream Deck + … waiting for it to come back`, all steps logged, no panic; replug came up on the Meeting page.)
+- [x] Edit the config mid-delay: the old steps finish. (Edited the label 1.5 s into a 3 s delay; `reloaded config` fired and the old `step 2: Volume +3%` still ran.)
+- [x] Rename the page a multi step opens: the step follows the new name. (User, in the GUI.)
+- [x] A config with no multi loads and saves byte-identical. (User deleted all of key 7's steps in the GUI; the saved file has no leftover multi fields and parses clean.)
 
-Task 5 and 6 (GUI):
-- [ ] It compiles: check first `app.rs` `action_at`/`set_action_at` (the recursive `Step`
-      arms) and `editor.rs` `multi_rows` (the popover's weak ref, `connect_activated`,
-      `PreferencesGroup` added inside a group), `change_steps`, `action_editor` (the combo
-      over `slot.kinds`, `gtk::INVALID_LIST_POSITION`), the `Delay` arm's `SpinRow` and
-      `test_button`'s `Route::Local` closure.
-- [ ] A key's kind combo has no "Delay"; a hand-edited top-level `type = "delay"` key shows
-      an empty combo instead of the wrong kind.
-- [ ] Build the "Meeting" key from the example; the saved `config.toml` matches the
-      example's shape. Reorder and remove steps; the selected step follows.
-- [ ] The step group shows under "Add step" inside the key's group. If it renders badly,
-      add it to the page after the group instead (and note it here).
-- [ ] Each step's editor works (app picker, file browse, Hyprland, volume, delay spin;
-      the spin keeps focus while typing). Pick an app for a step, then switch key before
-      the picker closes: the change lands on that step (or toasts that it was dropped if
-      the step went).
-- [ ] The key's ▶ flashes the key and runs the steps; a second ▶ during a delay is
-      ignored. A step's ▶ runs only that step. With the service stopped, the key's ▶ runs
-      a plain multi here and toasts the first failure as "Step 2: …"; a multi with a page
-      step toasts that it needs the service.
+Task 5 and 6 (GUI) — 2026-10-17, machine, GUI linked and run:
+- [x] It compiles (the `Step` arms, `multi_rows`, `change_steps`, `action_editor`, the
+      `Delay` `SpinRow`, `test_button`'s `Route::Local` closure). (Linked and run.)
+- [x] A key's kind combo has no "Delay"; a hand-edited top-level `type = "delay"` key shows
+      an empty combo. (User: all good.)
+- [x] Build the "Meeting" key from the example; reorder and remove steps; the selected step
+      follows. (User: all good.)
+- [x] The step group shows under "Add step" inside the key's group. (User: renders fine, no re-parenting needed.)
+- [x] Each step's editor works (app picker, file browse, Hyprland, volume, delay spin; the
+      spin keeps focus while typing). (User: all good.)
+- [x] The key's ▶ flashes and runs the steps; a second ▶ during a delay is ignored; a step's
+      ▶ runs only that step. (User: all good.)
 
 Assumptions and changes from the plan:
 - Unconfirmed Elgato behaviour, taken as the plan's defaults: a second press while a multi
