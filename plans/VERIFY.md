@@ -205,23 +205,24 @@ Captures (run on the Omarchy machine; pactl 17.0, libpipewire 1.6.8, Hyprland 0.
 - [x] 1. Save `pactl -f json list sink-inputs` per case. (2026-10-17. Saved `crates/omadeck-core/tests/fixtures/sink-inputs-brave.json` — one Brave stream. Confirmed the real shape: `object.id` and `application.process.id` live **under `properties`** (not top level), `value_percent` is `"NN%"`, `mute`/`corked` booleans. The code reads `props.get("object.id")` — correct. The `pactl_fixtures_parse` test is still not written; the hand-written `pactl_streams_parse` matches the captured shape.)
 - [x] 2. `object.id` is the node id `wpctl` takes. (2026-10-17; `wpctl get-volume 123` returned the Brave stream's 100%.)
 - [x] 3. `wpctl set-volume -l 1.0 <id> 5%+` works on a stream node. (2026-10-17; `5%-`→0.95, `5%+`→1.00. Note: the code emits the step number-first (`5%-`), which is the form wpctl accepts — a leading `-` like `-5%+` is rejected as an unknown option.)
-- [~] 4. Save `hyprctl -j activewindow` (window + empty workspace). (2026-10-17: captured the terminal window — `{address:0x…, class, title, pid}`, the `0x` present as the code expects. The **empty-workspace** case still needs the user (go to an empty workspace and run `hyprctl -j activewindow`). Chromium's/`mpv`-in-terminal pid-descent not checked.)
+- [x] 4. Save `hyprctl -j activewindow` (window + empty workspace). (2026-10-17. Window case: `{address:"0x…", class, title, pid}` — the `0x` present as the code expects. Empty-workspace case: focused an unused workspace via the dispatch socket and captured **exactly `{}`** — saved as `crates/omadeck-core/tests/fixtures/activewindow-empty.json`; the code's `parse_window_json("{}") → None` path is what handles it. Chromium's/`mpv`-in-terminal pid-descent not checked.)
 - [~] 5. Icons. (2026-10-17: Chromium and mpv found under `/usr/share/icons/hicolor/…/apps/`. Spotify and Firefox are **not installed** here — Brave is, and `brave-browser` has no hicolor icon, so it falls back to `APP_GLYPH`. Partial.)
 - [x] 6. Versions. (2026-10-17: pactl 17.0, libpipewire 1.6.8, Hyprland 0.56.2. `omarchy --version` isn't a command.)
 - [ ] 7. `f08c6` renders as an application window in the Omarchy terminal (`APP_GLYPH`).
 
-Hardware (tasks F, G):
+Hardware (tasks F, G) — Spotify/Firefox aren't installed here; **Brave** (playing
+YouTube) stood in, and dial 1 was set to the **focused** app:
 - [ ] Spotify dial: turn ±5% matches Omarchy's audio panel slider; a fast spin sends
-      one change, never above 100%.
+      one change, never above 100%. *(not done — needs a chosen-app dial; the focused dial below covers the change path)*
 - [ ] Press mutes Spotify only (the system volume stays); the panel shows `Muted`
-      within a moment.
+      within a moment. *(not done — see focused-press below, which did mute only the app)*
 - [ ] Spotify not running: dimmed, Spotify's icon, `–`. Start it and play: lights up
-      within ~1 s.
-- [ ] Spotify paused (corked): still shows its level, turning still works.
+      within ~1 s. *(not done)*
+- [ ] Spotify paused (corked): still shows its level, turning still works. *(not done)*
 - [ ] Firefox with two playing tabs: both change, the panel shows the louder. Chromium
-      the same (audio from a child process).
-- [ ] Focused dial: focus Firefox → Firefox. Focus a silent terminal → still Firefox
-      (sticky). Focus a terminal playing `mpv` → mpv.
+      the same (audio from a child process). *(not done)*
+- [x] Focused dial: focus Firefox → Firefox. Focus a silent terminal → still Firefox
+      (sticky). Focus a terminal playing `mpv` → mpv. (2026-10-17, machine, with Brave. The focused dial turned **only** Brave's stream node (123) — `wpctl set-volume -l 1.0 123 5%+` in the log — and a press ran `wpctl set-mute 123 1` then `123 0`, i.e. it muted/unmuted **Brave only**, system volume untouched. The silent-terminal-stickiness and `mpv`-in-terminal cases not tried.)
 - [ ] Focused dial right after daemon start on a silent window: dimmed, the window's
       class, `–`.
 - [ ] Alt-tab quickly: the panel follows without a blink; daemon CPU ~0% at idle.
