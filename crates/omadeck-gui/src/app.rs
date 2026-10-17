@@ -30,6 +30,13 @@ pub struct KeyRef {
     index: u8,
 }
 
+impl KeyRef {
+    /// The page the key is on (`None` is Home).
+    pub fn page(&self) -> Option<&str> {
+        self.page.as_deref()
+    }
+}
+
 /// What an editor row is editing: a key on a page, or a dial. Work that finishes later
 /// (a picker, an icon fetch) holds one of these, so the result lands where it started
 /// even if the window has moved on since. Dials have no page, so they're always safe.
@@ -705,7 +712,10 @@ impl App {
         *self.page.borrow_mut() = page.clone();
         if changed {
             self.sync_page_list();
-            self.select(None);
+            // Keys are per page, so a key's editor closes; dials aren't, so theirs stays.
+            if matches!(self.selected.get(), Some(Selection::Key(_))) {
+                self.select(None);
+            }
             self.refresh_all();
         }
         if tell_daemon {
@@ -811,8 +821,12 @@ impl App {
         let links = self.config.borrow().links_to(&name);
         let body = match links {
             0 => "Its keys will be deleted too.".to_string(),
-            1 => "Its keys will be deleted too, and the key that opens it will stop doing anything.".to_string(),
-            n => format!("Its keys will be deleted too, and the {n} keys that open it will stop doing anything."),
+            1 => {
+                "Its keys will be deleted too, and the key or dial that opens it will stop doing anything.".to_string()
+            }
+            n => format!(
+                "Its keys will be deleted too, and the {n} keys or dials that open it will stop doing anything."
+            ),
         };
         let dialog = adw::AlertDialog::new(Some(&format!("Delete “{name}”?")), Some(&body));
         dialog.add_responses(&[("cancel", "Cancel"), ("delete", "Delete")]);

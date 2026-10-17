@@ -528,9 +528,13 @@ fn action_rows(
         }
 
         Action::Page { page } => {
-            let current = app.current_page();
+            // A key can't open the page it's on; a dial isn't on a page, so it can open any.
+            let own = match target(app) {
+                Target::Key(k) => k.page().map(str::to_string),
+                _ => None,
+            };
             let names: Vec<String> =
-                app.config.borrow().page_names().into_iter().filter(|n| Some(n) != current.as_ref()).collect();
+                app.config.borrow().page_names().into_iter().filter(|n| Some(n) != own.as_ref()).collect();
             // A combo row always shows some item, so an unset or missing target gets a placeholder.
             let mut choices: Vec<Option<String>> = names.iter().cloned().map(Some).collect();
             if !names.contains(page) {
