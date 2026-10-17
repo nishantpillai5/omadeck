@@ -8,6 +8,7 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
 use crate::paths;
+use crate::probe::Probe;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Config {
@@ -184,8 +185,91 @@ pub struct KeyConfig {
     pub background: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub label_color: Option<String>,
+    /// Show the busy face until this key's command exits. Only `app` (a plain command,
+    /// not a `.desktop` id) and `script` actions; ignored for others.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub busy_while_running: bool,
     #[serde(default)]
     pub action: Action,
+    /// A second face shown while the key is on, and where on/off comes from.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub on: Option<OnFace>,
+    /// The look while busy (a state command's exit 75, or a running command).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub busy: Option<BusyFace>,
+}
+
+/// The look and the source of a key's on state. Each unset look field falls back to the
+/// key's own.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct OnFace {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub icon: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub glyph: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub background: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label_color: Option<String>,
+    /// A shell command: exit 0 = on, 75 = busy (its first output line is the progress),
+    /// anything else = off. Unset: a volume mute key follows the mute; any other key
+    /// flips on each press.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub state: Option<String>,
+    /// Seconds between runs of `state`; at least 1.
+    #[serde(default = "two", skip_serializing_if = "is_two")]
+    pub interval: u16,
+    /// A slow toggle: a press shows busy at once and polls fast until the state moves.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub slow: bool,
+    /// Run this instead of the key's action while on (Elgato's Hotkey Switch).
+    #[serde(default, skip_serializing_if = "Action::is_none")]
+    pub action: Action,
+}
+
+impl Default for OnFace {
+    // By hand: a derived Default would give `interval` 0.
+    fn default() -> Self {
+        Self {
+            label: None,
+            icon: None,
+            glyph: None,
+            background: None,
+            label_color: None,
+            state: None,
+            interval: 2,
+            slow: false,
+            action: Action::None,
+        }
+    }
+}
+
+/// The look while busy.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct BusyFace {
+    /// Unset: the progress text, else "…".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub icon: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub glyph: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub background: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label_color: Option<String>,
+    /// Draw a progress bar when the busy text has a percentage (the last `NN%`).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub bar: bool,
+}
+
+fn two() -> u16 {
+    2
+}
+fn is_two(v: &u16) -> bool {
+    *v == 2
 }
 
 impl KeyConfig {
@@ -198,7 +282,10 @@ impl KeyConfig {
             glyph: None,
             background: None,
             label_color: None,
+            busy_while_running: false,
             action: Action::None,
+            on: None,
+            busy: None,
         }
     }
 
@@ -209,8 +296,107 @@ impl KeyConfig {
             && self.glyph.is_none()
             && self.background.is_none()
             && self.label_color.is_none()
+            && !self.busy_while_running
             && self.action == Action::None
+            && self.on.is_none()
+            && self.busy.is_none()
     }
+
+    /// What the watcher polls for this key, if anything. A non-blank `on.state` wins;
+    /// else a volume mute action follows its device; else `None` (a press toggle, or
+    /// not a toggle).
+    pub fn state_probe(&self) -> Option<Probe> {
+        let on = self.on.as_ref()?;
+        if let Some(cmd) = on.state.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+            return Some(Probe::Command { command: cmd.to_string(), interval_ms: on.interval.max(1) as u32 * 1000 });
+        }
+        match &self.action {
+            Action::Volume { device, mute: true, .. } => Some(Probe::Volume(*device)),
+            _ => None,
+        }
+    }
+
+    /// `on` is set and nothing is polled: flips on each press.
+    pub fn is_press_toggle(&self) -> bool {
+        self.on.is_some() && self.state_probe().is_none()
+    }
+
+    /// `on.slow` and the source is a command.
+    pub fn is_slow_toggle(&self) -> bool {
+        self.on.as_ref().is_some_and(|on| on.slow)
+            && self.state_probe().is_some_and(|p| matches!(p, Probe::Command { .. }))
+    }
+
+    /// `on.action` while on and set, else `action`.
+    pub fn action_for(&self, on: bool) -> &Action {
+        match (on, self.on.as_ref()) {
+            (true, Some(f)) if !f.action.is_none() => &f.action,
+            _ => &self.action,
+        }
+    }
+
+    /// The face for a state. Off: `face()`. On: the on face merged over it. Busy: the
+    /// busy face merged over the *off* face; label = busy.label, else the text, else
+    /// "…"; `show_label` forced on.
+    pub fn face_for<'a>(&'a self, t: &'a crate::probe::Toggle) -> crate::render::Face<'a> {
+        use crate::probe::Toggle;
+        let f = self.face();
+        match t {
+            Toggle::Off => f,
+            Toggle::On => {
+                let on = self.on.as_ref().expect("a key is on only with an on face");
+                let mut f = merge_looks(
+                    f,
+                    on.icon.as_deref(),
+                    on.glyph.as_deref(),
+                    on.background.as_deref(),
+                    on.label_color.as_deref(),
+                );
+                if let Some(l) = &on.label {
+                    f.label = l.trim(); // Some("") = no label while on
+                }
+                f
+            }
+            Toggle::Busy(text) => {
+                let busy = self.busy.as_ref();
+                let mut f = merge_looks(
+                    f,
+                    busy.and_then(|b| b.icon.as_deref()),
+                    busy.and_then(|b| b.glyph.as_deref()),
+                    busy.and_then(|b| b.background.as_deref()),
+                    busy.and_then(|b| b.label_color.as_deref()),
+                );
+                f.label = busy
+                    .and_then(|b| b.label.as_deref())
+                    .filter(|l| !l.trim().is_empty())
+                    .unwrap_or(if text.trim().is_empty() { "…" } else { text.as_str() });
+                f.show_label = true;
+                f
+            }
+        }
+    }
+}
+
+/// Merge one state's look over a face. Setting `icon` or `glyph` replaces both (one
+/// image per state, as in Elgato; otherwise a base icon would always beat an on glyph).
+fn merge_looks<'a>(
+    mut f: crate::render::Face<'a>,
+    icon: Option<&'a str>,
+    glyph: Option<&'a str>,
+    background: Option<&'a str>,
+    label_color: Option<&'a str>,
+) -> crate::render::Face<'a> {
+    if icon.is_some() || glyph.is_some() {
+        f.icon = icon;
+        f.glyph = glyph;
+    }
+    if background.is_some() {
+        f.background = background;
+    }
+    if label_color.is_some() {
+        f.label_color = label_color;
+    }
+    f
 }
 
 /// Which audio device a volume action works on.
@@ -344,6 +530,20 @@ impl Action {
 
     pub fn is_none(&self) -> bool {
         matches!(self, Action::None)
+    }
+
+    /// True for actions that run a command we can watch while it runs (`busy_while_running`):
+    /// a plain `app` command (not a `.desktop` id, which hands off to the desktop and
+    /// returns at once) or a `script`.
+    pub fn is_trackable(&self) -> bool {
+        match self {
+            Action::App { command } => {
+                let c = command.trim();
+                !c.ends_with(".desktop") || c.contains(char::is_whitespace)
+            }
+            Action::Script { .. } => true,
+            _ => false,
+        }
     }
 
     pub fn empty_of_kind(i: usize) -> Self {
@@ -779,6 +979,177 @@ mod tests {
         let owned: Vec<usize> =
             (0..Action::KINDS.len()).filter(|&k| Action::empty_of_kind(k).is_deck_owned()).collect();
         assert_eq!(owned, vec![6, 7, 9, 10]); // Open page, Go back, Next/previous page, Brightness
+    }
+
+    #[test]
+    fn toggle_roundtrip_and_defaults() {
+        let src = r#"
+[[key]]
+index = 11
+label = "Night light"
+[key.action]
+type = "app"
+command = "night-toggle"
+[key.on]
+label = "Night on"
+state = "test -f /tmp/night"
+slow = true
+"#;
+        let c = Config::parse(src).unwrap();
+        let k = c.key(None, 11).unwrap();
+        assert_eq!(k.on.as_ref().unwrap().interval, 2);
+        assert_eq!(k.state_probe(), Some(Probe::Command { command: "test -f /tmp/night".into(), interval_ms: 2000 }));
+        assert!(k.is_slow_toggle());
+        assert!(!k.busy_while_running);
+        let out = toml::to_string_pretty(&c).unwrap();
+        assert!(!out.contains("interval"), "the default interval is not written");
+        assert!(!out.contains("busy"), "no busy table or flag when unset");
+        assert_eq!(Config::parse(&out).unwrap(), c);
+    }
+
+    #[test]
+    fn old_config_writes_no_toggle_fields() {
+        let c = Config::parse(include_str!("../../../examples/config.toml")).unwrap();
+        let out = toml::to_string_pretty(&c).unwrap();
+        assert!(!out.contains("[key.on]"), "{}", out);
+        assert!(!out.contains("[key.busy]"));
+        assert!(!out.contains("slow"));
+        assert!(!out.contains("busy_while_running"));
+        assert_eq!(Config::parse(&out).unwrap(), c, "old configs save unchanged");
+    }
+
+    #[test]
+    fn key_with_only_on_is_not_blank() {
+        let k = KeyConfig { on: Some(OnFace::default()), ..KeyConfig::new(0) };
+        assert!(!k.is_blank());
+        assert!(k.is_press_toggle(), "on with nothing to poll flips on each press");
+        assert!(!k.is_slow_toggle());
+    }
+
+    #[test]
+    fn state_probe_command_wins_over_mute() {
+        let mut k = KeyConfig::new(0);
+        k.action = Action::Volume { device: AudioDevice::Input, change: 0, mute: true };
+        k.on = Some(OnFace { state: Some("test -f /tmp/x".into()), ..OnFace::default() });
+        assert_eq!(k.state_probe(), Some(Probe::Command { command: "test -f /tmp/x".into(), interval_ms: 2000 }));
+    }
+
+    #[test]
+    fn state_probe_mute_from_volume_action() {
+        let k = KeyConfig {
+            action: Action::Volume { device: AudioDevice::Input, change: 0, mute: true },
+            on: Some(OnFace::default()),
+            ..KeyConfig::new(0)
+        };
+        assert_eq!(k.state_probe(), Some(Probe::Volume(AudioDevice::Input)));
+        // A volume action that changes the level, not the mute: nothing to follow.
+        let k = KeyConfig {
+            action: Action::Volume { device: AudioDevice::Input, change: 5, mute: false },
+            on: Some(OnFace::default()),
+            ..KeyConfig::new(0)
+        };
+        assert_eq!(k.state_probe(), None);
+    }
+
+    #[test]
+    fn blank_state_is_press_toggle() {
+        let k = KeyConfig { on: Some(OnFace { state: Some("   ".into()), ..OnFace::default() }), ..KeyConfig::new(0) };
+        assert_eq!(k.state_probe(), None);
+        assert!(k.is_press_toggle());
+    }
+
+    #[test]
+    fn interval_clamped_to_one_second() {
+        let k = KeyConfig {
+            on: Some(OnFace { state: Some("true".into()), interval: 0, ..OnFace::default() }),
+            ..KeyConfig::new(0)
+        };
+        assert_eq!(k.state_probe(), Some(Probe::Command { command: "true".into(), interval_ms: 1000 }));
+    }
+
+    #[test]
+    fn face_on_image_replaces_both() {
+        let k = KeyConfig {
+            label: "Mic".into(),
+            icon: Some("a.png".into()),
+            on: Some(OnFace { glyph: Some("f036d".into()), ..OnFace::default() }),
+            ..KeyConfig::new(0)
+        };
+        let f = k.face_for(&crate::probe::Toggle::On);
+        assert_eq!(f.icon, None);
+        assert_eq!(f.glyph, Some("f036d"));
+        // The base glyph survives when the on face sets no image at all.
+        let k = KeyConfig {
+            label: "Mic".into(),
+            glyph: Some("f036c".into()),
+            on: Some(OnFace { label: Some("Muted".into()), ..OnFace::default() }),
+            ..KeyConfig::new(0)
+        };
+        let f = k.face_for(&crate::probe::Toggle::On);
+        assert_eq!(f.glyph, Some("f036c"));
+        assert_eq!(f.label, "Muted");
+    }
+
+    #[test]
+    fn face_on_empty_label_hides_label() {
+        let k = KeyConfig {
+            label: "Mic".into(),
+            on: Some(OnFace { label: Some(String::new()), ..OnFace::default() }),
+            ..KeyConfig::new(0)
+        };
+        assert_eq!(k.face_for(&crate::probe::Toggle::On).label, "");
+    }
+
+    #[test]
+    fn face_for_busy_label_order() {
+        let base = || KeyConfig { label: "LLM".into(), ..KeyConfig::new(0) };
+        // No busy face: the text.
+        let k = base();
+        assert_eq!(k.face_for(&crate::probe::Toggle::Busy("Loading 43%".into())).label, "Loading 43%");
+        // Empty text: "…".
+        assert_eq!(k.face_for(&crate::probe::Toggle::Busy(String::new())).label, "…");
+        // busy.label wins over the text.
+        let k = KeyConfig { busy: Some(BusyFace { label: Some("Working".into()), ..BusyFace::default() }), ..base() };
+        assert_eq!(k.face_for(&crate::probe::Toggle::Busy("43%".into())).label, "Working");
+        // A blank busy.label falls through to the text.
+        let k = KeyConfig { busy: Some(BusyFace { label: Some("  ".into()), ..BusyFace::default() }), ..base() };
+        assert_eq!(k.face_for(&crate::probe::Toggle::Busy("43%".into())).label, "43%");
+    }
+
+    #[test]
+    fn action_for_uses_on_action_only_when_on() {
+        let k = KeyConfig {
+            action: Action::Hyprland { dispatch: "togglefloating".into() },
+            on: Some(OnFace { action: Action::Hyprland { dispatch: "workspace 1".into() }, ..OnFace::default() }),
+            ..KeyConfig::new(0)
+        };
+        assert_eq!(k.action_for(false), &Action::Hyprland { dispatch: "togglefloating".into() });
+        assert_eq!(k.action_for(true), &Action::Hyprland { dispatch: "workspace 1".into() });
+        // An unset on action falls back to the key's own.
+        let k = KeyConfig {
+            action: Action::Hyprland { dispatch: "togglefloating".into() },
+            on: Some(OnFace::default()),
+            ..KeyConfig::new(0)
+        };
+        assert_eq!(k.action_for(true), &Action::Hyprland { dispatch: "togglefloating".into() });
+    }
+
+    #[test]
+    fn slow_without_state_is_not_slow() {
+        let k = KeyConfig { on: Some(OnFace { slow: true, ..OnFace::default() }), ..KeyConfig::new(0) };
+        assert!(!k.is_slow_toggle(), "slow needs a command");
+        assert!(k.is_press_toggle());
+    }
+
+    #[test]
+    fn trackable_kinds() {
+        assert!(Action::App { command: "firefox".into() }.is_trackable());
+        assert!(Action::App { command: "sh -c 'a | b'".into() }.is_trackable());
+        assert!(!Action::App { command: "org.gnome.Nautilus.desktop".into() }.is_trackable());
+        assert!(Action::Script { path: "x.sh".into(), terminal: false }.is_trackable());
+        assert!(!Action::Url { url: "x".into() }.is_trackable());
+        assert!(!Action::Volume { device: AudioDevice::Output, change: 5, mute: false }.is_trackable());
+        assert!(!Action::None.is_trackable());
     }
 
     #[test]
