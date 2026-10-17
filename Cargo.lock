@@ -1166,6 +1166,7 @@ dependencies = [
  "log",
  "notify",
  "omadeck-core",
+ "serde_json",
  "signal-hook",
 ]
 
