@@ -1081,11 +1081,8 @@ impl Daemon {
             Action::Page { page } => Err(anyhow::anyhow!("there's no page named “{page}”")),
             Action::Back => Ok(self.nav.back()),
             Action::PageStep { change } => {
-                // From inside a folder, step from the folder's parent, leaving the folder.
-                let in_folder =
-                    self.cfg.pages.iter().any(|p| p.folder && self.nav.current().is_some_and(|c| p.name == c));
-                let origin =
-                    if in_folder { self.nav.parent().flatten() } else { self.nav.current().map(str::to_string) };
+                // From inside a folder (however deep), step from the page the folders hang off.
+                let origin = self.nav.nearest(|p| !self.cfg.is_folder(p)).map(str::to_string);
                 let by = i32::from(*change) * steps as i32;
                 Ok(match self.cfg.step_page(origin.as_deref(), by) {
                     Some(page) => self.nav.switch(page.as_deref()),

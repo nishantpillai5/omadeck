@@ -1486,6 +1486,36 @@ impl Config {
         self.pages.iter().any(|p| p.folder && p.name == name)
     }
 
+    /// The page holding the first key that opens `name` (any action the key owns: its
+    /// action, its on action, a multi step): Home first, then the pages in file order, never
+    /// `name` itself. `Some(None)` is Home; `None` when no key opens it.
+    pub fn opener(&self, name: &str) -> Option<Option<&str>> {
+        let opens = |keys: &Keys| {
+            keys.iter().any(|k| k.actions().into_iter().any(|a| matches!(a, Action::Page { page } if page == name)))
+        };
+        if opens(&self.keys) {
+            return Some(None);
+        }
+        self.pages.iter().filter(|p| p.name != name).find(|p| opens(&p.keys)).map(|p| Some(p.name.as_str()))
+    }
+
+    /// Where `name` sits, for the configurator: the folders it's inside and the page they
+    /// hang off, outermost first, ending with `name`. A normal page is just itself.
+    pub fn page_path(&self, name: &str) -> Vec<String> {
+        let mut path = vec![name.to_string()];
+        let mut cur = name;
+        while self.is_folder(cur) && path.len() < 8 {
+            match self.opener(cur) {
+                Some(Some(p)) if !path.iter().any(|q| q == p) => {
+                    path.insert(0, p.to_string());
+                    cur = p;
+                }
+                _ => break,
+            }
+        }
+        path
+    }
+
     /// Mark the page `name` as a folder or a normal page.
     pub fn set_folder(&mut self, name: &str, folder: bool) {
         if let Some(p) = self.pages.iter_mut().find(|p| p.name == name) {
@@ -1961,6 +1991,30 @@ slow = true
         c.remove_page("Music");
         assert_eq!(on_action(&c), Some(Action::None));
         assert_eq!(c.links_to("Music"), 0);
+    }
+
+    #[test]
+    fn page_path_follows_folder_openers() {
+        let c = Config::parse(
+            "[[key]]\nindex = 1\n[key.action]\ntype = \"app\"\ncommand = \"true\"\n\
+             [key.on]\n[key.on.action]\ntype = \"page\"\npage = \"Lone\"\n\n\
+             [[page]]\nname = \"Music\"\n[[page.key]]\nindex = 0\n[page.key.action]\ntype = \"page\"\npage = \"Media\"\n\n\
+             [[page]]\nname = \"Media\"\nfolder = true\n\
+             [[page.key]]\nindex = 0\n[page.key.action]\ntype = \"back\"\n\
+             [[page.key]]\nindex = 1\n[page.key.action]\ntype = \"page\"\npage = \"Spotify\"\n\n\
+             [[page]]\nname = \"Spotify\"\nfolder = true\n\
+             [[page.key]]\nindex = 1\n[page.key.action]\ntype = \"page\"\npage = \"Media\"\n\n\
+             [[page]]\nname = \"Orphan\"\nfolder = true\n\n\
+             [[page]]\nname = \"Lone\"\nfolder = true\n",
+        )
+        .unwrap();
+        assert_eq!(c.page_path("Spotify"), ["Music", "Media", "Spotify"]);
+        assert_eq!(c.page_path("Music"), ["Music"], "a normal page is just itself");
+        assert_eq!(c.opener("Media"), Some(Some("Music")));
+        assert_eq!(c.opener("Orphan"), None);
+        assert_eq!(c.page_path("Orphan"), ["Orphan"], "a folder nothing opens is just itself");
+        assert_eq!(c.opener("Lone"), Some(None), "the on action counts");
+        assert_eq!(c.page_path("Lone"), ["Lone"], "a folder opened from Home");
     }
 
     #[test]
