@@ -11,9 +11,7 @@ use omadeck_core::device::{DeviceStateUpdate, StreamDeckError};
 use omadeck_core::ipc::{Command, Event};
 use omadeck_core::probe::{self, Probe, Value, Values};
 use omadeck_core::state::State;
-use omadeck_core::{
-    Action, AudioDevice, Config, Level, LevelSource, PanelStatus, Renderer, action, paths, tap_to_dial,
-};
+use omadeck_core::{Action, AudioDevice, Config, Level, LevelSource, PanelStatus, Renderer, action, tap_to_dial};
 
 use crate::deck::{self, Deck};
 use crate::hub::Hub;
@@ -41,35 +39,22 @@ pub struct Runtime {
 }
 
 impl Runtime {
-    /// Read the state file once, at start.
-    pub fn load(cfg: &Config) -> Self {
-        let state = State::load();
-        let brightness = start_brightness(cfg.brightness, state.brightness, config_newer_than_state());
+    /// The runtime at start, from the saved state and the config's `brightness`
+    /// (`None` when config.toml didn't load: a fallback default is not an edit). The
+    /// config wins when its value differs from the one the state last saw; either way the
+    /// state now records the config's value.
+    pub fn start(mut state: State, cfg_brightness: Option<u8>) -> Self {
+        let brightness = match cfg_brightness {
+            Some(c) => {
+                let b = state.start_brightness(c);
+                state.config_brightness = Some(c);
+                b
+            }
+            None => state.brightness.unwrap_or_else(|| Config::default().brightness),
+        };
+        state.brightness = Some(brightness);
         Runtime { values: Values { brightness, ..Values::default() }, state }
     }
-}
-
-/// The brightness at start: the last value the daemon saved, unless the config's
-/// `brightness` was edited after that save (a hand edit, or the slider with the daemon
-/// stopped) — then that edit wins, as the state file's own docs promise.
-fn start_brightness(cfg: u8, state: Option<u8>, cfg_newer: bool) -> u8 {
-    if let Some(v) = state
-        && !cfg_newer
-    {
-        return v;
-    }
-    cfg
-}
-
-/// Whether the config file was modified after the state file.
-fn config_newer_than_state() -> bool {
-    let (Ok(c), Ok(s)) = (
-        std::fs::metadata(paths::config_file()).and_then(|m| m.modified()),
-        std::fs::metadata(paths::state_file()).and_then(|m| m.modified()),
-    ) else {
-        return false;
-    };
-    c > s
 }
 
 /// Where an input came from, so a failure is reported against the right key or dial.
@@ -116,9 +101,15 @@ pub struct Daemon {
 }
 
 impl Daemon {
-    pub fn new(cfg: Config, hub: Hub, watcher: Watcher, saver: StateSaver) -> Self {
+    /// `cfg_loaded` is false when config.toml didn't parse and `cfg` is the empty
+    /// fallback: its `brightness` is then no edit.
+    pub fn new(cfg: Config, cfg_loaded: bool, hub: Hub, watcher: Watcher, saver: StateSaver) -> Self {
         let renderer = Renderer::new(&cfg.style);
-        let rt = Runtime::load(&cfg);
+        let saved = State::load();
+        let rt = Runtime::start(saved.clone(), cfg_loaded.then_some(cfg.brightness));
+        if rt.state != saved {
+            saver.send(rt.state.clone());
+        }
         hub.publish(Event::Brightness { value: rt.values.brightness });
         Daemon {
             cfg,
@@ -158,7 +149,7 @@ impl Daemon {
         }
         self.published.clear();
         self.repaint_at = None;
-        self.in_flight.clear();
+        // `in_flight` stays: the watcher still acknowledges every queued change.
         let _ = self.watcher.cmd.send(WatchCmd::Watch(Vec::new()));
         self.hub.publish(Event::Disconnected);
     }
@@ -169,8 +160,6 @@ impl Daemon {
         let probes = probe::watched_probes(&self.cfg, self.nav.current(), dials);
         // Keep what is still shown, so a reload's repaint draws it as it is.
         self.rt.values.probes.retain(|p, _| probes.contains(p));
-        // The watch set changed: what was in flight is no longer accounted for.
-        self.in_flight.clear();
         let _ = self.watcher.cmd.send(WatchCmd::Watch(probes));
     }
 
@@ -182,7 +171,7 @@ impl Daemon {
         let mut hand_edit = None;
         match Config::load() {
             Ok(new_cfg) => {
-                hand_edit = hand_edited_brightness(&self.cfg, &new_cfg);
+                hand_edit = self.rt.state.config_edit(new_cfg.brightness);
                 self.cfg = new_cfg;
             }
             Err(e) => log::error!("{e:#}; keeping the previous config"),
@@ -199,7 +188,11 @@ impl Daemon {
             self.hub.publish(Event::PageChanged { page: self.nav.current().map(str::to_string) });
         }
         // A hand edit of `brightness` wins over the saved value, like any other field.
+        // The state records the value it has now seen, so the next start doesn't apply
+        // it again over a later dial turn.
         if let Some(v) = hand_edit {
+            self.rt.state.config_brightness = Some(v);
+            self.saver.send(self.rt.state.clone());
             self.set_brightness(Some(v), 0);
         }
         self.watch();
@@ -245,16 +238,27 @@ impl Daemon {
     /// What's still in flight hasn't happened yet, so it's shown on top of the read — the
     /// bar only ever moves forward while a spin is in flight, and settles as the queue
     /// drains, instead of snapping back to each stale read.
-    pub fn apply_value(&mut self, probe: Probe, mut value: Value, applied: i32) {
-        // PR 8 adds probes without in-flight volume; keep the guard for them.
+    pub fn apply_value(&mut self, probe: Probe, value: Option<Value>, applied: i32) {
+        // Every volume change is acknowledged exactly once, read or not: take its part
+        // off the in-flight total first, so the total can't drift.
+        // PR 8 adds probes without in-flight volume; keep the guards for them.
+        #[allow(irrefutable_let_patterns)]
+        if let Probe::Volume(dev) = &probe
+            && applied != 0
+        {
+            let f = self.in_flight.entry(*dev).or_insert(0);
+            *f -= applied;
+            if *f == 0 {
+                self.in_flight.remove(dev);
+            }
+        }
+        // An acknowledgement without a read: nothing to show.
+        let Some(mut value) = value else { return };
         #[allow(irrefutable_let_patterns)]
         if let Probe::Volume(dev) = &probe
             && let Value::Level(read) = &value
         {
-            let f = self.in_flight.entry(*dev).or_insert(0);
-            let (nf, shown) = settle_volume(*f, applied, read);
-            *f = nf;
-            value = Value::Level(shown);
+            value = Value::Level(settle_volume(self.in_flight.get(dev).copied().unwrap_or(0), read));
         }
         self.store_value(probe, value);
     }
@@ -468,11 +472,10 @@ impl Daemon {
     /// The watcher's read right after the change corrects it. No guess before the first
     /// read: that read is moments away.
     fn guess_volume(&mut self, device: AudioDevice, change: i32, mute: bool) {
-        // The change goes to the watcher right after: it's in flight until a read-back
-        // confirms it. Clamped like the watcher's coalesce, so the two stay in step.
-        if !mute {
-            let f = self.in_flight.entry(device).or_insert(0);
-            *f = (*f + change).clamp(-100, 100);
+        // The change goes to the watcher right after: it's in flight until the watcher
+        // acknowledges it (always, read or not). Not clamped: the acknowledgement isn't.
+        if !mute && change != 0 {
+            *self.in_flight.entry(device).or_insert(0) += change;
         }
         let Some(cur) = self.rt.values.level(device) else { return };
         let next = probe::guess_volume(cur, change, mute);
@@ -550,20 +553,16 @@ impl Daemon {
     }
 }
 
-/// The new start brightness when `new` changes the config's `brightness` (a hand edit,
-/// or the configurator with no daemon), else `None`. (fix/review's, moved here.)
-/// A read-back confirms `applied` of the in-flight change: take it off the total, and
-/// show what's still in flight on top of the read, so the bar never drops to a value
-/// the queued changes haven't reached yet. The total stays clamped like the watcher's
-/// coalesce, so the two stay in step.
-fn settle_volume(f: i32, applied: i32, read: &Level) -> (i32, Level) {
-    let f = (f - applied).clamp(-100, 100);
-    let shown = if f != 0 { probe::guess_volume(read, f, false) } else { read.clone() };
-    (f, shown)
-}
-
-fn hand_edited_brightness(old: &Config, new: &Config) -> Option<u8> {
-    (new.brightness != old.brightness).then_some(new.brightness)
+/// What a volume panel shows for a read: the read plus what is still in flight (`f`,
+/// already net of what this read confirmed), so the bar never drops to a value the
+/// queued changes haven't reached yet. The mute is the read's: a level change doesn't
+/// unmute everywhere (`wpctl set-volume` doesn't).
+fn settle_volume(f: i32, read: &Level) -> Level {
+    if f == 0 {
+        return read.clone();
+    }
+    let guess = probe::guess_volume(read, f, false);
+    if read.muted { Level { value: guess.value, ..read.clone() } } else { guess }
 }
 
 /// How long to wait for input: until `deadline`, at most `READ_TIMEOUT`. Rounded up to
@@ -590,17 +589,18 @@ mod tests {
     }
 
     #[test]
-    fn hand_edit_is_a_changed_brightness() {
-        let old = Config { brightness: 70, ..Config::default() };
-        assert_eq!(hand_edited_brightness(&old, &Config { brightness: 30, ..Config::default() }), Some(30));
-        assert_eq!(hand_edited_brightness(&old, &Config { brightness: 70, ..Config::default() }), None);
-    }
-
-    #[test]
-    fn start_brightness_saved_value_wins_unless_the_config_was_edited_later() {
-        assert_eq!(start_brightness(90, Some(50), false), 50); // the saved value
-        assert_eq!(start_brightness(75, Some(50), true), 75); // the config was edited after the save
-        assert_eq!(start_brightness(90, None, false), 90); // no state yet: the config
+    fn start_brightness_follows_a_changed_config_value_only() {
+        // Dimmed to 20 with the dial; the configurator later rewrote config.toml with
+        // the same 70: the deck comes back at 20, and the state now records 70.
+        let rt = Runtime::start(State { brightness: Some(20), config_brightness: Some(70) }, Some(70));
+        assert_eq!(rt.values.brightness, 20);
+        // The value was edited to 35 while the daemon was stopped: 35, saved as seen.
+        let rt = Runtime::start(State { brightness: Some(20), config_brightness: Some(70) }, Some(35));
+        assert_eq!((rt.values.brightness, rt.state.config_brightness), (35, Some(35)));
+        assert_eq!(rt.state.brightness, Some(35));
+        // config.toml didn't parse: its fallback default is not an edit.
+        let rt = Runtime::start(State { brightness: Some(20), config_brightness: Some(70) }, None);
+        assert_eq!((rt.values.brightness, rt.state.config_brightness), (20, Some(70)));
     }
 
     #[test]
@@ -629,22 +629,15 @@ mod tests {
 
     #[test]
     fn fast_spin_does_not_snap_back() {
-        // Two turns of +5 are in flight (total 10). The watcher confirms them at once,
-        // coalesced: the bar stays where the turns put it, the total goes to zero.
-        let (f, shown) = settle_volume(10, 10, &level(60));
-        assert_eq!((f, shown.text.as_str()), (0, "60%"));
-        // Not coalesced: the first read-back confirms only 5. The bar must stay 60
-        // (55 read + 5 still in flight), not drop to the stale read.
-        let (f, shown) = settle_volume(10, 5, &level(55));
-        assert_eq!((f, shown.text.as_str()), (5, "60%"));
-        // A poll confirms nothing: the in-flight total is untouched.
-        let (f, shown) = settle_volume(10, 0, &level(55));
-        assert_eq!((f, shown.text.as_str()), (10, "65%"));
-        // The total stays clamped like the watcher's coalesce, so a spin past the
-        // boundary doesn't leave a stale total behind.
-        let (f, shown) = settle_volume(100, 100, &level(100));
-        assert_eq!((f, shown.text.as_str()), (0, "100%"));
-        let (f, shown) = settle_volume(-100, -100, &level(0));
-        assert_eq!((f, shown.text.as_str()), (0, "0%"));
+        // Two turns of +5 are in flight; the first read-back confirms only 5 (net 5
+        // left): the bar stays at 60 (55 read + 5), not the stale read.
+        assert_eq!(settle_volume(5, &level(55)).text, "60%");
+        // Everything confirmed: the read as it is.
+        assert_eq!(settle_volume(0, &level(60)).text, "60%");
+        // A muted device stays muted while changes are in flight.
+        let muted = Level { muted: true, text: "Muted".into(), ..level(40) };
+        let shown = settle_volume(10, &muted);
+        assert!(shown.muted);
+        assert_eq!(shown.text, "Muted");
     }
 }

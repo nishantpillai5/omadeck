@@ -24,7 +24,9 @@ pub enum WatchCmd {
     #[allow(dead_code)]
     Refresh(Probe),
     /// Change a device's volume here, after any earlier change, then re-read it at once
-    /// and send the result even if unchanged (the deck is showing a guess).
+    /// and send the result even if unchanged (the deck is showing a guess). Always
+    /// acknowledged exactly once, read or not, with the unclamped `change` it confirms,
+    /// so the deck's in-flight total always comes back to zero.
     Volume { device: AudioDevice, change: i32, mute: bool },
     /// End the thread (shutdown). Explicit, because PR 8 gives the thread a sender of its
     /// own (for its runners), so the channel never disconnects by itself.
@@ -33,10 +35,12 @@ pub enum WatchCmd {
 
 pub struct Watcher {
     pub cmd: mpsc::Sender<WatchCmd>,
-    /// `(probe, value, applied)`: `applied` is the change the read-back confirms (0 for a
-    /// poll). The deck adds what's still in flight on top, so the bar never drops to a
-    /// value the queued changes haven't reached yet.
-    pub values: mpsc::Receiver<(Probe, Value, i32)>,
+    /// `(probe, value, applied)`: `applied` is the volume change this message confirms
+    /// (0 for a poll). The deck adds what's still in flight on top, so the bar never
+    /// drops to a value the queued changes haven't reached yet. `value` is `None` only
+    /// for a volume change that wasn't read back (the device isn't watched, or the read
+    /// failed): it still confirms its change.
+    pub values: mpsc::Receiver<(Probe, Option<Value>, i32)>,
     thread: thread::JoinHandle<()>,
 }
 
@@ -89,7 +93,7 @@ impl Default for Poller {
 
 impl Poller {
     /// Act on one command; values to send go to `out`. `Stop` is the thread loop's.
-    fn handle(&mut self, cmd: WatchCmd, now: Instant, out: &mut Vec<(Probe, Value, i32)>) {
+    fn handle(&mut self, cmd: WatchCmd, now: Instant, out: &mut Vec<(Probe, Option<Value>, i32)>) {
         match cmd {
             WatchCmd::Watch(set) => {
                 let mut set_d: Vec<Probe> = Vec::new();
@@ -122,11 +126,16 @@ impl Poller {
                 // what the deck sent (a mute changes no level).
                 (self.change_volume)(device, change, mute);
                 let p = Probe::Volume(device);
-                if self.watched.contains(&p) {
-                    self.forced.insert(p.clone());
-                    if let Some(v) = (self.read_volume)(device) {
-                        self.record(p, v, now, out, if mute { 0 } else { change });
+                let applied = if mute { 0 } else { change };
+                let read = if self.watched.contains(&p) { (self.read_volume)(device) } else { None };
+                match read {
+                    Some(v) => {
+                        self.forced.insert(p.clone());
+                        self.record(p, v, now, out, applied);
                     }
+                    // Not watched, or the read failed (a hung `wpctl`): acknowledge the
+                    // change anyway, or the deck would count it as in flight for good.
+                    None => out.push((p, None, applied)),
                 }
             }
             WatchCmd::Stop => {}
@@ -134,7 +143,7 @@ impl Poller {
     }
 
     /// Read every probe that is due.
-    fn run_due(&mut self, now: Instant, out: &mut Vec<(Probe, Value, i32)>) {
+    fn run_due(&mut self, now: Instant, out: &mut Vec<(Probe, Option<Value>, i32)>) {
         for p in self.watched.clone() {
             if self.next_due.get(&p).is_some_and(|t| *t > now) {
                 continue;
@@ -156,12 +165,12 @@ impl Poller {
 
     /// A read came back: send it if it changed (or was asked for), and schedule the next.
     /// `applied` is the change this read confirms (0 for a poll).
-    fn record(&mut self, p: Probe, v: Value, now: Instant, out: &mut Vec<(Probe, Value, i32)>, applied: i32) {
+    fn record(&mut self, p: Probe, v: Value, now: Instant, out: &mut Vec<(Probe, Option<Value>, i32)>, applied: i32) {
         let forced = self.forced.remove(&p);
         self.next_due.insert(p.clone(), now + p.interval());
         if forced || self.last.get(&p) != Some(&v) {
             self.last.insert(p.clone(), v.clone());
-            out.push((p, v, applied));
+            out.push((p, Some(v), applied));
         }
     }
 
@@ -174,7 +183,7 @@ impl Poller {
 /// Start the watcher thread.
 pub fn start() -> Watcher {
     let (cmd_tx, cmd_rx) = mpsc::channel::<WatchCmd>();
-    let (val_tx, val_rx) = mpsc::channel::<(Probe, Value, i32)>();
+    let (val_tx, val_rx) = mpsc::channel::<(Probe, Option<Value>, i32)>();
     let thread = thread::Builder::new()
         .name("watch".into())
         .spawn(move || run(&cmd_rx, &val_tx, Poller::default()))
@@ -182,7 +191,7 @@ pub fn start() -> Watcher {
     Watcher { cmd: cmd_tx, values: val_rx, thread }
 }
 
-fn run(cmd_rx: &mpsc::Receiver<WatchCmd>, val_tx: &mpsc::Sender<(Probe, Value, i32)>, mut poller: Poller) {
+fn run(cmd_rx: &mpsc::Receiver<WatchCmd>, val_tx: &mpsc::Sender<(Probe, Option<Value>, i32)>, mut poller: Poller) {
     let mut out = Vec::new();
     loop {
         // Sleep until a command comes or a read is due; with nothing watched, until a
@@ -223,7 +232,8 @@ fn run(cmd_rx: &mpsc::Receiver<WatchCmd>, val_tx: &mpsc::Sender<(Probe, Value, i
 }
 
 /// Merge back-to-back level changes of the same device into one command (a hard spin
-/// queues several while the previous one runs), keeping everything else in order.
+/// queues several while the previous one runs), keeping everything else in order. The
+/// merged change is the plain sum.
 fn coalesce(cmds: Vec<WatchCmd>) -> Vec<WatchCmd> {
     let mut out: Vec<WatchCmd> = Vec::with_capacity(cmds.len());
     for c in cmds {
@@ -233,7 +243,9 @@ fn coalesce(cmds: Vec<WatchCmd>) -> Vec<WatchCmd> {
         ) = (out.last_mut(), &c)
             && *d1 == *d2
         {
-            *c1 = (*c1 + *c2).clamp(-100, 100);
+            // Unclamped: the sum is what the read-back confirms to the deck.
+            // `change_volume` clamps what it applies.
+            *c1 += *c2;
             continue;
         }
         out.push(c);
@@ -251,6 +263,23 @@ mod tests {
 
     fn level(percent: i32) -> Value {
         Value::Level(Level { value: percent as f32 / 100.0, text: format!("{percent}%"), muted: false })
+    }
+
+    #[test]
+    fn a_volume_change_is_always_acknowledged() {
+        let mut p = Poller { read_volume: |_| None, change_volume: |_, _, _| {}, ..Poller::default() };
+        let mut out = Vec::new();
+        let now = Instant::now();
+        // Not watched (a mic key with no mic dial): acknowledged with no value.
+        p.handle(WatchCmd::Volume { device: AudioDevice::Input, change: 5, mute: false }, now, &mut out);
+        // Watched, but the read failed: acknowledged too.
+        p.handle(WatchCmd::Watch(vec![Probe::Volume(AudioDevice::Output)]), now, &mut out);
+        p.handle(WatchCmd::Volume { device: AudioDevice::Output, change: 160, mute: false }, now, &mut out);
+        assert_eq!(
+            out,
+            vec![(Probe::Volume(AudioDevice::Input), None, 5), (Probe::Volume(AudioDevice::Output), None, 160)],
+            "unclamped, so the deck's total comes back to zero"
+        );
     }
 
     // A fake output device: changes add up, reads return the sum. Only the test below
@@ -271,20 +300,20 @@ mod tests {
         let mut out = Vec::new();
         p.handle(WatchCmd::Watch(vec![out_dev.clone()]), now, &mut out);
         p.run_due(now, &mut out);
-        assert_eq!(out, vec![(out_dev.clone(), level(50), 0)]);
+        assert_eq!(out, vec![(out_dev.clone(), Some(level(50)), 0)]);
         out.clear();
         // Each change is read back right after it, in order, confirming the change.
         for _ in 0..2 {
             p.handle(WatchCmd::Volume { device: AudioDevice::Output, change: 5, mute: false }, now, &mut out);
         }
-        assert_eq!(out, vec![(out_dev.clone(), level(55), 5), (out_dev.clone(), level(60), 5)]);
+        assert_eq!(out, vec![(out_dev.clone(), Some(level(55)), 5), (out_dev.clone(), Some(level(60)), 5)]);
         out.clear();
         // Not due again before the interval.
         p.run_due(now + Duration::from_millis(500), &mut out);
         assert!(out.is_empty());
         // A change that leaves the level as it was is still sent: the deck shows a guess.
         p.handle(WatchCmd::Volume { device: AudioDevice::Output, change: 0, mute: false }, now, &mut out);
-        assert_eq!(out, vec![(out_dev, level(60), 0)]);
+        assert_eq!(out, vec![(out_dev, Some(level(60)), 0)]);
     }
 
     #[test]
@@ -322,7 +351,7 @@ mod tests {
         use AudioDevice::*;
         let v = |device, change, mute| WatchCmd::Volume { device, change, mute };
         assert_eq!(coalesce(vec![v(Output, 5, false), v(Output, 5, false)]), vec![v(Output, 10, false)]);
-        assert_eq!(coalesce(vec![v(Output, 60, false), v(Output, 60, false)]), vec![v(Output, 100, false)]);
+        assert_eq!(coalesce(vec![v(Output, 60, false), v(Output, 60, false)]), vec![v(Output, 120, false)]);
         // A mute, another device or another command in between keeps them apart.
         let kept = vec![v(Output, 5, false), v(Output, 0, true), v(Output, 5, false)];
         assert_eq!(coalesce(kept.clone()), kept);

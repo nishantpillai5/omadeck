@@ -376,8 +376,10 @@ impl Renderer {
 
         let want_label = face.show_label && !face.label.is_empty();
         // A pressed dial (or a tap, for a moment) turns the title into the accent colour,
-        // as the only feedback: the layout stays the same as the Elgato app's.
-        let fg = if st.pressed { self.theme.accent } else { self.label_color(Some(&face), style, tone) };
+        // as the only feedback: the layout stays the same as the Elgato app's. The value
+        // and the bar keep their colours (PR 3's decision).
+        let fg = self.label_color(Some(&face), style, tone);
+        let title = if st.pressed { self.theme.accent } else { fg };
         let glyph_color =
             face.label_color.and_then(Rgb::parse).unwrap_or(if style.follow_theme { self.theme.accent } else { fg });
 
@@ -390,7 +392,7 @@ impl Renderer {
                 }
                 LevelSource::Brightness => self.brightness_icon(&face, glyph_color),
             };
-            let bar = B1Colors { title: fg, value: fg, fill: fg, track: tone.mix(fg, 0.22) };
+            let bar = B1Colors { title, value: fg, fill: fg, track: tone.mix(fg, 0.22) };
             self.draw_b1(&mut img, &face, bar, want_label, icon, st.panel.level.as_ref());
             return img;
         }
@@ -407,7 +409,7 @@ impl Renderer {
             imageops::overlay(&mut img, &icon, x as i64, y as i64);
         }
         if want_label {
-            self.draw_text_in(&mut img, X1_TITLE, STRIP_TITLE_PX, Align::Left, face.label, fg, true);
+            self.draw_text_in(&mut img, X1_TITLE, STRIP_TITLE_PX, Align::Left, face.label, title, true);
         }
         img
     }
@@ -1016,6 +1018,24 @@ mod tests {
     }
 
     #[test]
+    fn pressed_b1_recolours_only_the_title() {
+        let mut r = renderer_with_font();
+        let mut cfg = Config { style: test_style(), ..Default::default() };
+        cfg.dials.push(DialConfig { glyph: Some("A".into()), ..volume_dial() });
+        let up = r.render_strip_panel(&cfg, 0, 4, level(0.5, false));
+        let down = r.render_strip_panel(&cfg, 0, 4, DialStatus { pressed: true, ..level(0.5, false) });
+        let mut title_changed = false;
+        for (x, y, p) in down.enumerate_pixels() {
+            if in_rect(x, y, X1_TITLE) {
+                title_changed |= p != up.get_pixel(x, y);
+            } else {
+                assert_eq!(p, up.get_pixel(x, y), "({x}, {y}) is outside the title");
+            }
+        }
+        assert!(title_changed, "the title turns accent");
+    }
+
+    #[test]
     fn strip_panel_isolation() {
         let mut r = Renderer::new(&test_style());
         let mut cfg = Config { style: test_style(), ..Default::default() };
@@ -1289,7 +1309,7 @@ mod tests {
 
     #[test]
     fn backdrop_is_shared_and_only_rechecked_on_clear_cache() {
-        let mut r = Renderer::new(&test_style());
+        let mut r = Renderer::with_font_bytes(&test_style(), include_bytes!("../tests/fixtures/test-font.ttf"));
         let path = tmp_image("stamp", &solid_img(4, 2, Rgba([9, 9, 9, 255])));
         let first = r.backdrop_image(&path, 4, 2).unwrap();
         // A bigger file under the same name: a paint doesn't look, so the cached one stays.
