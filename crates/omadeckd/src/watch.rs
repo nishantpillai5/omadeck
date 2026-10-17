@@ -12,12 +12,18 @@
 //! fully blocking (`recv()` / `recv_timeout(next_due - now)`), with no reap tick. Live
 //! keys' commands run the same way.
 //!
+//! App volumes are read inline too, all from one `pactl` read per second, and their changes
+//! run inline in order with the device volume changes, each followed by a fresh read. The
+//! focused window reaches the watcher as `WatchCmd::Focus`, and the watcher keeps the
+//! "sticky" app a focused dial falls back to.
+//!
 //! Clocks, CPU, memory and battery are read inline: a clock format and three small file
 //! reads. Volume changes and reads also run inline, so a clock read due while one runs
 //! waits for it: normally under 100 ms, at most ~2 s per call on a hung PipeWire
 //! (`COMMAND_TIMEOUT`). The minute still turns over, late by that much once.
 
 use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
 use std::process::Command;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -25,11 +31,13 @@ use std::sync::mpsc::{self, RecvTimeoutError, TryRecvError};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use omadeck_core::audio::AppQuery;
 use omadeck_core::probe::{Probe, Toggle, Value, is_missing, toggle_from_exit};
 use omadeck_core::proc::Job;
 use omadeck_core::{AudioDevice, action, audio, live, sysinfo};
 
 /// A message the deck loop sends the watcher.
+#[allow(dead_code)] // `Focus` and `AppVolume` are sent from task G
 #[derive(Debug, Clone, PartialEq)]
 pub enum WatchCmd {
     /// The complete set to read from now on (replaces the previous set).
@@ -45,6 +53,13 @@ pub enum WatchCmd {
     /// A slow toggle was pressed while showing `from`: poll every `FAST_INTERVAL` until a
     /// read is neither busy nor `from`, or `FAST_WINDOW` passes.
     Leave { probe: Probe, from: Toggle },
+    /// The focused window changed (from the Hyprland listener). Re-read now if a focused
+    /// app probe is watched; otherwise just remember it.
+    Focus(Option<audio::Window>),
+    /// Change or mute an app's streams, in order with every other change, then re-read.
+    /// `change` already has the steps folded in (±100 at most); 0 with `mute`. Not
+    /// acknowledged: the deck keeps no in-flight total for apps.
+    AppVolume { query: AppQuery, change: i32, mute: bool },
     /// A runner thread finished. Sent by the runner, not by the daemon. `run` is the id
     /// `run_due` gave the run: a `Done` from a run that was cancelled and replaced (the
     /// probe dropped and watched again meanwhile) doesn't match and is ignored.
@@ -122,6 +137,25 @@ fn read_live(p: &Probe, cpu: &mut sysinfo::CpuMeter) -> Option<Value> {
     }
 }
 
+/// Answer every watched app probe from one stream list, icons included.
+fn app_values(
+    queries: &[AppQuery],
+    streams: &[audio::Stream],
+    focus: Option<&audio::Window>,
+    sticky: &mut Option<String>,
+    parent: &dyn Fn(u32) -> Option<u32>,
+    icon: &dyn Fn(&[String]) -> Option<PathBuf>,
+) -> Vec<(Probe, Value)> {
+    queries
+        .iter()
+        .map(|q| {
+            let mut lv = audio::resolve(streams, q, focus, sticky, parent);
+            lv.icon = icon(&lv.icon_names);
+            (Probe::AppVolume(q.clone()), Value::App(lv))
+        })
+        .collect()
+}
+
 /// When `probe` should be read next, after a read at `now` (`wall_ms`: Unix ms).
 fn next_read(probe: &Probe, now: Instant, wall_ms: i64) -> Instant {
     match probe {
@@ -156,6 +190,13 @@ struct Poller {
     read_volume: fn(AudioDevice) -> Option<Value>,
     change_volume: fn(AudioDevice, i32, bool),
     read_live: fn(&Probe, &mut sysinfo::CpuMeter) -> Option<Value>,
+    /// The focused window, from the daemon (the Hyprland listener). Kept across `Watch`.
+    focus: Option<audio::Window>,
+    /// The last focused app that had audio (`AppLevel.key`). Kept across `Watch`.
+    sticky: Option<String>,
+    read_streams: fn() -> Option<Vec<audio::Stream>>,
+    run_commands: fn(&[Vec<String>]),
+    find_icon: fn(&[String]) -> Option<PathBuf>,
 }
 
 impl Default for Poller {
@@ -174,6 +215,11 @@ impl Default for Poller {
             read_volume,
             change_volume,
             read_live,
+            focus: None,
+            sticky: None,
+            read_streams: audio::streams,
+            run_commands: audio::run_commands,
+            find_icon: audio::app_icon,
         }
     }
 }
@@ -248,6 +294,38 @@ impl Poller {
                     None => out.push((p, None, applied)),
                 }
             }
+            WatchCmd::Focus(w) => {
+                self.focus = w;
+                // One read per batch however many focus changes it holds: `run_due`
+                // runs once after the batch.
+                let p = Probe::AppVolume(AppQuery::Focused);
+                if self.watched.contains(&p) {
+                    self.next_due.insert(p, now);
+                }
+            }
+            WatchCmd::AppVolume { query, change, mute } => {
+                // A fresh read: the stream ids may have changed since the last one, and
+                // a key's app may not be watched at all.
+                let Some(streams) = (self.read_streams)() else {
+                    self.warn_once(&Probe::AppVolume(query), "could not read the audio streams (pactl)");
+                    return;
+                };
+                let lv = audio::resolve(&streams, &query, self.focus.as_ref(), &mut self.sticky, audio::proc_parent);
+                if lv.ids.is_empty() {
+                    log::info!("no app with audio for {query:?}");
+                    return;
+                }
+                // One target state for every stream: mute all unless all are muted.
+                let mute_to = mute.then(|| !lv.level.is_some_and(|l| l.muted));
+                (self.run_commands)(&audio::app_volume_commands(&lv.ids, change, mute_to));
+                // Read back at once, and send even if unchanged, like a volume read-back.
+                let apps: Vec<Probe> =
+                    self.watched.iter().filter(|p| matches!(p, Probe::AppVolume(_))).cloned().collect();
+                if !apps.is_empty() {
+                    self.forced.extend(apps);
+                    self.read_apps(now, out);
+                }
+            }
             WatchCmd::Stop => {} // the thread loop handles it
             WatchCmd::Done { probe, run, result } => {
                 // Unwatched meanwhile, or a cancelled run whose probe has a new one.
@@ -320,6 +398,7 @@ impl Poller {
         }
         // 2. Start what is due.
         let mut start = Vec::new();
+        let mut apps_read = false;
         for p in self.watched.clone() {
             if self.in_flight.contains_key(&p) || self.next_due.get(&p).is_some_and(|t| *t > now) {
                 continue;
@@ -344,8 +423,14 @@ impl Poller {
                 }
                 // Fed by the Hyprland listener, never watched.
                 Probe::Workspace => {}
-                // Read in task F.
-                Probe::AppVolume(_) => {}
+                // One read answers every app probe; the rest of this pass skips (their
+                // `next_due` was just reset).
+                Probe::AppVolume(_) => {
+                    if !apps_read {
+                        self.read_apps(now, out);
+                        apps_read = true;
+                    }
+                }
                 Probe::Command { .. } | Probe::Output { .. } => {
                     if self.in_flight.len() >= MAX_IN_FLIGHT {
                         // Not due again until something finishes: a `Done` wakes the
@@ -384,6 +469,40 @@ impl Poller {
         if forced || self.last.get(&p) != Some(&v) {
             self.last.insert(p.clone(), v.clone());
             out.push((p, Some(v), applied));
+        }
+    }
+
+    /// Read the streams once and answer every watched app probe from it. A failed read
+    /// sends nothing and tries again in a second.
+    fn read_apps(&mut self, now: Instant, out: &mut Vec<(Probe, Option<Value>, i32)>) {
+        let queries: Vec<AppQuery> = self
+            .watched
+            .iter()
+            .filter_map(|p| match p {
+                Probe::AppVolume(q) => Some(q.clone()),
+                _ => None,
+            })
+            .collect();
+        if queries.is_empty() {
+            return;
+        }
+        match (self.read_streams)() {
+            Some(streams) => {
+                let icon = self.find_icon;
+                let answers =
+                    app_values(&queries, &streams, self.focus.as_ref(), &mut self.sticky, &audio::proc_parent, &icon);
+                for (p, v) in answers {
+                    self.failing.remove(&p);
+                    self.record(p, v, now, out, 0);
+                }
+            }
+            None => {
+                for q in queries {
+                    let p = Probe::AppVolume(q);
+                    self.warn_once(&p, "could not read the audio streams (pactl)");
+                    self.next_due.insert(p.clone(), now + p.interval());
+                }
+            }
         }
     }
 
@@ -544,6 +663,16 @@ fn coalesce(cmds: Vec<WatchCmd>) -> Vec<WatchCmd> {
             // Unclamped: the sum is what the read-back confirms to the deck.
             // `change_volume` clamps what it applies.
             *c1 += *c2;
+            continue;
+        }
+        // An app's changes too; nothing is acknowledged, so the sum is clamped here.
+        if let (
+            Some(WatchCmd::AppVolume { query: q1, change: c1, mute: false }),
+            WatchCmd::AppVolume { query: q2, change: c2, mute: false },
+        ) = (out.last_mut(), &c)
+            && q1 == q2
+        {
+            *c1 = (*c1 + *c2).clamp(-100, 100);
             continue;
         }
         out.push(c);
@@ -997,6 +1126,175 @@ mod tests {
         assert_eq!(coalesce(kept.clone()), kept);
         let kept = vec![v(Output, 5, false), WatchCmd::Stop, v(Output, 5, false)];
         assert_eq!(coalesce(kept.clone()), kept);
+    }
+
+    mod apps {
+        use super::super::*;
+        use omadeck_core::audio::{AppQuery, Window, test_stream};
+        use std::sync::Mutex;
+
+        #[test]
+        fn one_read_answers_all_app_probes() {
+            let streams = vec![test_stream(87, 100, "spotify"), test_stream(90, 300, "firefox")];
+            let focus = Window { pid: Some(300), class: "firefox".into() };
+            let mut sticky = None;
+            let qs = [AppQuery::Named("spotify".into()), AppQuery::Focused, AppQuery::Named("mpv".into())];
+            let out = app_values(&qs, &streams, Some(&focus), &mut sticky, &|_| None, &|_| None);
+            let ids = |q: &AppQuery| match out.iter().find(|(p, _)| *p == Probe::AppVolume(q.clone())) {
+                Some((_, Value::App(lv))) => lv.ids.clone(),
+                other => panic!("{other:?}"),
+            };
+            assert_eq!(ids(&qs[0]), vec![87]);
+            assert_eq!(ids(&qs[1]), vec![90]);
+            assert!(ids(&qs[2]).is_empty(), "mpv isn't playing");
+            assert_eq!(sticky.as_deref(), Some("firefox"));
+        }
+
+        #[test]
+        fn focused_without_window_is_dimmed_and_classless() {
+            let streams = vec![test_stream(90, 300, "firefox")];
+            let mut sticky = None;
+            let icon = |names: &[String]| Some(PathBuf::from(format!("/{}.svg", names.join(","))));
+            let out = app_values(&[AppQuery::Focused], &streams, None, &mut sticky, &|_| None, &icon);
+            match &out[..] {
+                [(Probe::AppVolume(AppQuery::Focused), Value::App(lv))] => {
+                    assert_eq!((lv.name.as_str(), lv.level, lv.ids.len()), ("", None, 0));
+                    assert_eq!(lv.icon, Some(PathBuf::from("/.svg")), "looked up from no names");
+                }
+                other => panic!("{other:?}"),
+            }
+            assert_eq!(sticky, None);
+            // A named app gets its icon from its names.
+            let out = app_values(&[AppQuery::Named("firefox".into())], &streams, None, &mut sticky, &|_| None, &icon);
+            match &out[..] {
+                [(_, Value::App(lv))] => assert_eq!(lv.icon, Some(PathBuf::from("/firefox.svg"))),
+                other => panic!("{other:?}"),
+            }
+        }
+
+        fn two_tabs() -> Option<Vec<audio::Stream>> {
+            Some(vec![test_stream(1, 10, "firefox"), test_stream(2, 10, "firefox")])
+        }
+
+        fn no_streams() -> Option<Vec<audio::Stream>> {
+            None
+        }
+
+        fn no_icon(_: &[String]) -> Option<PathBuf> {
+            None
+        }
+
+        /// The only test that records commands (tests run in parallel).
+        static RAN: Mutex<Vec<Vec<String>>> = Mutex::new(Vec::new());
+
+        fn record_commands(cmds: &[Vec<String>]) {
+            RAN.lock().unwrap().extend(cmds.iter().cloned());
+        }
+
+        fn never_run(cmds: &[Vec<String>]) {
+            panic!("ran {cmds:?}");
+        }
+
+        #[test]
+        fn app_change_runs_then_reads_back() {
+            let mut p = Poller {
+                read_streams: two_tabs,
+                run_commands: record_commands,
+                find_icon: no_icon,
+                ..Poller::default()
+            };
+            let probe = Probe::AppVolume(AppQuery::Named("firefox".into()));
+            let mut out = Vec::new();
+            let t0 = Instant::now();
+            p.handle(WatchCmd::Watch(vec![probe.clone()]), t0, &mut out);
+            assert!(p.run_due(t0, &mut out).is_empty(), "read inline, no runner");
+            assert_eq!(out.len(), 1);
+            out.clear();
+            p.handle(
+                WatchCmd::AppVolume { query: AppQuery::Named("firefox".into()), change: 5, mute: false },
+                t0,
+                &mut out,
+            );
+            let v = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+            assert_eq!(
+                *RAN.lock().unwrap(),
+                vec![
+                    v(&["wpctl", "set-volume", "-l", "1.0", "1", "5%+"]),
+                    v(&["wpctl", "set-volume", "-l", "1.0", "2", "5%+"])
+                ]
+            );
+            // The (fake) level didn't move, but the read-back is sent anyway.
+            match &out[..] {
+                [(pr, Some(Value::App(lv)), 0)] => {
+                    assert_eq!(*pr, probe);
+                    assert_eq!(lv.ids, vec![1, 2]);
+                }
+                other => panic!("{other:?}"),
+            }
+            out.clear();
+            // A mute of an app that isn't playing runs nothing and sends nothing.
+            p.run_commands = never_run;
+            p.handle(WatchCmd::AppVolume { query: AppQuery::Named("mpv".into()), change: 0, mute: true }, t0, &mut out);
+            assert!(out.is_empty());
+        }
+
+        #[test]
+        fn failed_read_sends_nothing_and_retries() {
+            let mut p =
+                Poller { read_streams: no_streams, run_commands: never_run, find_icon: no_icon, ..Poller::default() };
+            let probe = Probe::AppVolume(AppQuery::Focused);
+            let mut out = Vec::new();
+            let t0 = Instant::now();
+            p.handle(WatchCmd::Watch(vec![probe.clone()]), t0, &mut out);
+            p.run_due(t0, &mut out);
+            assert!(out.is_empty());
+            assert_eq!(p.next_due(), Some(t0 + Duration::from_secs(1)));
+            p.handle(WatchCmd::AppVolume { query: AppQuery::Focused, change: 5, mute: false }, t0, &mut out);
+            assert!(out.is_empty());
+        }
+
+        #[test]
+        fn focus_rereads_only_when_followed() {
+            let mut p =
+                Poller { read_streams: two_tabs, run_commands: never_run, find_icon: no_icon, ..Poller::default() };
+            let mut out = Vec::new();
+            let t0 = Instant::now();
+            let named = Probe::AppVolume(AppQuery::Named("firefox".into()));
+            p.handle(WatchCmd::Watch(vec![named.clone()]), t0, &mut out);
+            p.run_due(t0, &mut out);
+            let t1 = t0 + Duration::from_millis(100);
+            let w = Window { pid: Some(10), class: "firefox".into() };
+            p.handle(WatchCmd::Focus(Some(w.clone())), t1, &mut out);
+            assert_eq!(p.next_due(), Some(t0 + Duration::from_secs(1)), "nothing follows focus: no re-read");
+            assert_eq!(p.focus, Some(w), "but it is remembered");
+            // A focused dial: the window's app at once, and a focus change re-reads now.
+            p.handle(WatchCmd::Watch(vec![named, Probe::AppVolume(AppQuery::Focused)]), t1, &mut out);
+            out.clear();
+            p.run_due(t1, &mut out);
+            assert!(out.iter().any(|(pr, v, _)| *pr == Probe::AppVolume(AppQuery::Focused)
+                && matches!(v, Some(Value::App(lv)) if lv.ids == vec![1, 2])));
+            assert_eq!(p.sticky.as_deref(), Some("firefox"));
+            let t2 = t1 + Duration::from_millis(100);
+            p.handle(WatchCmd::Focus(None), t2, &mut out);
+            assert_eq!(p.next_due(), Some(t2));
+            // Nothing focused: the sticky app.
+            out.clear();
+            p.run_due(t2, &mut out);
+            assert!(out.is_empty(), "still Firefox, unchanged: nothing sent");
+        }
+
+        #[test]
+        fn coalesce_merges_app_changes_of_one_query() {
+            let a = |q: &str, change, mute| WatchCmd::AppVolume { query: AppQuery::Named(q.into()), change, mute };
+            assert_eq!(coalesce(vec![a("x", 5, false), a("x", 5, false)]), vec![a("x", 10, false)]);
+            assert_eq!(coalesce(vec![a("x", 60, false), a("x", 60, false)]), vec![a("x", 100, false)]);
+            let kept = vec![a("x", 5, false), a("y", 5, false)];
+            assert_eq!(coalesce(kept.clone()), kept);
+            let kept = vec![a("x", 5, false), a("x", 0, true), a("x", 5, false)];
+            assert_eq!(coalesce(kept.clone()), kept);
+            let kept = vec![a("x", 5, false), WatchCmd::Focus(None), a("x", 5, false)];
+            assert_eq!(coalesce(kept.clone()), kept);
+        }
     }
 
     #[test]
