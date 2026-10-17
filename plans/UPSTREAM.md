@@ -7,18 +7,18 @@ description has to say it builds on that branch, or wait for it to land on `mast
 
 | # | Branch | Tip | What | From | Commits | Size |
 |---|--------|-----|------|------|---------|------|
-| 1 | `up/01-plus-support` | `3f883bc` | Stream Deck + support: dial and strip input, dial actions, the strip drawn with `$X1` | PR 1, 2, 3 | 3 | +1682 −246 |
-| 2 | `up/02-dials-and-strip` | `6cbf1cd` | Volume and brightness dials with live levels, strip flick and `page_step`, background images | PR 4, 5, 6, 7 | 5 | +2906 −162 |
-| 3 | `up/03-groundwork` | `c42a542` | The watcher, the daemon split, a hub that never blocks, the state file | PR 7b | 12 | +2459 −1229 |
-| 4 | `up/04-toggle-keys` | `3662d88` | Toggle keys, busy faces, presets | PR 8 | 11 | +3754 −250 |
-| 5 | `up/05-live-keys` | `03cd881` | Live keys and panels; the Hyprland event listener | PR 9 | 8 | +2138 −83 |
-| 6 | `up/06-app-volume` | `0ffcfeb` | Per-app volume | PR 10 | 9 | +2114 −94 |
-| 7 | `up/07-ctl-and-multi-actions` | `55846c8` | `omadeckd` control commands; multi and delay actions | PR 11, 12 | 12 | +2246 −208 |
-| 8 | `up/08-media-dial` | `aaeb117` | The media dial and media keys | PR 14 | 7 | +2436 −66 |
-| 9 | `up/09-page-navigation` | `26afc6a` | Folder gestures (hold Back for Home, nested page steps) and pages that follow apps | PR 13, 15 | 6 | +1164 −59 |
-| 10 | `up/10-strip-long-press` | `2235154` | A second action per dial on a held strip panel | PR 16 | 2 | +187 −40 |
+| 1 | `up/01-plus-support` | `0b9232d` | Stream Deck + support: dial and strip input, dial actions, the strip drawn with `$X1` | PR 1, 2, 3 | 3 | +1682 −246 |
+| 2 | `up/02-dials-and-strip` | `a5202d9` | Volume and brightness dials with live levels, strip flick and `page_step`, background images | PR 4, 5, 6, 7 | 5 | +2906 −162 |
+| 3 | `up/03-groundwork` | `1d3a139` | The watcher, the daemon split, a hub that never blocks, the state file | PR 7b | 12 | +2459 −1229 |
+| 4 | `up/04-toggle-keys` | `13dacb2` | Toggle keys, busy faces, presets | PR 8 | 11 | +3754 −250 |
+| 5 | `up/05-live-keys` | `7af2e29` | Live keys and panels; the Hyprland event listener | PR 9 | 8 | +2138 −83 |
+| 6 | `up/06-app-volume` | `4ebd169` | Per-app volume | PR 10 | 9 | +2114 −94 |
+| 7 | `up/07-ctl-and-multi-actions` | `b63d36f` | `omadeckd` control commands; multi and delay actions | PR 11, 12 | 12 | +2246 −208 |
+| 8 | `up/08-media-dial` | `9b6dc38` | The media dial and media keys | PR 14 | 7 | +2436 −66 |
+| 9 | `up/09-page-navigation` | `4a388db` | Folder gestures (hold Back for Home, nested page steps) and pages that follow apps | PR 13, 15 | 6 | +1164 −59 |
+| 10 | `up/10-strip-long-press` | `3d03a84` | A second action per dial on a held strip panel | PR 16 | 2 | +187 −40 |
 
-Not for upstream: `up/captures` (`f1faaeb`) = `up/10` + the capture script and the dated
+Not for upstream: `up/captures` (`f9d37be`) = `up/10` + the capture script and the dated
 machine captures (they hold private data). `daily` = `up/captures` since 2026-10-18.
 
 ## How it was built
@@ -46,6 +46,46 @@ machine captures (they hold private data). `daily` = `up/captures` since 2026-10
   `up/work` (the linear series, also on the fork) into `up/*`, with `clean.py` for the
   comments; `check-all.sh` and `check-tips.sh` are the checks. A fix found on the
   machine: commit it on `up/work` in its group, then run `build.py` again.
+
+## Final review (2026-10-18)
+
+Five reviewers read the ten PRs. **Fixed** (`tools/regroup/fixes.py`: text rewrites applied
+to every commit where the buggy code is, all or nothing per commit, with a check that no
+buggy version is left; changed files run through rustfmt):
+
+- PR 1: a dial set to Open page or Go back failed ("only works on the deck"); dials now
+  route page moves like keys.
+- PR 2 (and PR 3's early commits): a hard-coded `HDMI-A-1` monitor for Omarchy 3 volume
+  (now no `--monitor` when unknown); a config brightness edited while the daemon was
+  stopped lost to the state file (groundwork's rule brought forward, with its test); the
+  audio worker woke every 50 ms forever, and the configurator read both volumes every
+  second on any deck.
+- PR 5: a live command was killed after its interval (1–2 s) instead of 10 s.
+- PR 6: every window retitle re-read `pactl`.
+- PR 7: `omadeckd press N` with no page ran Home's key instead of the shown page's; a
+  client that closes its write side (`socat`, `nc -N`) lost its reply (new test); `delay`
+  capped at 10 minutes, the configurator's limit.
+- Leftover internal references in comments and messages, the socket2 fixture's
+  browsing-history-shaped title and keyboard layout, and the groundwork brightness commit
+  message (it claimed file times; the code compares values).
+
+Checked again: all 75 commits type-check on their own; every tip passes fmt, clippy
+`-D warnings` and the tests (385 at PR 10).
+
+**Not done (needs a decision):**
+
+- **Scope.** Every reviewer said the combined PRs break "one feature per PR": PR 2 is
+  four features, PR 7 and PR 9 two each, and PR 3 carries setup only later PRs use.
+  Splitting gives about 14 PRs; each split is on a commit boundary.
+- **Code in the wrong commits** (from the fold's placement rule): the socket2 test fails
+  at its own commit (the fixture lands in the docs commit), the Hyprland worker sits in a
+  toggle-keys commit, unrelated daemon changes in the backgrounds commit. Tips are right.
+- **CHANGELOG:** no groundwork entry; Back-on-release and the strip hold are "Changed",
+  not "Added"; PR 1's "Fixed" entry describes a bug upstream doesn't have; PR 2 lists
+  fixes to its own new feature.
+- **Smaller:** PR 8's docs say media keys go through Omarchy's commands, but with a
+  watched player they go to `playerctl` directly; ctl multis share one run slot and an
+  ignored press still answers OK; spun next/previous queue up to 8 commands per event.
 
 ## Still to do before PR 1
 

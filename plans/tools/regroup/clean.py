@@ -22,9 +22,13 @@ SUBS = [
     (re.compile(r"\s*\((?:BUGS\.md|[Bb]ugs?) \d+(?:, \d+)*\)"), ""),
     (re.compile(r"\s*\([^()]*\b(?:PRs?|PR) ?\d+[^()]*\)"), ""),
     (re.compile(r"\s*\([^()]*captured yet\)"), ""),
+    (re.compile(r"\s*\([^()]*fix/review[^()]*\)"), ""),
+    (re.compile(r"Groundwork's pattern for panels, for keys"), "As for panels, for keys"),
+    (re.compile(r"\s*\((?:D|R)\d+\)"), ""),
+    (re.compile(r"\s*\([^()]*\bthis PR\b[^()]*\)"), ""),
     (re.compile(r"\s*\([^()]*(?:pr\d+-[a-z]|[Cc]apture \d|the plan's|to check on the machine|capturing machine)[^()]*\)"), ""),
 ]
-BANNED = re.compile(r"\bPRs? ?\d+|Later PRs|plans/|\bpr\d+-[a-z]|\b[Tt]ask \d|\b(?:the|an Omarchy|capturing) machine\b(?!'s)|\b20\d\d-\d\d-\d\d\b(?!T)|BUGS\.md|[Cc]apture \d")
+BANNED = re.compile(r"\bthis PR\b|may use it later|\bPRs? ?\d+|Later PRs|plans/|\bpr\d+-[a-z]|\b[Tt]ask \d|\b(?:the|an Omarchy|capturing) machine\b(?!'s)|\b20\d\d-\d\d-\d\d\b(?!T)|BUGS\.md|[Cc]apture \d")
 SENT_SPLIT = re.compile(r"(?<!e\.g\.)(?<!i\.e\.)(?<=[.!?])\s+(?=[A-Z`(\[*_$\"'])")
 
 COMMENT = re.compile(r"^(\s*)(///|//!|//)(?: (.*)|())$")

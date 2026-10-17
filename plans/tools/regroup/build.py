@@ -12,6 +12,7 @@ final tree (the verified one), scrubs aside.
 import json, os, re, subprocess, sys, tempfile
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from clean import clean
+from fixes import FIXES
 
 TRAILER = "\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\n"
 BASE = "fb9052f"          # upstream/pages-and-folders
@@ -32,12 +33,13 @@ def out(*args, **kw):
 SCRUB = {
     "crates/omadeckd/tests/fixtures/socket2.txt": [
         ("Kapil का Naughty Humour है लाजवाब | Comedy Circus | Most Viewed - YouTube - Brave",
-         "कॉमेडी क्लिप | Part 1 | Most Viewed - YouTube - Brave"),
+         "Ünïcode tïtle — 例え | Part 1 | Clips - Video - Brave"),
         ("Loose Talk Episode 251 [Subtitle Eng] | Moin Akhtar | Anwar Maqsood | ARY Digital - YouTube - Brave",
          "Talk Show Episode 12 [Subtitles] | Host One | Host Two - YouTube - Brave"),
         ("The MCU since you stopped watching - YouTube - Brave", "A Video, With a Comma - YouTube - Brave"),
         ("noobaf@omarchy:~", "user@host:~"),
         ("omarchy:Work", "shell"),
+        ("hl-virtual-keyboard-fcitx5,English (US)", "keyboard,English (US)"),
     ],
     "crates/omadeckd/src/hypr.rs": [("omarchy:Work", "shell")],
 }
@@ -53,6 +55,14 @@ for p in [
           "crates/omadeck-core/tests/fixtures/playerctl-two.txt",
           "crates/omadeck-core/src/player.rs"]:
     SCRUB[p] = FILM
+
+# Planning phrases left in the original bodies, rewritten wherever they occur.
+MSG_SUBS = [
+    ("use these from the next task.", "use these from the next commit."),
+    ("(the daemon's real state lands in the next tasks)", "(the daemon's real state lands in the next commits)"),
+    ("by the daemon (next PR tasks).", "by the daemon (in a later commit)."),
+    ("edits the config as upstream.", "edits the config as before."),
+]
 
 def rewrap(msg):
     """Re-wrap body paragraphs (not lists) that an edit left with a line over 76."""
@@ -92,7 +102,8 @@ GROUPS = [
    "On Omarchy 4 the mic has no clamping command of its own, so its bare\n"
    "wpctl call gets -l 1.0 and stops at 100% like the output."),
   (["9f4acc9"], lambda: M("Page with a strip flick or a page_step action", orig_msg("9f4acc9").split("\n", 1)[1])),
-  (["44e0664"], lambda: orig_msg("44e0664", [("Running it surfaced three fixes:", "Along the way:")])),
+  (["44e0664"], lambda: orig_msg("44e0664", [("Running it surfaced three fixes:", "Along the way:"),
+   ("touched by the daemon.", "touched by the daemon. A brightness edited in config.toml while the daemon\nwas stopped wins at the next start.")])),
   (["5c56a4b", "5b07435", "006a48a", "a6dfb1a"], lambda: M("Draw background images on the touch strip and dials", orig_msg("a6dfb1a").split("\n", 1)[1])),
   (["a9dc7f0", "e5e61f2"], lambda: M("Pick strip and dial background images in the configurator",
    orig_msg("a9dc7f0").split("\n", 1)[1] + "\n\nThe README and changelog document both settings.")),
@@ -109,7 +120,14 @@ GROUPS = [
   (["9fa70d7"], lambda: M("Configurator: mirror the daemon instead of polling", orig_msg("9fa70d7").split("\n", 1)[1])),
   (["516e4f7"], lambda: M("Configurator: one action slot type and one Try-it-now button", orig_msg("516e4f7", [("so editors nest —\nPR 12's step editor will build a slot for a step and call\naction_editor again", "so editors nest:\na nested editor builds a slot and calls action_editor again")]).split("\n", 1)[1])),
   (["561f17c"], lambda: M("Keep the volume bar from snapping back during a fast spin", orig_msg("561f17c").split("\n", 1)[1])),
-  (["297bb15"], lambda: M("At start, a config brightness edited after the last save wins", orig_msg("297bb15").split("\n", 1)[1])),
+  (["297bb15"], lambda: M("Runtime: a config brightness edited while stopped still wins at start",
+   "Runtime::start and a reload compare the config's brightness with the value\n"
+   "the state file last saw, as the deck loop did before the split, and the\n"
+   "state records the value it has seen. A config that fails to parse at start\n"
+   "counts as no edit.\n\n"
+   "Also: every volume change is acknowledged exactly once, read or not, so the\n"
+   "in-flight total can't drift; and Disconnected is published once, from\n"
+   "detach, not on every scan.")),
  ]),
  ("up/04-toggle-keys", [
   (["f3cb8c8"], lambda: M("Add command probes, toggle values and a non-blocking job", orig_msg("f3cb8c8", [("The pieces PR 8's watcher and daemon build on:", "The pieces toggle keys build on:"), ("fields added later (PR 9's\n  live) join it with serde(default)", "fields added later join it\n  with serde(default)")]).split("\n", 1)[1])),
@@ -142,7 +160,7 @@ GROUPS = [
    "the bar; each source has a glyph.")),
   (["6c04ff8"], lambda: M("Watcher: read clocks, meters and command output",
    "Clock, CPU, memory and battery are read inline, the clock scheduled on\n"
-   "the minute or second; a command runs on the runner threads with a 1-10 s\n"
+   "the minute or second; a command runs on the runner threads with a 10 s\n"
    "timeout and keeps its last value on failure.")),
   (["c83368e"], lambda: M("Listen to Hyprland's event socket",
    "hypr.rs: a thread reads .socket2.sock, asks .socket.sock for the active\n"
@@ -246,7 +264,20 @@ OVERRIDE = {
     "7:crates/omadeckd/src/hub.rs": 5,
     "7:crates/omadeckd/src/hypr_worker.rs": 5,
 }
+FORMATTED = {}
+
+def rustfmt(src):
+    """The repo's rustfmt settings, on one file's text (a fix's code is formatted like the rest)."""
+    if src not in FORMATTED:
+        r = subprocess.run(["rustfmt", "--edition", "2024", "--config", "max_width=120,use_small_heuristics=Max",
+                            "--emit", "stdout"], input=src.encode(), capture_output=True)
+        if r.returncode != 0:
+            sys.exit(f"rustfmt failed: {r.stderr.decode()[:500]}")
+        FORMATTED[src] = r.stdout.decode()
+    return FORMATTED[src]
+
 CLEANED = {}
+SKIPPED = []
 
 def cleaned_blob(blob):
     if blob not in CLEANED:
@@ -312,6 +343,31 @@ def main():
                     git("update-index", "--add", "--cacheinfo", f"{mode},{blob},{f}", env=E)
                 else:
                     git("update-index", "--force-remove", "--", f, env=E)
+            for lo_g, hi_g, f, hunks, gone in FIXES:
+                if not lo_g <= gi <= hi_g:
+                    continue
+                ent = out("ls-files", "-s", "--", f, env=E)
+                if not ent:
+                    continue
+                mode, blob = ent.split()[0], ent.split()[1]
+                data = git("cat-file", "blob", blob).decode()
+                # All or nothing: a fix whose rewrites don't all match this version is
+                # skipped here (reported), never half applied.
+                if not all(a in data or b in data for a, b in hunks):
+                    SKIPPED.append((branch, k, f, hunks[0][0][:50]))
+                    if any(g in data for g in gone):
+                        sys.exit(f"{branch} commit {k}: {f} has the bug but the fix didn't match")
+                    continue
+                new = data
+                for a, b in hunks:
+                    new = new.replace(a, b)
+                left = [g for g in gone if g in new]
+                if left:
+                    sys.exit(f"{branch} commit {k}: {f} still has {left!r}")
+                if new != data:
+                    new = rustfmt(new)
+                    nb = out("hash-object", "-w", "--stdin", input=new.encode())
+                    git("update-index", "--cacheinfo", f"{mode},{nb},{f}", env=E)
             for f, reps in SCRUB.items():
                 ent = out("ls-files", "-s", "--", f, env=E)
                 if not ent:
@@ -336,7 +392,10 @@ def main():
             first = full(shas[0])
             a = out("log", "-1", "--format=%an%x00%ae%x00%ad", "--date=raw", first).split("\x00")
             env = {"GIT_AUTHOR_NAME": a[0], "GIT_AUTHOR_EMAIL": a[1], "GIT_AUTHOR_DATE": a[2]}
-            msg = rewrap(msgf().rstrip()) + TRAILER
+            body = msgf().rstrip()
+            for x, y in MSG_SUBS:
+                body = body.replace(x, y)
+            msg = rewrap(body) + TRAILER
             parent = out("commit-tree", tree, "-p", parent, "-F", "-", input=msg.encode(), env=env)
             report.append(f"{branch} {k} {parent[:7]} {msg.splitlines()[0]}")
         git("branch", "-f", branch, parent)
@@ -344,5 +403,7 @@ def main():
         report.append(f"  placements: {json.dumps(placed)}")
     os.unlink(tmpidx)
     print("\n".join(report))
+    for sk in SKIPPED:
+        print("skipped", *sk)
 
 main()
