@@ -49,7 +49,17 @@ were rewritten against `d7bd448` and the two new steps below.
 (`workflow_dispatch`); the goldens use a bundled OFL font subset. One plan typo fixed
 along the way: the Arch font package is `fonts-dejavu`.
 
-Next: **PR 8, `feat/toggle-keys`** (base `feat/groundwork`), then the remaining features,
+**Done (2026-10-17): PR 8, `feat/toggle-keys`.** Eleven task commits (A–K) on
+`feat/groundwork`: probe/proc + `Job`, `[key.on]`/`[key.busy]`/`busy_while_running`,
+on-face tint and the busy progress bar, the watcher's `Refresh`/`Leave`/fast polling,
+the daemon's press toggles and optimistic guesses (`Settle`), tracked jobs in their own
+systemd scope, the GUI mirror with Off/On/Busy face tabs, the Toggle group, and presets
+(mic/output mute, night light, stay awake, DND, bluetooth, Service…). 170 tests. Deck-side
+hardware checks passed (mute-follow, command state, optimistic press, busy jobs); the GUI
+checks were partly verified and the rest skipped at the user's request — see the
+verification notes at the end of [pr8-toggle-keys.md](pr8-toggle-keys.md).
+
+Next: **PR 9, `feat/live-keys`** (base `feat/toggle-keys`), then the remaining features,
 each based on the previous branch.
 
 `feat/groundwork` is **done** (ten task commits on `fix/review`, plus the in-flight
@@ -64,7 +74,7 @@ order; the order is mine, not upstream's roadmap order.
 |---|--------|---------|------|
 | – | `fix/review` | Bugs from the 2026-10-17 review — **done** (`87be396`) | [review-fixes](review-fixes.md) |
 | – | `feat/groundwork` | Daemon split, watcher, ordered volume, non-blocking hub, GUI mirrors the daemon, `ActionSlot` — **done** (2026-10-17) | [groundwork](groundwork.md) |
-| 8 | `feat/toggle-keys` | Keys with on/off faces that follow real state, plus a busy state with progress for slow toggles (e.g. a model server starting up) and for any key while its command runs | [pr8](pr8-toggle-keys.md) |
+| 8 | `feat/toggle-keys` | Keys with on/off faces that follow real state, plus a busy state with progress for slow toggles (e.g. a model server starting up) and for any key while its command runs — **done** (2026-10-17) | [pr8](pr8-toggle-keys.md) |
 | 9 | `feat/live-keys` | Keys that show a clock, CPU, workspace, … and update themselves; the Hyprland event listener | [pr9](pr9-live-keys.md) |
 | 10 | `feat/app-volume` | Per-app volume: a dial for a chosen app, or for the focused app | [pr10](pr10-app-volume.md) |
 | 11 | `feat/ctl` | Drive the running daemon from the shell (`omadeckd page next`, `brightness 30`, …) | [pr11](pr11-ctl.md) |

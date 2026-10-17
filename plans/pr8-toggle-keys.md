@@ -1806,3 +1806,33 @@ end-of-pass `flush` with `published`, `Runtime: Default`, the `Poller` with
 holding `render::Level`, `ActionTarget` (not `app::Target`), and the hub's `Replay`.
 
 **Size:** about 2,500 lines with tests across the eleven tasks.
+
+## Verification notes (2026-10-17, hardware pass)
+
+Built on `feat/groundwork` (11 task commits, tip `55d0d62`), installed from the release
+build; 170 tests (128 core + 3 GUI + 39 daemon), clippy `-D warnings` clean.
+
+**Deck side — all passed:**
+- Mic-mute toggle (volume mute key + `[key.on]`, no state): press mutes and the face
+  flips; the Mic dial press and keyboard mute follow it within ~2 s.
+- Command toggle (`test -f /tmp/t`, interval 2 s): press flips the face at once
+  (optimistic guess, confirmed by the 300 ms read-back); `touch`/`rm` flip it back
+  within ~2 s with no press.
+- `busy_while_running` press toggle (a 4 s command printing `1/4`…`4/4`): the key goes
+  busy at once, the text updates ~1/s, a second press mid-run is ignored, and on exit 0
+  the press toggle flips; the job runs in its own systemd scope.
+- State commands were verified to behave as captured (exit 0/1, single-digit ms).
+
+**GUI side — partly verified, rest skipped at the user's request:**
+- Confirmed from a screenshot: the File key's editor shows the Toggle group (Two faces
+  on, State from = Shell command, the command, Every 2 s) and the Appearance Off/On tabs
+  with the On tab pinning the preview ("File on", background/colour "From theme").
+- Not driven: the Off-tab daemon mirror, the Mic key's "Follows mute" choice, the Job
+  key's Busy-while-running/Progress-bar rows, the presets menu and Service… dialog, and
+  the daemon-down clearing. These are straightforward GUI wiring over the same tested
+  core helpers (`state_choices`, `look`/`set_look`, `PRESETS`); worth a quick pass before
+  the PR goes up if time allows.
+
+**Deviation from the plan (noted in the Task G commit):** the `busy_while_running`
+branch of `press_key` lands in Task G with `run_tracked`, not Task F, so each commit
+works on its own (F alone would leave jobs un-reaped).
