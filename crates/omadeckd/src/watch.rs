@@ -437,6 +437,10 @@ impl Poller {
                 }
                 // Fed by the Hyprland listener, never watched.
                 Probe::Workspace => {}
+                // Read in task 5 of PR 14; until then, not again for a while.
+                Probe::Player(_) => {
+                    self.next_due.insert(p.clone(), now + p.interval());
+                }
                 // One read answers every app probe; the rest of this pass skips (their
                 // `next_due` was just reset).
                 Probe::AppVolume(_) => {

@@ -11,8 +11,8 @@ use std::time::Duration;
 use anyhow::{Context, Result, bail};
 
 use crate::audio;
-use crate::config::{Action, AudioDevice};
-use crate::{paths, proc};
+use crate::config::{Action, AudioDevice, MediaCommand};
+use crate::{paths, player, proc};
 
 pub fn run(action: &Action) -> Result<()> {
     if matches!(action, Action::Multi { .. }) && action.is_deck_owned() {
@@ -32,7 +32,7 @@ pub fn run(action: &Action) -> Result<()> {
         Action::AppVolume { change, mute, .. } => run_app_volume(action, i32::from(*change), *mute),
         // A delay on its own waits for nothing.
         Action::Delay { .. } => Ok(()),
-        Action::Media { .. } => bail!("media commands come in Task 3"),
+        Action::Media { command, seek, player } => run_media(*command, player::fold_seek(*seek, 1), player.as_deref()),
         // The daemon never gets here with a multi: it times the steps on its loop.
         Action::Multi { steps } => {
             let steps = steps.clone();
@@ -71,6 +71,12 @@ pub fn run_multi_blocking(steps: &[Action]) -> Vec<(usize, anyhow::Error)> {
                 Some(query) => apply_app_volume(&query, i32::from(*change), *mute),
                 None => Err(anyhow::anyhow!("no app set")),
             },
+            // In order too: the next step may depend on the player having moved.
+            Action::Media { command, seek, player } => {
+                let target = player.as_deref().map(str::trim).filter(|p| !p.is_empty());
+                let seek = player::fold_seek(*seek, 1);
+                check_media(*command, seek, target).map(|backend| apply_media(backend, *command, seek, target))
+            }
             a => run(a),
         };
         if let Err(e) = res {
@@ -90,6 +96,12 @@ pub fn run_steps(action: &Action, steps: u8) -> Result<()> {
     }
     if let Action::AppVolume { change, mute, .. } = action {
         return run_app_volume(action, if *mute { 0 } else { i32::from(folded_volume(*change, steps)) }, *mute);
+    }
+    // A spin seeks once by the whole amount. Next and previous run once per detent below.
+    if let Action::Media { command, seek, player } = action
+        && *seek != 0
+    {
+        return run_media(*command, player::fold_seek(*seek, steps), player.as_deref());
     }
     // `hyprctl dispatch` waits for Hyprland's answer. The daemon never gets here with a
     // Hyprland action (it queues it on its ordered `HyprWorker`); for the other callers
@@ -128,6 +140,32 @@ pub fn folded_volume(change: i8, steps: u8) -> i8 {
 fn run_volume(device: AudioDevice, change: i8, mute: bool) -> Result<()> {
     thread::Builder::new().name("volume".into()).spawn(move || apply_volume(device, change, mute))?;
     Ok(())
+}
+
+/// Run a media command without waiting (GUI *Try it now*, `omadeckd press`/`dial` with
+/// no daemon). The daemon sends `WatchCmd::Media` to its watcher instead.
+fn run_media(cmd: MediaCommand, seek: i32, target: Option<&str>) -> Result<()> {
+    let target = target.map(str::trim).filter(|p| !p.is_empty()).map(str::to_string);
+    let backend = check_media(cmd, seek, target.as_deref())?;
+    thread::Builder::new().name("media".into()).spawn(move || apply_media(backend, cmd, seek, target.as_deref()))?;
+    Ok(())
+}
+
+/// The backend a media command goes through, or why it can't run here.
+fn check_media(cmd: MediaCommand, seek: i32, target: Option<&str>) -> Result<audio::Backend> {
+    let backend = audio::backend();
+    if player::needs_playerctl(backend, cmd, seek, target.is_some()) && !which("playerctl") {
+        bail!("playerctl not found (install playerctl)");
+    }
+    Ok(backend)
+}
+
+/// Run a media command's commands in order and wait for them. Blocking.
+fn apply_media(backend: audio::Backend, cmd: MediaCommand, seek: i32, target: Option<&str>) {
+    let monitor = (backend == audio::Backend::Omarchy3).then(audio::focused_monitor).flatten();
+    for argv in player::media_argv(backend, cmd, seek, target, monitor.as_deref()) {
+        player::run_argv(&argv);
+    }
 }
 
 /// Change an app's volume on a helper thread (`omadeckd press`, "Try it now"). The
@@ -531,9 +569,9 @@ mod tests {
     #[test]
     fn run_refuses_exactly_the_deck_owned_kinds() {
         for kind in 0..Action::KINDS.len() {
-            // Volume would really change the volume, and App volume would run pactl and
-            // wpctl; neither is deck-owned anyway.
-            if kind == 8 || kind == 11 {
+            // Volume would really change the volume, App volume would run pactl and wpctl,
+            // and Media would really play or pause the player; none is deck-owned anyway.
+            if kind == 8 || kind == 11 || kind == 14 {
                 continue;
             }
             let a = Action::empty_of_kind(kind);
