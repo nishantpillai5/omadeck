@@ -183,26 +183,37 @@ fn normalise_address(a: &str) -> String {
     a.to_ascii_lowercase()
 }
 
-/// The instance dir: `runtime/hypr/<sig>/` if it has `.socket2.sock`, else the newest
-/// `runtime/hypr/*/` that has one.
-fn find_instance(runtime: &Path, sig: Option<&str>) -> Option<PathBuf> {
+/// The instance dirs that have a `.socket2.sock`, in the order to try them:
+/// `runtime/hypr/<sig>/` first, then the rest newest first. A crashed Hyprland can leave
+/// its socket file behind, so the env's dir isn't always the live one (BUGS.md 81).
+fn instances(runtime: &Path, sig: Option<&str>) -> Vec<PathBuf> {
     let hypr = runtime.join("hypr");
-    if let Some(sig) = sig.filter(|s| !s.is_empty()) {
-        let dir = hypr.join(sig);
-        if dir.join(".socket2.sock").exists() {
-            return Some(dir);
-        }
-    }
-    std::fs::read_dir(&hypr)
-        .ok()?
+    let env = sig.filter(|s| !s.is_empty()).map(|s| hypr.join(s));
+    let mut rest: Vec<(std::time::SystemTime, PathBuf)> = std::fs::read_dir(&hypr)
+        .into_iter()
+        .flatten()
         .filter_map(|e| e.ok())
         .map(|e| e.path())
+        .filter(|d| Some(d) != env.as_ref())
         .filter_map(|d| {
             let modified = std::fs::metadata(d.join(".socket2.sock")).ok()?.modified().ok()?;
             Some((modified, d))
         })
-        .max_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)))
-        .map(|(_, d)| d)
+        .collect();
+    rest.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| b.1.cmp(&a.1)));
+    let env = env.filter(|d| d.join(".socket2.sock").exists());
+    env.into_iter().chain(rest.into_iter().map(|(_, d)| d)).collect()
+}
+
+/// The first of `dirs` whose event socket `connect` accepts, with its connection.
+fn connect_first<T>(dirs: Vec<PathBuf>, mut connect: impl FnMut(&Path) -> std::io::Result<T>) -> Option<(PathBuf, T)> {
+    dirs.into_iter().find_map(|dir| match connect(&dir.join(".socket2.sock")) {
+        Ok(stream) => Some((dir, stream)),
+        Err(e) => {
+            log::debug!("Hyprland at {}: {e}", dir.display());
+            None
+        }
+    })
 }
 
 /// One request on `.socket.sock`: connect, write, read to EOF, close. 1 s timeouts.
@@ -224,12 +235,10 @@ fn run(tx: mpsc::Sender<HyprEvent>, runtime: PathBuf) {
     // Survives a reconnect, so a reconnect resends only what changed.
     let mut seen = Seen::default();
     loop {
-        // Read each time: a restarted Hyprland has a new signature (the fallback in
-        // `find_instance` finds it when the environment is stale).
+        // Read each time: a restarted Hyprland has a new signature (`instances` finds it
+        // when the environment is stale or names a crashed instance).
         let sig = std::env::var("HYPRLAND_INSTANCE_SIGNATURE").ok();
-        if let Some(dir) = find_instance(&runtime, sig.as_deref())
-            && let Ok(stream) = UnixStream::connect(dir.join(".socket2.sock"))
-        {
+        if let Some((dir, stream)) = connect_first(instances(&runtime, sig.as_deref()), |p| UnixStream::connect(p)) {
             let started = Instant::now();
             let mut query = |c: &str| request(&dir, c);
             for ev in seed(&mut seen, &mut query) {
@@ -378,24 +387,43 @@ mod tests {
     }
 
     #[test]
-    fn find_instance_prefers_env() {
+    fn instances_try_env_first_then_newest() {
         let root = instance_root("env");
         let old = instance(&root, "old", Duration::from_secs(600));
-        let _new = instance(&root, "new", Duration::ZERO);
-        assert_eq!(find_instance(&root, Some("old")), Some(old));
+        let mid = instance(&root, "mid", Duration::from_secs(60));
+        let new = instance(&root, "new", Duration::ZERO);
+        assert_eq!(instances(&root, Some("old")), vec![old.clone(), new.clone(), mid.clone()]);
         let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
-    fn find_instance_falls_back_to_newest() {
+    fn instances_fall_back_to_newest() {
         let root = instance_root("newest");
-        let _old = instance(&root, "old", Duration::from_secs(600));
+        let old = instance(&root, "old", Duration::from_secs(600));
         let new = instance(&root, "new", Duration::ZERO);
         // No dir without a socket counts.
         std::fs::create_dir_all(root.join("hypr").join("empty")).unwrap();
-        assert_eq!(find_instance(&root, None), Some(new.clone()));
-        assert_eq!(find_instance(&root, Some("gone")), Some(new), "a stale signature");
-        assert_eq!(find_instance(&root.join("nothing"), None), None);
+        assert_eq!(instances(&root, None), vec![new.clone(), old.clone()]);
+        assert_eq!(instances(&root, Some("gone")), vec![new, old], "a stale signature");
+        assert_eq!(instances(&root.join("nothing"), None), Vec::<PathBuf>::new());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_crashed_instance_in_the_env_falls_through_to_a_live_one() {
+        // BUGS.md 81: the env's dir keeps a dead `.socket2.sock` after a crash.
+        let root = instance_root("crashed");
+        let dead = instance(&root, "dead", Duration::from_secs(600));
+        let live = instance(&root, "live", Duration::ZERO);
+        let mut tried = Vec::new();
+        let got = connect_first(instances(&root, Some("dead")), |p: &Path| {
+            tried.push(p.to_path_buf());
+            if p.starts_with(&dead) { Err(std::io::ErrorKind::ConnectionRefused.into()) } else { Ok(()) }
+        });
+        assert_eq!(got.map(|(d, ())| d), Some(live.clone()));
+        assert_eq!(tried, vec![dead.join(".socket2.sock"), live.join(".socket2.sock")]);
+        // The real connect refuses a socket file nobody listens on.
+        assert!(connect_first(vec![dead], |p| UnixStream::connect(p)).is_none());
         let _ = std::fs::remove_dir_all(&root);
     }
 
