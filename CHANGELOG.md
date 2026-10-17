@@ -7,6 +7,14 @@ All notable changes to omadeck are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- Media: a `media` action plays or pauses, skips to the next or previous track, stops,
+  or seeks by a number of seconds. A media dial scrubs on a turn and plays or pauses on a
+  press; its strip panel shows the track, artist, cover (local files) and a bar that
+  moves while it plays. A play/pause key's on face follows the player. Play/pause, next
+  and previous go through Omarchy's media commands when it has them, unless a media panel
+  or key shows a player: then they go to that player through `playerctl`. Seeking and the
+  panel need `playerctl`. The configurator has a Media dial preset and a Play/Pause key
+  preset.
 - A `multi` action runs several actions in order from one key or dial, with `delay`
   steps in between, as in the Elgato app's Multi Action. The configurator edits the steps
   as a list.
