@@ -169,7 +169,7 @@ fn wpctl_rel(n: i8) -> String {
     format!("{}%{}", n.unsigned_abs(), if n >= 0 { '+' } else { '-' })
 }
 
-fn which(bin: &str) -> bool {
+pub(crate) fn which(bin: &str) -> bool {
     std::env::var_os("PATH").map(|p| std::env::split_paths(&p).any(|d| d.join(bin).is_file())).unwrap_or(false)
 }
 
