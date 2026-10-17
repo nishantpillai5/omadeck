@@ -593,6 +593,8 @@ fn dial_presets_button(app: &Rc<App>, i: u8) -> gtk::MenuButton {
         a.edit_dial(i, |d| {
             d.label = "Volume".into();
             d.glyph = Some("f057e".into());
+            // A live value would hide the volume panel.
+            d.live = None;
             d.turn_left = Action::Volume { device: AudioDevice::Output, change: -5, mute: false };
             d.turn_right = Action::Volume { device: AudioDevice::Output, change: 5, mute: false };
             d.press = Action::Volume { device: AudioDevice::Output, change: 0, mute: true };
@@ -607,6 +609,8 @@ fn dial_presets_button(app: &Rc<App>, i: u8) -> gtk::MenuButton {
         a.edit_dial(i, |d| {
             d.label = "Brightness".into();
             d.glyph = Some("f00de".into());
+            // A live value would hide the brightness panel.
+            d.live = None;
             d.turn_left = Action::Brightness { change: -5, set: None };
             d.turn_right = Action::Brightness { change: 5, set: None };
             // A preset sets every slot: a Volume press left over from the Volume preset
