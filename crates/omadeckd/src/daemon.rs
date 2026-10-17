@@ -378,6 +378,11 @@ impl Daemon {
         }
         // A link added or removed takes effect without a focus change.
         moved |= self.follow_focus();
+        // The key under a held Back may be another one now: its release runs nothing
+        // (BUGS.md 79).
+        if let Some(d) = &mut self.deck {
+            deck::forget_holds(&mut d.back_held, &mut d.key_pressed, moved);
+        }
         if moved {
             self.hub.publish(Event::PageChanged { page: self.nav.current().map(str::to_string) });
         }
@@ -1329,8 +1334,7 @@ impl Daemon {
         // The key under your finger on the new page is drawn released; its release only
         // repaints it.
         if let Some(d) = &mut self.deck {
-            d.key_pressed.fill(false);
-            d.back_held = None;
+            deck::forget_holds(&mut d.back_held, &mut d.key_pressed, true);
         }
         log::info!("page: {}", self.nav.current().unwrap_or(omadeck_core::HOME));
         self.paint_all();
@@ -1963,5 +1967,18 @@ live = { source = "battery" }
         t.hypr_tx.send(HyprEvent::ActiveWindow(None)).unwrap();
         t.apply_hypr();
         assert_eq!(focus_sends(&t.cmds), 1);
+    }
+
+    #[test]
+    fn a_reload_that_deletes_the_shown_page_moves_home() {
+        // The deck-free half of BUGS.md 79's path: `reload` moves `nav` without
+        // `show_page`, and says so. (Its held-key half is in `deck::tests`: a `Deck`
+        // needs a real device.)
+        let mut t = test_daemon("[[page]]\nname = \"F\"\n");
+        assert!(t.nav.go(Some("F")));
+        t.show_page();
+        t.apply_config(Config::parse("")).unwrap();
+        assert_eq!(t.nav.current(), None);
+        assert!(t.hub.replay_lines().contains(&r#"{"event":"page_changed","page":null}"#.to_string()));
     }
 }

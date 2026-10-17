@@ -33,6 +33,16 @@ impl BackHold {
     }
 }
 
+/// What a page move or a reload does to the keys held down. A held Back is dropped, so
+/// its release runs nothing: the key under the finger may be another one now. When the
+/// page `moved`, every key is drawn released too; its release then only repaints it.
+pub fn forget_holds(back_held: &mut Option<BackHold>, key_pressed: &mut [bool], moved: bool) {
+    *back_held = None;
+    if moved {
+        key_pressed.fill(false);
+    }
+}
+
 pub struct Deck {
     pub dev: Arc<StreamDeck>,
     pub reader: Arc<DeviceStateReader>,
@@ -283,6 +293,19 @@ fn write_key(d: &Deck, cfg: &Config, page: Option<&str>, renderer: &mut Renderer
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_reload_drops_a_held_back_and_a_page_move_releases_the_keys() {
+        // BUGS.md 79: a reload that moved the page while Back was held ran key `i` of the
+        // new page on release, and left it drawn pressed.
+        let hold = || Some(BackHold { key: 2, since: Instant::now() });
+        let (mut back, mut pressed) = (hold(), vec![false, false, true]);
+        forget_holds(&mut back, &mut pressed, false);
+        assert_eq!((back, pressed.as_slice()), (None, &[false, false, true][..]), "same page: still drawn down");
+        let (mut back, mut pressed) = (hold(), vec![false, false, true]);
+        forget_holds(&mut back, &mut pressed, true);
+        assert_eq!((back, pressed.as_slice()), (None, &[false, false, false][..]));
+    }
 
     #[test]
     fn key_flashes_end_after_their_time() {
