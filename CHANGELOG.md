@@ -7,6 +7,10 @@ All notable changes to omadeck are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- Hold a Back key for half a second to go straight Home, as in the Elgato app. A Back key
+  now goes back when you let go of it. In the configurator, double-click a folder key to
+  open it or a Back key to go up; the page switcher shows a folder with its path
+  (`Music › Media › Spotify`).
 - A `multi` action runs several actions in order from one key or dial, with `delay`
   steps in between, as in the Elgato app's Multi Action. The configurator edits the steps
   as a list.
