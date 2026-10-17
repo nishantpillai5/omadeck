@@ -1370,8 +1370,13 @@ impl App {
         });
     }
 
-    /// Edit the `apps` of page `name`; false (and a toast) if the page is gone.
-    pub fn edit_page_apps(self: &Rc<Self>, name: &str, f: impl FnOnce(&mut Vec<String>)) -> bool {
+    /// Edit the `apps` of page `name`. Fails, with what to tell the user, while config.toml
+    /// can't be parsed (like the other edits) or when the page is gone. The caller shows the
+    /// message: the Follow apps dialog covers the main window's toasts.
+    pub fn edit_page_apps(self: &Rc<Self>, name: &str, f: impl FnOnce(&mut Vec<String>)) -> Result<(), &'static str> {
+        if self.locked.borrow().is_some() {
+            return Err("config.toml has a mistake: fix it first");
+        }
         // The borrow ends before the page list and the save read the config again.
         let found = match self.config.borrow_mut().pages.iter_mut().find(|p| p.name == name) {
             Some(p) => {
@@ -1381,12 +1386,11 @@ impl App {
             None => false,
         };
         if !found {
-            self.toast("That page is gone");
-            return false;
+            return Err("That page is gone");
         }
         self.sync_page_list();
         self.schedule_save();
-        true
+        Ok(())
     }
 
     fn ask_rename_page(self: &Rc<Self>) {
