@@ -13,7 +13,10 @@ pub mod render;
 pub mod state;
 pub mod theme;
 
-pub use config::{Action, AudioDevice, Config, DialConfig, Direction, HOME, KeyConfig, Keys, LevelSource, Page, Style};
+pub use config::{
+    Action, AudioDevice, BusyFace, Config, DialConfig, Direction, FaceTab, HOME, KeyConfig, Keys, LevelSource,
+    LookField, OnFace, Page, Style,
+};
 pub use device::DeckInfo;
 pub use render::{Align, DialStatus, Face, KeyStatus, Level, PANEL_W, PanelStatus, Renderer, tap_to_dial};
 pub use theme::{Rgb, Theme};
