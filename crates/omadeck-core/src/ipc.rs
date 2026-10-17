@@ -167,8 +167,9 @@ fn is_one(n: &u8) -> bool {
 
 /// How long `request` waits for the daemon's answer.
 pub const REPLY_TIMEOUT: Duration = Duration::from_secs(3);
-/// The longest command line the daemon reads; longer ones are refused.
-pub const MAX_LINE: usize = 4096;
+/// The longest command line the daemon reads; longer ones are refused. Roomy, so a
+/// multi with dozens of steps or a long command still fits (BUGS.md 86).
+pub const MAX_LINE: usize = 64 * 1024;
 
 const BUSY: &str = "daemon busy: omadeckd closed the connection without answering; try again";
 
