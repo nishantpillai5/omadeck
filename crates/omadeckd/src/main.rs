@@ -210,6 +210,9 @@ fn run() -> Result<()> {
         daemon.apply_values();
 
         if daemon.deck.is_none() {
+            // With no deck, `flush` only runs `publish_keys`: a job's progress and a
+            // reload's new states still reach the configurators.
+            daemon.flush();
             if last_scan.is_none_or(|t| t.elapsed() >= SCAN_INTERVAL) {
                 last_scan = Some(Instant::now());
                 match deck::open(&mut hid) {
