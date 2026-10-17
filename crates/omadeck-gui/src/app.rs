@@ -28,6 +28,19 @@ const SLIDER_HOLD: Duration = Duration::from_millis(500);
 /// Previews are rendered larger than displayed so they stay crisp on HiDPI screens.
 const PREVIEW_PX: u32 = 192;
 
+/// The pages a key opens (its action and on action, steps included). A key edit that
+/// changes these can change a folder's path in the page switcher.
+fn opened_pages(key: Option<&KeyConfig>) -> Vec<String> {
+    let Some(key) = key else { return Vec::new() };
+    key.actions()
+        .into_iter()
+        .filter_map(|a| match a {
+            Action::Page { page } => Some(page.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
 /// The key a new page starts with, so a page opened from a key works like a folder.
 fn back_key() -> KeyConfig {
     KeyConfig { label: "Back".into(), glyph: Some("\u{f004d}".into()), action: Action::Back, ..KeyConfig::new(0) }
@@ -240,6 +253,9 @@ impl App {
         let dials_grid = gtk::Grid::builder().row_spacing(14).column_spacing(14).build();
         let model_label = gtk::Label::builder().halign(gtk::Align::End).css_classes(["deck-model"]).build();
         let frame = gtk::Box::new(gtk::Orientation::Vertical, 12);
+        // Centered, not filled: the area is as wide as the hint line below, and a filled
+        // frame would leave the 4-key grid stranded on its left with blank to the right.
+        frame.set_halign(gtk::Align::Center);
         frame.add_css_class("deck-frame");
         frame.append(&grid);
         frame.append(&strip);
@@ -266,7 +282,7 @@ impl App {
         page_bar.append(&page_actions);
 
         let hint = gtk::Label::builder()
-            .label("Click a key to edit it · drag keys to rearrange · press a key on your deck to jump to it")
+            .label("Click a key to edit it · drag keys to rearrange · press a key on your deck to jump to it · double-click a folder to open it")
             .css_classes(["deck-hint", "caption"])
             .wrap(true)
             .justify(gtk::Justification::Center)
@@ -412,6 +428,8 @@ impl App {
             }
             let Some(page) = app.current_page() else { return };
             app.config.borrow_mut().set_folder(&page, b.is_active());
+            // Only a folder shows its path in the switcher.
+            app.sync_page_list();
             app.schedule_save();
         });
         let weak = Rc::downgrade(&app);
@@ -529,6 +547,25 @@ impl App {
                     app.select(Some(Selection::Key(i)));
                 }
             });
+            // Double-click a folder key to open its page, or a Back key to go up, as in the
+            // Elgato app. Capture phase, so the first click still selects; the second is
+            // claimed, so its release doesn't select the key under it on the new page.
+            let open = gtk::GestureClick::builder()
+                .button(gdk::BUTTON_PRIMARY)
+                .propagation_phase(gtk::PropagationPhase::Capture)
+                .build();
+            let weak = Rc::downgrade(self);
+            open.connect_pressed(move |g: &gtk::GestureClick, n_press: i32, _x: f64, _y: f64| {
+                if n_press == 2
+                    && let Some(app) = weak.upgrade()
+                    && let Some(target) = app.key_target(i)
+                {
+                    g.set_state(gtk::EventSequenceState::Claimed);
+                    // The deck follows, as with the page switcher.
+                    app.show_page(target, true);
+                }
+            });
+            button.add_controller(open);
             self.add_dnd(&button, &image, i);
             self.grid.attach(&button, (i % deck.cols) as i32, (i / deck.cols) as i32, 1, 1);
             self.keys.borrow_mut().push((button, image));
@@ -970,9 +1007,17 @@ impl App {
 
     /// Mutate a key, refresh its preview and queue a save.
     pub fn edit(self: &Rc<Self>, i: u8, f: impl FnOnce(&mut KeyConfig)) {
-        self.with_page(|keys| f(keys.get_mut(i)));
+        let opens_changed = self.with_page(|keys| {
+            let before = opened_pages(keys.get(i));
+            let key = keys.get_mut(i);
+            f(key);
+            before != opened_pages(Some(key))
+        });
         self.refresh_key(i);
         self.schedule_save();
+        if opens_changed {
+            self.sync_page_list();
+        }
     }
 
     /// The key `i` of the page being edited, to edit later with [`App::edit_ref`].
@@ -986,17 +1031,25 @@ impl App {
         if self.locked.borrow().is_some() {
             return false;
         }
-        match self.config.borrow_mut().page_mut(at.page.as_deref()) {
-            Some(keys) => f(keys.get_mut(at.index)),
+        let opens_changed = match self.config.borrow_mut().page_mut(at.page.as_deref()) {
+            Some(keys) => {
+                let before = opened_pages(keys.get(at.index));
+                let key = keys.get_mut(at.index);
+                f(key);
+                before != opened_pages(Some(key))
+            }
             None => {
                 self.toast("That key's page was deleted, so the change was dropped");
                 return false;
             }
-        }
+        };
         if *self.page.borrow() == at.page {
             self.refresh_key(at.index);
         }
         self.schedule_save();
+        if opens_changed {
+            self.sync_page_list();
+        }
         true
     }
 
@@ -1020,9 +1073,16 @@ impl App {
         let old = self.key(i).filter(|k| !k.is_blank());
         // Before `refresh_key`, which borrows `key_states` itself.
         self.key_states.borrow_mut().remove(&(self.page.borrow().clone(), i));
-        self.with_page(|keys| keys.clear(i));
+        let opened = self.with_page(|keys| {
+            let opened = !opened_pages(keys.get(i)).is_empty();
+            keys.clear(i);
+            opened
+        });
         self.refresh_key(i);
         self.schedule_save();
+        if opened {
+            self.sync_page_list();
+        }
         self.rebuild_editor();
         let Some(old) = old else { return };
         self.toast_undo(&format!("Cleared key {}", i + 1), move |app| {
@@ -1297,13 +1357,30 @@ impl App {
         }
     }
 
-    /// Mirror the config's pages in the page switcher.
+    /// Where double-clicking key `i` goes: an Open page key's page, a Back key's the page
+    /// that opens this one (Home if none). `None` when it goes nowhere (any other key, a
+    /// missing page, Back on Home).
+    fn key_target(&self, i: u8) -> Option<Option<String>> {
+        match self.key(i).map(|k| k.action) {
+            Some(Action::Page { page }) if self.config.borrow().has_page(&page) => Some(Some(page)),
+            Some(Action::Back) => {
+                let cur = self.current_page()?;
+                let up = self.config.borrow().opener(&cur).flatten().map(str::to_string);
+                Some(up)
+            }
+            _ => None,
+        }
+    }
+
+    /// Mirror the config's pages in the page switcher. A folder reads as its path
+    /// (`Music › Media › Spotify`), so nested folders are told apart.
     fn sync_page_list(&self) {
         self.syncing_pages.set(true);
         let cfg = self.config.borrow();
         let names = cfg.page_names();
+        let labels: Vec<String> = names.iter().map(|n| cfg.page_path(n).join(" › ")).collect();
         let mut items: Vec<&str> = vec![HOME];
-        items.extend(names.iter().map(String::as_str));
+        items.extend(labels.iter().map(String::as_str));
         self.page_list.splice(0, self.page_list.n_items(), &items);
         let page = self.page.borrow();
         let pos = page.as_deref().and_then(|p| names.iter().position(|n| n == p)).map(|n| n + 1).unwrap_or(0);

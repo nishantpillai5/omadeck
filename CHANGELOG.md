@@ -7,6 +7,9 @@ All notable changes to omadeck are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- Hold a Back key for half a second to go straight Home, as in the Elgato app. In the
+  configurator, double-click a folder key to open it or a Back key to go up; the page
+  switcher shows a folder with its path (`Music › Media › Spotify`).
 - Media: a `media` action plays or pauses, skips to the next or previous track, stops,
   or seeks by a number of seconds. A media dial scrubs on a turn and plays or pauses on a
   press; its strip panel shows the track, artist, cover (local files) and a bar that
@@ -74,6 +77,8 @@ All notable changes to omadeck are documented here. The format follows
   panel's look.
 
 ### Changed
+- A Back key goes back when you let go of it, not when you press it, so holding it can
+  go Home.
 - With the daemon running, the configurator's brightness slider goes through the daemon
   instead of writing `config.toml`, and its strip preview shows what the deck shows
   instead of reading the system itself. A configurator that stops reading the daemon's
