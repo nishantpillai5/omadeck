@@ -31,16 +31,12 @@ pub enum WatchCmd {
     Watch(Vec<Probe>),
     /// Something changed it elsewhere: schedule a forced re-read at each of
     /// `Probe::refresh_after()` and send the result even if unchanged.
-    // The daemon sends it from Task F; until then it's only constructed in tests.
-    #[allow(dead_code)]
     Refresh(Probe),
     /// Change a device's volume here, after any earlier change, then re-read it at once
     /// and send the result even if unchanged (the deck is showing a guess).
     Volume { device: AudioDevice, change: i32, mute: bool },
     /// A slow toggle was pressed while showing `from`: poll every `FAST_INTERVAL` until a
     /// read is neither busy nor `from`, or `FAST_WINDOW` passes.
-    // The daemon sends it from Task F; until then it's only constructed in tests.
-    #[allow(dead_code)]
     Leave { probe: Probe, from: Toggle },
     /// A runner thread finished. Sent by the runner, not by the daemon.
     Done { probe: Probe, result: RunResult },

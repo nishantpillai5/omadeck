@@ -43,8 +43,6 @@ pub struct KeyId {
 /// A tracked command running for a key (`busy_while_running`): the job and its latest
 /// output line.
 pub struct Running {
-    // Task F polls the job; until then only the text is read (by `key_state`'s tests).
-    #[allow(dead_code)]
     pub job: proc::Job,
     /// The latest output line (the busy face's text).
     pub text: String,
@@ -56,10 +54,9 @@ impl fmt::Debug for Running {
     }
 }
 
-/// An optimistic guess waiting for the real state to confirm it. Task F's presses build
-/// them and `apply_value` consults them.
+/// An optimistic guess waiting for the real state to confirm it. Presses build them
+/// and `apply_value` consults them.
 #[derive(Debug, Clone, PartialEq)]
-#[allow(dead_code)]
 enum Settle {
     /// A fast toggle was pressed and shows `value`: ignore reads that contradict it until
     /// `until`.
@@ -70,7 +67,6 @@ enum Settle {
 }
 
 impl Settle {
-    #[allow(dead_code)]
     fn accepts(&self, v: &Value, now: Instant) -> bool {
         match self {
             Settle::Expect { value, until } => now >= *until || v == value,
@@ -87,14 +83,11 @@ pub struct Runtime {
     /// The persisted state. Changed here, then sent whole to the saver.
     pub state: State,
     /// Press toggles that are on (they have no source of truth, so they reset on a
-    /// daemon restart). Task F reads and writes them.
-    #[allow(dead_code)]
+    /// daemon restart).
     pub flipped: HashSet<KeyId>,
     /// Optimistic guesses waiting for the real state to confirm them.
-    #[allow(dead_code)]
     settle: HashMap<Probe, Settle>,
-    /// `busy_while_running` commands, per key. Task F fills it.
-    #[allow(dead_code)]
+    /// `busy_while_running` commands, per key.
     pub jobs: HashMap<KeyId, Running>,
 }
 
@@ -112,6 +105,36 @@ pub fn key_state(cfg: &Config, rt: &Runtime, page: Option<&str>, i: u8, pressed:
         st.state = Toggle::On;
     }
     st
+}
+
+/// What follows a finished job. Pure apart from `rt`, so it is testable without a deck.
+struct JobEnd {
+    failed: Option<String>,
+    refresh: Option<Probe>,
+}
+
+fn finish_job(rt: &mut Runtime, cfg: &Config, id: &KeyId, status: std::process::ExitStatus) -> JobEnd {
+    rt.jobs.remove(id);
+    let ok = status.success();
+    let failed = (!ok).then(|| match status.code() {
+        Some(c) => format!("exited with status {c}"),
+        None => "was killed".to_string(),
+    });
+    let Some(k) = cfg.key(id.page.as_deref(), id.index) else {
+        return JobEnd { failed, refresh: None };
+    };
+    let refresh = match k.state_probe() {
+        Some(p @ Probe::Command { .. }) => Some(p), // ask the real state now; no guessing
+        Some(Probe::Volume(_)) => None,
+        None => {
+            // A press toggle flips only when its command succeeded.
+            if ok && k.on.is_some() && !rt.flipped.remove(id) {
+                rt.flipped.insert(id.clone());
+            }
+            None
+        }
+    };
+    JobEnd { failed, refresh }
 }
 
 impl Runtime {
@@ -181,8 +204,7 @@ pub struct Daemon {
     /// What was last published per strip panel (`Event::DialStatus`), so only changes go out.
     published: HashMap<u8, PanelStatus>,
     /// What was last published per key (`Event::KeyState`), so only changes go out.
-    /// Task F's `publish_keys` (in `flush`) reads and writes it.
-    #[allow(dead_code)]
+    /// `publish_keys` (in `flush`) reads and writes it.
     published_keys: HashMap<KeyId, KeyStatus>,
     /// Volume changes sent to the watcher but not yet confirmed by its read-backs, per
     /// device. The bar shows confirmed + in-flight, so it never drops to a value the
@@ -573,12 +595,61 @@ impl Daemon {
         let page = self.nav.current().map(str::to_string);
         // Clone: everything below takes &mut self, and cfg.key() borrows self.cfg.
         let Some(k) = self.cfg.key(page.as_deref(), i).cloned() else { return };
+        let id = KeyId { page: page.clone(), index: i };
+        if self.rt.jobs.contains_key(&id) {
+            log::info!("key {i}: still running, press ignored");
+            return;
+        }
         let before = key_state(&self.cfg, &self.rt, page.as_deref(), i, false).state;
         let act = k.action_for(before == Toggle::On).clone();
+        if k.busy_while_running && act.is_trackable() {
+            match action::run_tracked(&act) {
+                Ok(job) => {
+                    self.rt.jobs.insert(id.clone(), Running { job, text: String::new() });
+                    self.mark_key(page.as_deref(), i);
+                }
+                Err(e) => {
+                    let message = format!("{e:#}");
+                    self.hub.publish(Event::ActionFailed { index: i, page, message });
+                }
+            }
+            return; // the toggle's state catches up when the job ends (`finish_job`)
+        }
         if !self.run_input(Source::Key(i), &act, 1) || k.on.is_none() {
             return;
         }
-        self.after_toggle_press(&KeyId { page, index: i }, &k, before);
+        self.after_toggle_press(&id, &k, before);
+    }
+
+    /// Every pass, with or without a deck: read the tracked jobs' output and reap the
+    /// finished ones.
+    pub fn poll_jobs(&mut self) {
+        let mut changed = Vec::new();
+        let mut done = Vec::new();
+        for (id, r) in self.rt.jobs.iter_mut() {
+            if let Some(line) = r.job.lines().last()
+                && line != r.text.as_str()
+            {
+                r.text = line;
+                changed.push(id.clone());
+            }
+            if let Some(status) = r.job.try_finish() {
+                done.push((id.clone(), status));
+            }
+        }
+        for id in changed {
+            self.mark_key(id.page.as_deref(), id.index);
+        }
+        for (id, status) in done {
+            let end = finish_job(&mut self.rt, &self.cfg, &id, status);
+            if let Some(message) = end.failed {
+                self.hub.publish(Event::ActionFailed { index: id.index, page: id.page.clone(), message });
+            }
+            if let Some(p) = end.refresh {
+                let _ = self.watcher.cmd.send(WatchCmd::Refresh(p));
+            }
+            self.mark_key(id.page.as_deref(), id.index);
+        }
     }
 
     /// Show the press at once, as Elgato does, then let the real state confirm it.
@@ -841,7 +912,10 @@ pub fn wait_for(now: Instant, deadline: Option<Instant>) -> Duration {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use omadeck_core::probe::{FAST_WINDOW, SETTLE};
+    use omadeck_core::{
+        probe::{FAST_WINDOW, SETTLE},
+        proc,
+    };
 
     #[test]
     fn settle_expect_ignores_contradiction_until_expiry() {
@@ -879,6 +953,50 @@ mod tests {
         ]);
         retain_flips(&cfg, &mut flipped);
         assert_eq!(flipped, HashSet::from([KeyId { page: None, index: 0 }]));
+    }
+
+    #[test]
+    fn job_on_toggle_key_settles_after_exit() {
+        let cfg = Config::parse(
+            "[[key]]\nindex = 0\n[key.action]\ntype = \"app\"\ncommand = \"sleep 1\"\n[key.on]\nstate = \"true\"\nbusy_while_running = true\n",
+        )
+        .unwrap();
+        let mut rt = Runtime::default();
+        let id = KeyId { page: None, index: 0 };
+        let mut job = proc::Job::spawn(std::process::Command::new("true")).unwrap();
+        // Wait for the job to finish so we have a real ExitStatus.
+        let status = loop {
+            if let Some(s) = job.try_finish() {
+                break s;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        };
+        rt.jobs.insert(id.clone(), Running { job, text: "".into() });
+        // Exit 0: no failure, and the command probe is refreshed.
+        let end = finish_job(&mut rt, &cfg, &id, status);
+        assert!(end.failed.is_none());
+        assert!(matches!(end.refresh, Some(Probe::Command { .. })));
+        assert!(rt.jobs.is_empty());
+    }
+
+    #[test]
+    fn job_failure_reports_and_does_not_flip() {
+        let cfg =
+            Config::parse("[[key]]\nindex = 0\n[key.action]\ntype = \"app\"\ncommand = \"false\"\n[key.on]\n").unwrap();
+        let mut rt = Runtime::default();
+        let id = KeyId { page: None, index: 0 };
+        let mut job = proc::Job::spawn(std::process::Command::new("false")).unwrap();
+        let status = loop {
+            if let Some(s) = job.try_finish() {
+                break s;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        };
+        rt.jobs.insert(id.clone(), Running { job, text: "".into() });
+        let end = finish_job(&mut rt, &cfg, &id, status);
+        assert!(end.failed.is_some(), "a failing command reports");
+        assert!(end.refresh.is_none(), "no state probe on this key");
+        assert!(!rt.flipped.contains(&id), "a failed press toggle does not flip");
     }
 
     #[test]
