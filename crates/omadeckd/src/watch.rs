@@ -150,6 +150,8 @@ impl Poller {
             }
             let read = match &p {
                 Probe::Volume(dev) => (self.read_volume)(*dev),
+                // PR 8's Task D: state commands run on runner threads, not inline.
+                Probe::Command { .. } => None,
             };
             match read {
                 // A poll confirms nothing: the deck's in-flight total is untouched.
