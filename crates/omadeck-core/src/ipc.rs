@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::device::DeckInfo;
 use crate::paths;
-use crate::render::PanelStatus;
+use crate::render::{KeyStatus, PanelStatus};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "event", rename_all = "snake_case")]
@@ -35,9 +35,12 @@ pub enum Event {
     KeyUp {
         index: u8,
     },
-    /// An action failed to start.
+    /// An action failed to start, or a tracked command exited non-zero. `page` is where
+    /// the key is: a job can end after the deck moved on.
     ActionFailed {
         index: u8,
+        #[serde(default)]
+        page: Option<String>,
         message: String,
     },
     /// A dial turned; `delta` is signed (+ is clockwise) and may exceed ±1 on a fast spin.
@@ -82,6 +85,16 @@ pub enum Event {
     DialStatus {
         index: u8,
         status: PanelStatus,
+    },
+    /// What a key with a toggle, or with a running command, shows now. Published on each
+    /// change (each new progress text too) and for the current page after connect,
+    /// reload and page change; replayed to new clients. `pressed` is always false here,
+    /// so it is never written.
+    KeyState {
+        #[serde(default)]
+        page: Option<String>,
+        index: u8,
+        status: KeyStatus,
     },
 }
 
@@ -149,6 +162,20 @@ mod tests {
             Event::DialStatus { index: 1, status: PanelStatus::default() }.to_line(),
             "{\"event\":\"dial_status\",\"index\":1,\"status\":{}}\n"
         );
+    }
+
+    #[test]
+    fn key_state_wire_shape() {
+        let on = KeyStatus { state: crate::probe::Toggle::On, ..KeyStatus::default() };
+        assert_eq!(
+            Event::KeyState { page: None, index: 3, status: on }.to_line(),
+            "{\"event\":\"key_state\",\"page\":null,\"index\":3,\"status\":{\"state\":\"on\"}}\n"
+        );
+        let busy = KeyStatus { state: crate::probe::Toggle::Busy("Loading 43%".into()), ..KeyStatus::default() };
+        roundtrip(&Event::KeyState { page: Some("Media".into()), index: 0, status: busy });
+        // An old daemon's ActionFailed (no page) parses as page: None.
+        let old: Event = serde_json::from_str("{\"event\":\"action_failed\",\"index\":2,\"message\":\"x\"}").unwrap();
+        assert_eq!(old, Event::ActionFailed { index: 2, page: None, message: "x".into() });
     }
 
     #[test]

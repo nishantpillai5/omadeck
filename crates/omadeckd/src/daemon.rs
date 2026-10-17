@@ -1,7 +1,7 @@
 //! The daemon's state and everything the deck loop does with it: inputs, actions, page
 //! moves, brightness, values from the watcher, reloads and painting.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::time::{Duration, Instant};
 
@@ -9,10 +9,12 @@ use anyhow::Result;
 use omadeck_core::config::apply_brightness;
 use omadeck_core::device::{DeviceStateUpdate, StreamDeckError};
 use omadeck_core::ipc::{Command, Event};
-use omadeck_core::probe::{self, Probe, Value, Values};
+use omadeck_core::probe::{self, Probe, Toggle, Value, Values};
+use omadeck_core::proc;
 use omadeck_core::state::State;
 use omadeck_core::{
-    Action, AudioDevice, Config, Level, LevelSource, PanelStatus, Renderer, action, paths, tap_to_dial,
+    Action, AudioDevice, Config, KeyConfig, KeyStatus, Level, LevelSource, PanelStatus, Renderer, action, paths,
+    tap_to_dial,
 };
 
 use crate::deck::{self, Deck};
@@ -31,6 +33,52 @@ const FLICK_MIN_PX: i32 = 50;
 /// in the same pass (fix/review's), so a fast spin is handled together and painted once.
 const MAX_DRAIN: usize = 32;
 
+/// A key's place: its page (`None` is home) and index.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct KeyId {
+    pub page: Option<String>,
+    pub index: u8,
+}
+
+/// A tracked command running for a key (`busy_while_running`): the job and its latest
+/// output line.
+pub struct Running {
+    // Task F polls the job; until then only the text is read (by `key_state`'s tests).
+    #[allow(dead_code)]
+    pub job: proc::Job,
+    /// The latest output line (the busy face's text).
+    pub text: String,
+}
+
+impl fmt::Debug for Running {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Running").field("text", &self.text).finish_non_exhaustive()
+    }
+}
+
+/// An optimistic guess waiting for the real state to confirm it. Task F's presses build
+/// them and `apply_value` consults them.
+#[derive(Debug, Clone, PartialEq)]
+#[allow(dead_code)]
+enum Settle {
+    /// A fast toggle was pressed and shows `value`: ignore reads that contradict it until
+    /// `until`.
+    Expect { value: Value, until: Instant },
+    /// A slow toggle was pressed while showing `from`: ignore reads still equal to it
+    /// until `until`.
+    Leaving { from: Toggle, until: Instant },
+}
+
+impl Settle {
+    #[allow(dead_code)]
+    fn accepts(&self, v: &Value, now: Instant) -> bool {
+        match self {
+            Settle::Expect { value, until } => now >= *until || v == value,
+            Settle::Leaving { from, until } => now >= *until || *v != Value::Toggle(from.clone()),
+        }
+    }
+}
+
 /// What outlives the deck: an unplug and replug keeps it all.
 #[derive(Debug, Default)]
 pub struct Runtime {
@@ -38,6 +86,32 @@ pub struct Runtime {
     pub values: Values,
     /// The persisted state. Changed here, then sent whole to the saver.
     pub state: State,
+    /// Press toggles that are on (they have no source of truth, so they reset on a
+    /// daemon restart). Task F reads and writes them.
+    #[allow(dead_code)]
+    pub flipped: HashSet<KeyId>,
+    /// Optimistic guesses waiting for the real state to confirm them.
+    #[allow(dead_code)]
+    settle: HashMap<Probe, Settle>,
+    /// `busy_while_running` commands, per key. Task F fills it.
+    #[allow(dead_code)]
+    pub jobs: HashMap<KeyId, Running>,
+}
+
+/// What key `i` on `page` shows now: core's `key_status` (the ONE builder) with the two
+/// per-key things `Values` can't hold laid over it. A running job wins; a press toggle
+/// reads `flipped`. Task F's paint path calls it.
+#[allow(dead_code)]
+pub fn key_state(cfg: &Config, rt: &Runtime, page: Option<&str>, i: u8, pressed: bool) -> KeyStatus {
+    let key = cfg.key(page, i);
+    let mut st = probe::key_status(key, &rt.values, pressed);
+    let id = KeyId { page: page.map(str::to_string), index: i };
+    if let Some(r) = rt.jobs.get(&id) {
+        st.state = Toggle::Busy(r.text.clone());
+    } else if key.is_some_and(KeyConfig::is_press_toggle) && rt.flipped.contains(&id) {
+        st.state = Toggle::On;
+    }
+    st
 }
 
 impl Runtime {
@@ -45,7 +119,7 @@ impl Runtime {
     pub fn load(cfg: &Config) -> Self {
         let state = State::load();
         let brightness = start_brightness(cfg.brightness, state.brightness, config_newer_than_state());
-        Runtime { values: Values { brightness, ..Values::default() }, state }
+        Runtime { values: Values { brightness, ..Values::default() }, state, ..Self::default() }
     }
 }
 
@@ -106,6 +180,10 @@ pub struct Daemon {
     pub deck: Option<Deck>,
     /// What was last published per strip panel (`Event::DialStatus`), so only changes go out.
     published: HashMap<u8, PanelStatus>,
+    /// What was last published per key (`Event::KeyState`), so only changes go out.
+    /// Task F's `publish_keys` (in `flush`) reads and writes it.
+    #[allow(dead_code)]
+    published_keys: HashMap<KeyId, KeyStatus>,
     /// Volume changes sent to the watcher but not yet confirmed by its read-backs, per
     /// device. The bar shows confirmed + in-flight, so it never drops to a value the
     /// queued changes haven't reached yet (a fast spin would otherwise snap back as the
@@ -131,6 +209,7 @@ impl Daemon {
             rt,
             deck: None,
             published: HashMap::new(),
+            published_keys: HashMap::new(),
             in_flight: HashMap::new(),
             reload_at: None,
             repaint_at: None,
@@ -416,7 +495,10 @@ impl Daemon {
                 log::warn!("{src}: {e:#}");
                 let message = format!("{e:#}");
                 match src {
-                    Source::Key(index) => self.hub.publish(Event::ActionFailed { index, message }),
+                    Source::Key(index) => {
+                        let page = self.nav.current().map(str::to_string);
+                        self.hub.publish(Event::ActionFailed { index, page, message })
+                    }
                     Source::Turn(index) | Source::Press(index) | Source::Tap(index) => {
                         self.hub.publish(Event::DialActionFailed { index, message })
                     }
@@ -577,6 +659,52 @@ pub fn wait_for(now: Instant, deadline: Option<Instant>) -> Duration {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use omadeck_core::probe::{FAST_WINDOW, SETTLE};
+
+    #[test]
+    fn settle_expect_ignores_contradiction_until_expiry() {
+        let now = Instant::now();
+        let guess = Value::Toggle(Toggle::On);
+        let s = Settle::Expect { value: guess.clone(), until: now + SETTLE };
+        // A contradicting read is refused while the window is open…
+        assert!(!s.accepts(&Value::Toggle(Toggle::Off), now + Duration::from_millis(100)));
+        // …but the guess itself is accepted, and so is anything after the window.
+        assert!(s.accepts(&guess, now + Duration::from_millis(100)));
+        assert!(s.accepts(&Value::Toggle(Toggle::Off), now + SETTLE));
+    }
+
+    #[test]
+    fn settle_leaving_takes_busy_and_new_state() {
+        let now = Instant::now();
+        let s = Settle::Leaving { from: Toggle::On, until: now + FAST_WINDOW };
+        // Still on: refused…
+        assert!(!s.accepts(&Value::Toggle(Toggle::On), now + Duration::from_millis(100)));
+        // …but busy and a new state are accepted.
+        assert!(s.accepts(&Value::Toggle(Toggle::Busy("starting".into())), now + Duration::from_millis(100)));
+        assert!(s.accepts(&Value::Toggle(Toggle::Off), now + Duration::from_millis(100)));
+        // And everything is accepted after the window.
+        assert!(s.accepts(&Value::Toggle(Toggle::On), now + FAST_WINDOW));
+    }
+
+    #[test]
+    fn key_state_precedence() {
+        let cfg =
+            Config::parse("[[key]]\nindex = 0\n[key.on]\nstate = \"true\"\n\n[[key]]\nindex = 1\n[key.on]\n").unwrap();
+        let mut rt = Runtime::default();
+        let probe = cfg.key(None, 0).unwrap().state_probe().unwrap();
+        assert_eq!(key_state(&cfg, &rt, None, 0, false).state, Toggle::Off, "nothing read yet");
+        rt.values.probes.insert(probe, Value::Toggle(Toggle::On));
+        assert_eq!(key_state(&cfg, &rt, None, 0, false).state, Toggle::On);
+        let mut sleep = std::process::Command::new("sleep");
+        sleep.arg("5");
+        let id = KeyId { page: None, index: 0 };
+        rt.jobs.insert(id.clone(), Running { job: proc::Job::spawn(sleep).unwrap(), text: "Copying 3%".into() });
+        assert_eq!(key_state(&cfg, &rt, None, 0, false).state, Toggle::Busy("Copying 3%".into()), "a running job wins");
+        rt.jobs.get_mut(&id).unwrap().job.kill_group();
+        assert_eq!(key_state(&cfg, &rt, None, 1, false).state, Toggle::Off);
+        rt.flipped.insert(KeyId { page: None, index: 1 });
+        assert_eq!(key_state(&cfg, &rt, None, 1, false).state, Toggle::On, "a press toggle reads `flipped`");
+    }
 
     #[test]
     fn wait_for_caps_and_rounds_up() {

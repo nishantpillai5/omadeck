@@ -1421,9 +1421,13 @@ impl App {
                     b.remove_css_class("pressed");
                 }
             }
-            Msg::Event(Event::ActionFailed { index, message }) => {
+            Msg::Event(Event::ActionFailed { index, page, message }) => {
+                // PR 8's Task H names the page when it isn't the current one.
+                let _ = page;
                 self.toast(&format!("Key {}: {message}", index + 1));
             }
+            // PR 8's Task H mirrors key states; until then the preview shows off faces.
+            Msg::Event(Event::KeyState { .. }) => {}
             Msg::Event(Event::DialDown { index }) => {
                 if let Some((b, _)) = self.dials.borrow().get(index as usize) {
                     b.add_css_class("pressed");
