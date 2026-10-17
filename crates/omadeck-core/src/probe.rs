@@ -193,7 +193,7 @@ pub fn dial_status(dial: Option<&DialConfig>, values: &Values, pressed: bool) ->
                 panel.level = level;
             }
         }
-        None => {}
+        Some(LevelSource::Player) | None => {}
     }
     DialStatus { pressed, panel }
 }
@@ -338,7 +338,7 @@ pub fn watched_probes(cfg: &Config, page: Option<&str>, n_dials: usize, n_keys: 
                     add(Probe::AppVolume(q));
                 }
             }
-            Some(LevelSource::Brightness) | None => {}
+            Some(LevelSource::Brightness | LevelSource::Player) | None => {}
         }
         if let Some(l) = dial.and_then(|d| d.live.as_ref()) {
             add(l.probe());
