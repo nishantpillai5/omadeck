@@ -1,14 +1,17 @@
 //! Tiny protocol between the daemon and the configurator: newline-delimited JSON over a
-//! Unix socket at `$XDG_RUNTIME_DIR/omadeck.sock`. The daemon sends events; clients may
-//! send commands back.
+//! Unix socket at `$XDG_RUNTIME_DIR/omadeck.sock`. The daemon sends events (tagged
+//! `"event"`); clients may send commands back (tagged `"command"`). The control commands
+//! (`omadeckd page`, `press`, …) each get exactly one reply (tagged `"reply"`) on the
+//! connection that sent them.
 
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, ErrorKind, Write};
 use std::os::unix::net::UnixStream;
 use std::time::Duration;
 
-use anyhow::Result;
+use anyhow::{Result, anyhow};
 use serde::{Deserialize, Serialize};
 
+use crate::config::{Action, Direction};
 use crate::device::DeckInfo;
 use crate::paths;
 use crate::render::{KeyStatus, PanelStatus};
@@ -105,7 +108,69 @@ pub enum Command {
     ShowPage { page: Option<String> },
     /// Set the panel brightness, e.g. from the configurator's settings.
     SetBrightness { value: u8 },
+    /// Press key `index` as if by hand, but quietly: no `KeyDown`/`KeyUp`. `page: None`
+    /// is the page the deck shows; a name (or "Home") that isn't the shown page runs that
+    /// page's key without flashing anything.
+    Press {
+        index: u8,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        page: Option<String>,
+    },
+    /// Turn dial `index` by `steps` detents, or press it (like a tap on its panel).
+    Dial {
+        index: u8,
+        dir: Direction,
+        #[serde(default = "one", skip_serializing_if = "is_one")]
+        steps: u8,
+    },
+    /// Run an action on the daemon, deck-owned ones included (Try it now, `page next`).
+    Run { action: Action },
+    /// Show page `page` (`None` is home). Unlike `ShowPage`, a missing page is an error.
+    Page { page: Option<String> },
+    /// Re-read config and theme now.
+    Reload,
+    /// Report the daemon's state.
+    State,
 }
+
+/// The daemon's answer to one control command (not to `ShowPage` or `SetBrightness`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "reply", rename_all = "snake_case")]
+pub enum Reply {
+    Ok {
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        message: String,
+    },
+    Error {
+        message: String,
+    },
+    /// No deck is attached; `press`/`dial` callers run the action themselves.
+    NoDeck,
+    State {
+        #[serde(default)]
+        deck: Option<DeckInfo>,
+        #[serde(default)]
+        page: Option<String>,
+        #[serde(default)]
+        pages: Vec<String>,
+        brightness: u8,
+    },
+}
+
+fn one() -> u8 {
+    1
+}
+
+fn is_one(n: &u8) -> bool {
+    *n == 1
+}
+
+/// How long `request` waits for the daemon's answer.
+pub const REPLY_TIMEOUT: Duration = Duration::from_secs(3);
+/// The longest command line the daemon reads; longer ones are refused.
+pub const MAX_LINE: usize = 4096;
+
+const BUSY: &str = "daemon busy: omadeckd closed the connection without answering; try again";
 
 fn line<T: Serialize>(v: &T) -> String {
     let mut s = serde_json::to_string(v).expect("message serializes");
@@ -116,6 +181,81 @@ fn line<T: Serialize>(v: &T) -> String {
 impl Event {
     pub fn to_line(&self) -> String {
         line(self)
+    }
+}
+
+impl Command {
+    pub fn to_line(&self) -> String {
+        line(self)
+    }
+}
+
+impl Reply {
+    pub fn to_line(&self) -> String {
+        line(self)
+    }
+
+    pub fn ok(message: impl Into<String>) -> Self {
+        Reply::Ok { message: message.into() }
+    }
+
+    pub fn error(message: impl Into<String>) -> Self {
+        Reply::Error { message: message.into() }
+    }
+}
+
+/// Parse one command line from a client. Unknown or malformed commands are an error
+/// message (the hub sends it back as `Reply::Error`), so a newer client never hangs on an
+/// older daemon.
+pub fn parse_command(line: &str) -> Result<Command, String> {
+    let line = line.trim();
+    serde_json::from_str::<Command>(line).map_err(|_| {
+        let v = serde_json::from_str::<serde_json::Value>(line).ok();
+        match v.as_ref().and_then(|v| v.get("command")).and_then(|c| c.as_str()) {
+            Some(name) => format!("unknown command “{name}”"),
+            None => "not a command".into(),
+        }
+    })
+}
+
+/// Send one command and wait for its reply. `Ok(None)` when no daemon is running (no
+/// runtime dir, no socket, or a stale one).
+pub fn request(cmd: &Command) -> Result<Option<Reply>> {
+    let Ok(path) = paths::socket_path() else { return Ok(None) };
+    let mut stream = match UnixStream::connect(&path) {
+        Ok(s) => s,
+        Err(e) if matches!(e.kind(), ErrorKind::NotFound | ErrorKind::ConnectionRefused) => return Ok(None),
+        Err(e) => return Err(anyhow!(e).context(format!("connecting to {}", path.display()))),
+    };
+    stream.set_read_timeout(Some(REPLY_TIMEOUT))?;
+    stream.set_write_timeout(Some(Duration::from_millis(200)))?;
+    stream.write_all(cmd.to_line().as_bytes())?;
+    read_reply(BufReader::new(stream)).map(Some)
+}
+
+/// The first reply line from the daemon. Skips the status replay and events that arrive
+/// first. Split out of `request` so it can be tested on a `&[u8]`.
+pub fn read_reply(mut r: impl BufRead) -> Result<Reply> {
+    let mut buf = String::new();
+    loop {
+        buf.clear();
+        match r.read_line(&mut buf) {
+            Ok(0) => return Err(anyhow!(BUSY)),
+            Ok(_) => {}
+            // Linux reports a socket read timeout as `WouldBlock`.
+            Err(e) if matches!(e.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) => {
+                return Err(anyhow!(
+                    "omadeckd did not answer (is it older than this omadeckd? systemctl --user restart omadeckd)"
+                ));
+            }
+            Err(e) => return Err(e.into()),
+        }
+        let line = buf.trim();
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else { continue };
+        if v.get("reply").is_none() {
+            continue;
+        }
+        return serde_json::from_value::<Reply>(v).map_err(|_| anyhow!("unexpected reply from omadeckd: {line}"));
     }
 }
 
@@ -145,6 +285,87 @@ pub fn commands(stream: UnixStream) -> impl Iterator<Item = Command> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn command_roundtrips(cmd: Command) {
+        assert_eq!(parse_command(&cmd.to_line()), Ok(cmd));
+    }
+
+    #[test]
+    fn command_roundtrip() {
+        command_roundtrips(Command::ShowPage { page: Some("Media".into()) });
+        command_roundtrips(Command::ShowPage { page: None });
+        command_roundtrips(Command::SetBrightness { value: 40 });
+        command_roundtrips(Command::Press { index: 3, page: None });
+        command_roundtrips(Command::Press { index: 3, page: Some("Media".into()) });
+        command_roundtrips(Command::Dial { index: 1, dir: Direction::Left, steps: 1 });
+        command_roundtrips(Command::Dial { index: 1, dir: Direction::Press, steps: 5 });
+        command_roundtrips(Command::Run { action: Action::Brightness { change: 10, set: None } });
+        command_roundtrips(Command::Page { page: None });
+        command_roundtrips(Command::Page { page: Some("Apps".into()) });
+        command_roundtrips(Command::Reload);
+        command_roundtrips(Command::State);
+        // No `steps` on the wire is one step.
+        assert_eq!(
+            parse_command("{\"command\":\"dial\",\"index\":2,\"dir\":\"left\"}"),
+            Ok(Command::Dial { index: 2, dir: Direction::Left, steps: 1 })
+        );
+        assert_eq!(
+            Command::Dial { index: 0, dir: Direction::Left, steps: 4 }.to_line(),
+            "{\"command\":\"dial\",\"index\":0,\"dir\":\"left\",\"steps\":4}\n"
+        );
+    }
+
+    #[test]
+    fn command_wire_shape() {
+        // The socket protocol is a contract with scripts; pin it.
+        assert_eq!(
+            Command::Run { action: Action::PageStep { change: 1 } }.to_line(),
+            "{\"command\":\"run\",\"action\":{\"type\":\"page_step\"}}\n"
+        );
+        assert_eq!(Command::Press { index: 3, page: None }.to_line(), "{\"command\":\"press\",\"index\":3}\n");
+        assert_eq!(
+            Command::Dial { index: 0, dir: Direction::Right, steps: 1 }.to_line(),
+            "{\"command\":\"dial\",\"index\":0,\"dir\":\"right\"}\n"
+        );
+        assert_eq!(Command::State.to_line(), "{\"command\":\"state\"}\n");
+        assert_eq!(Reply::ok("").to_line(), "{\"reply\":\"ok\"}\n");
+        assert_eq!(Reply::NoDeck.to_line(), "{\"reply\":\"no_deck\"}\n");
+    }
+
+    fn reply_roundtrips(r: Reply) {
+        assert_eq!(serde_json::from_str::<Reply>(&r.to_line()).unwrap(), r);
+    }
+
+    #[test]
+    fn reply_roundtrip() {
+        reply_roundtrips(Reply::ok(""));
+        reply_roundtrips(Reply::ok("page Media"));
+        reply_roundtrips(Reply::error("there's no page named “Nope”"));
+        reply_roundtrips(Reply::NoDeck);
+        reply_roundtrips(Reply::State {
+            deck: None,
+            page: Some("Media".into()),
+            pages: vec!["Media".into(), "Apps".into()],
+            brightness: 40,
+        });
+    }
+
+    #[test]
+    fn reply_skips_events_and_names_eof() {
+        let lines = "{\"event\":\"disconnected\"}\n{\"event\":\"page_changed\",\"page\":null}\n\
+                     {\"reply\":\"error\",\"message\":\"no key 40; this deck has 8 keys\"}\n";
+        let r = read_reply(lines.as_bytes()).unwrap();
+        assert_eq!(r, Reply::error("no key 40; this deck has 8 keys"));
+        // The daemon closed the connection before answering: its queue for us was full.
+        let e = read_reply("{\"event\":\"disconnected\"}\n".as_bytes()).unwrap_err();
+        assert!(e.to_string().starts_with("daemon busy"), "{e}");
+    }
+
+    #[test]
+    fn unknown_command_is_an_error() {
+        assert_eq!(parse_command(r#"{"command":"explode"}"#), Err("unknown command “explode”".into()));
+        assert_eq!(parse_command("nonsense"), Err("not a command".into()));
+    }
 
     fn roundtrip(ev: &Event) {
         let line = ev.to_line();
