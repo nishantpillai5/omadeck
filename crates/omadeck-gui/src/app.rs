@@ -568,8 +568,12 @@ impl App {
         self.rebuild_editor();
     }
 
-    /// Mutate a dial, refresh its preview and queue a save.
+    /// Mutate a dial, refresh its preview and queue a save. Like [`App::edit_ref`], a
+    /// late result (a picker) is dropped while config.toml can't be parsed.
     pub fn edit_dial(self: &Rc<Self>, i: u8, f: impl FnOnce(&mut DialConfig)) {
+        if self.locked.borrow().is_some() {
+            return;
+        }
         f(self.config.borrow_mut().dial_mut(i));
         self.refresh_dial(i);
         self.schedule_save();
