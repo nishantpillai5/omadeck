@@ -335,7 +335,10 @@ mod tests {
             ("brave.instance3602", "brave", PlayStatus::Playing)
         );
         assert_eq!((ts[0].position_ms, ts[0].length_ms), (6_400_114, Some(9_509_061)));
-        assert_eq!(ts[0].title.as_str(), "Bhagam Bhag 2006 (HD) - Full Movie - Superhit Comedy Movie - Akshay Kumar - Govinda -  Paresh Rawal");
+        assert_eq!(
+            ts[0].title.as_str(),
+            "Bhagam Bhag 2006 (HD) - Full Movie - Superhit Comedy Movie - Akshay Kumar - Govinda -  Paresh Rawal"
+        );
         assert_eq!(ts[0].artist.as_str(), "Shemaroo Comedy");
         // The `file://` cover resolves where the file exists (the capturing machine) and
         // is dropped where it doesn't (CI).
