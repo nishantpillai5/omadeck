@@ -95,6 +95,14 @@ pub struct Level {
     pub muted: bool,
 }
 
+impl LiveShow {
+    /// What a live dial's panel draws: one line, so a clock's `%n` reads as a space, as
+    /// on a key with an icon (BUGS.md 97).
+    fn level(&self) -> Level {
+        Level { value: self.bar.unwrap_or(0.0), text: self.text.replace('\n', " "), muted: false }
+    }
+}
+
 /// The media panel's display model (PR 14). `position_ms` was true at `as_of_ms` (Unix
 /// ms), so a replayed event isn't stale: whoever draws it advances it with [`MediaShow::at`].
 #[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -619,7 +627,7 @@ impl Renderer {
         if let Some(live) = dial.and_then(|d| d.live.as_ref()) {
             let shown = st.panel.live.as_ref();
             let icon = self.live_icon(&face, live, shown.is_some_and(|l| l.charging), glyph_color);
-            let level = shown.map(|l| Level { value: l.bar.unwrap_or(0.0), text: l.text.clone(), muted: false });
+            let level = shown.map(LiveShow::level);
             let colors = self.b1_colors(&face, style, tones, st.pressed, false);
             self.draw_b1(&mut img, &face, colors, want_label, icon, level.as_ref(), live.has_bar());
             return img;
@@ -2166,6 +2174,21 @@ mod tests {
         // The value is drawn.
         let (vx, vy, vw, vh) = B1_VALUE;
         assert!((vy..vy + vh).any(|y| (vx..vx + vw).any(|x| *panel.get_pixel(x, y) != bg)));
+    }
+
+    #[test]
+    fn dial_live_text_draws_a_newline_as_a_space() {
+        // BUGS.md 97: a clock with `%n` drew the newline as a glyph in `$A1`.
+        let mut r = renderer_with_font();
+        let mut cfg = Config { style: test_style(), ..Default::default() };
+        cfg.dial_mut(0).live = Some(Live::Clock { format: "%H:%M%n%a".into() });
+        let panel = |r: &mut Renderer, text: &str| {
+            let st = DialStatus { panel: PanelStatus { live: live(text), ..Default::default() }, ..Default::default() };
+            r.render_strip_panel(&cfg, 0, 4, st)
+        };
+        assert!(panel(&mut r, "AA\nA") == panel(&mut r, "AA A"));
+        // The fixture font draws nothing for a newline either, so check the text too.
+        assert_eq!(live("12:00\nThu 15").unwrap().level().text, "12:00 Thu 15");
     }
 
     #[test]
