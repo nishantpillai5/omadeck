@@ -207,7 +207,8 @@ fn detached<S: AsRef<std::ffi::OsStr>>(argv: &[S]) -> Command {
 /// `is_trackable()` kinds. Not through `uwsm-app`: it hands the command to systemd and
 /// returns at once, so there would be nothing to wait for. Instead the job gets its own
 /// scope (`systemd-run --scope` execs its command, so the child *is* the job), so
-/// stopping the daemon doesn't kill it. SIGPIPE is ignored so the job survives the
+/// stopping the daemon doesn't kill it; with no user bus it runs directly. SIGPIPE is
+/// ignored so the job survives the
 /// daemon (its stdout's reader) going away.
 pub fn run_tracked(action: &Action) -> Result<proc::Job> {
     let (argv, dir): (Vec<String>, Option<PathBuf>) = match action {
@@ -244,7 +245,7 @@ pub fn run_tracked(action: &Action) -> Result<proc::Job> {
         _ => bail!("this action can't be watched while it runs"),
     };
     static HAS_SCOPE: OnceLock<bool> = OnceLock::new();
-    let argv = tracked_argv(&argv, *HAS_SCOPE.get_or_init(|| which("systemd-run")));
+    let argv = tracked_argv(&argv, *HAS_SCOPE.get_or_init(|| which("systemd-run") && user_bus()));
     let mut c = Command::new(&argv[0]);
     c.args(&argv[1..]);
     if let Some(dir) = dir {
@@ -255,7 +256,14 @@ pub fn run_tracked(action: &Action) -> Result<proc::Job> {
     Ok(job)
 }
 
-/// The argv `run_tracked` runs. Pure for tests. `scope`: systemd-run is on PATH.
+/// Whether the user bus is up: `systemd-run --user` fails without it (a CI runner or a
+/// hand-started shell has the binary but no bus), so a scope needs both.
+fn user_bus() -> bool {
+    std::env::var_os("XDG_RUNTIME_DIR").is_some_and(|dir| Path::new(&dir).join("bus").exists())
+}
+
+/// The argv `run_tracked` runs. Pure for tests. `scope`: systemd-run is on PATH and the
+/// user bus is up.
 pub fn tracked_argv(argv: &[String], scope: bool) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     if scope {
