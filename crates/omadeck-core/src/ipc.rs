@@ -210,13 +210,24 @@ impl Reply {
 /// older daemon.
 pub fn parse_command(line: &str) -> Result<Command, String> {
     let line = line.trim();
-    serde_json::from_str::<Command>(line).map_err(|_| {
+    serde_json::from_str::<Command>(line).map_err(|e| {
         let v = serde_json::from_str::<serde_json::Value>(line).ok();
         match v.as_ref().and_then(|v| v.get("command")).and_then(|c| c.as_str()) {
+            // A known name with a bad field keeps serde's message (BUGS.md 88). A name
+            // alone fails on a missing field if it's known, on the variant if it isn't.
+            Some(name) if known_command(name) => format!("bad “{name}” command: {e}"),
             Some(name) => format!("unknown command “{name}”"),
             None => "not a command".into(),
         }
     })
+}
+
+/// Whether this daemon has a command called `name`.
+fn known_command(name: &str) -> bool {
+    match serde_json::from_value::<Command>(serde_json::json!({ "command": name })) {
+        Ok(_) => true,
+        Err(e) => !e.to_string().starts_with("unknown variant"),
+    }
 }
 
 /// Send one command and wait for its reply. `Ok(None)` when no daemon is running (no
@@ -361,6 +372,17 @@ mod tests {
     fn unknown_command_is_an_error() {
         assert_eq!(parse_command(r#"{"command":"explode"}"#), Err("unknown command “explode”".into()));
         assert_eq!(parse_command("nonsense"), Err("not a command".into()));
+    }
+
+    #[test]
+    fn a_known_command_with_a_bad_field_says_what_is_wrong() {
+        // BUGS.md 88: these were "unknown command".
+        let e = parse_command(r#"{"command":"press","index":"three"}"#).unwrap_err();
+        assert!(e.starts_with("bad “press” command: invalid type"), "{e}");
+        let e = parse_command(r#"{"command":"dial","index":0}"#).unwrap_err();
+        assert!(e.starts_with("bad “dial” command: missing field `dir`"), "{e}");
+        let e = parse_command(r#"{"command":"run","action":{"type":"explode"}}"#).unwrap_err();
+        assert!(e.starts_with("bad “run” command: unknown variant `explode`"), "{e}");
     }
 
     fn roundtrip(ev: &Event) {
