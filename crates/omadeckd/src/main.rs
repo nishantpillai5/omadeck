@@ -42,6 +42,10 @@ const AUDIO_POLL: Duration = Duration::from_millis(1000);
 /// Wait this long after our own volume change before re-reading, so the command finishes.
 const AUDIO_REFRESH_DELAY: Duration = Duration::from_millis(150);
 
+/// At most this many more HID reports are taken in one pass after the first, so a fast
+/// spin is handled together and its panels are painted once.
+const MAX_DRAIN: usize = 32;
+
 /// A message the main loop sends the audio worker.
 enum AudioCmd {
     /// Which devices some dial shows; polled every second while non-empty.
@@ -132,8 +136,8 @@ struct Deck {
     dial_levels: Vec<Option<LevelSource>>,
     /// The last known level per volume device, for the strip panels.
     device_levels: HashMap<AudioDevice, Level>,
-    /// Panels a volume or brightness change dirtied this pass; painted once at the end
-    /// of the pass, so a fast spin can't queue a write per detent on the loop.
+    /// Panels to repaint at the end of this pass (`flush_dirty`), so a fast spin can't
+    /// queue a write per detent on the loop.
     dirty_panels: Vec<bool>,
     /// The panel brightness, 0–100: the config value at start, changed by brightness actions.
     brightness: u8,
@@ -440,7 +444,7 @@ fn run() -> Result<()> {
             })
             .collect();
         for i in expired {
-            paint_dial(d, &cfg, &mut renderer, i);
+            mark_dirty(d, i);
         }
 
         // Volume levels from the audio worker: update the device and repaint its panels.
@@ -448,13 +452,23 @@ fn run() -> Result<()> {
             d.device_levels.insert(dev, level.clone());
             for (i, src) in d.dial_levels.iter().enumerate().take(d.info.dials as usize) {
                 if *src == Some(LevelSource::Volume(dev)) {
-                    paint_dial(d, &cfg, &mut renderer, i as u8);
+                    d.dirty_panels[i] = true;
                 }
             }
         }
 
         match d.reader.read(Some(READ_TIMEOUT)) {
-            Ok(updates) => {
+            Ok(mut updates) => {
+                // A read returns one HID report. Take the reports already queued behind
+                // it too (a zero timeout doesn't wait), so a fast spin is one pass.
+                if !updates.is_empty() {
+                    for _ in 0..MAX_DRAIN {
+                        match d.reader.read(Some(Duration::ZERO)) {
+                            Ok(more) if !more.is_empty() => updates.extend(more),
+                            _ => break,
+                        }
+                    }
+                }
                 for u in updates {
                     match u {
                         DeviceStateUpdate::ButtonDown(i) => {
@@ -506,7 +520,7 @@ fn run() -> Result<()> {
                             if let Some(p) = d.dial_pressed.get_mut(i as usize) {
                                 *p = true;
                             }
-                            paint_dial(d, &cfg, &mut renderer, i);
+                            mark_dirty(d, i);
                             if let Some(dc) = cfg.dial(i)
                                 && !dc.press.is_none()
                             {
@@ -533,7 +547,7 @@ fn run() -> Result<()> {
                             if let Some(p) = d.dial_pressed.get_mut(i as usize) {
                                 *p = false;
                             }
-                            paint_dial(d, &cfg, &mut renderer, i);
+                            mark_dirty(d, i);
                         }
                         DeviceStateUpdate::TouchScreenPress(x, y) => {
                             log::info!("strip tap at ({x}, {y})");
@@ -549,7 +563,7 @@ fn run() -> Result<()> {
                                     // expiry sweep both measure elapsed time since it.
                                     *t = Some(Instant::now());
                                 }
-                                paint_dial(d, &cfg, &mut renderer, i as u8);
+                                mark_dirty(d, i as u8);
                                 if let Some(dc) = cfg.dial(i as u8)
                                     && !dc.press.is_none()
                                 {
@@ -597,13 +611,6 @@ fn run() -> Result<()> {
                         // Neo touch points; nothing reacts to them yet.
                         _ => {}
                     }
-                    // One write per pass for what this batch of events dirtied.
-                    for (i, &dirty) in d.dirty_panels.iter().enumerate() {
-                        if dirty {
-                            paint_dial(d, &cfg, &mut renderer, i as u8);
-                        }
-                    }
-                    d.dirty_panels.fill(false);
                 }
             }
             Err(_) if term.load(Ordering::Relaxed) => break,
@@ -614,6 +621,12 @@ fn run() -> Result<()> {
                 let _ = audio.cmd.send(AudioCmd::Watch(Vec::new()));
                 hub.publish(Event::Disconnected);
             }
+        }
+
+        // Everything this pass dirtied (input, levels, flashes, a GUI brightness change),
+        // painted once.
+        if let Some(d) = &mut deck {
+            flush_dirty(d, &cfg, &mut renderer);
         }
     }
 
@@ -748,7 +761,12 @@ fn do_brightness(d: &mut Deck, brightness: &mpsc::Sender<u8>, set: Option<u8>, c
 /// for a relative change is the same number.
 fn after_volume(d: &mut Deck, audio: &AudioWorker, act: &Action, steps: u8) {
     let Action::Volume { device, change, mute } = act else { return };
-    let cur = d.device_levels.get(device).cloned().unwrap_or(Level { value: 0.0, text: "–".into(), muted: false });
+    let Some(cur) = d.device_levels.get(device).cloned() else {
+        // Nothing read yet (just connected): a guess from 0 would show a wrong bar; the
+        // refresh brings the real value.
+        let _ = audio.cmd.send(AudioCmd::Refresh(*device));
+        return;
+    };
     let pct = (cur.value * 100.0).round() as i32;
     let next = if *mute {
         // A press toggles mute; guess the new state from the current one.
@@ -851,13 +869,33 @@ fn write_panel(d: &Deck, cfg: &Config, renderer: &mut Renderer, i: u8) -> Result
 
 /// Redraw one 200×100 dial panel. Volume and brightness changes mark the panel dirty
 /// instead of calling this directly, so a fast spin coalesces to one write per loop pass.
-fn paint_dial(d: &Deck, cfg: &Config, renderer: &mut Renderer, i: u8) {
-    if d.info.strip.is_none() || i >= d.info.dials {
+/// Mark dial `i`'s panel for the end-of-pass paint.
+fn mark_dirty(d: &mut Deck, i: u8) {
+    if let Some(f) = d.dirty_panels.get_mut(i as usize) {
+        *f = true;
+    }
+}
+
+/// Paint every dirty dial panel and flush once. Runs at the end of every loop pass, the
+/// only place panels are painted outside `paint_all`, so a fast spin, a tap flash and a
+/// level change in the same pass cost one write per panel.
+fn flush_dirty(d: &mut Deck, cfg: &Config, renderer: &mut Renderer) {
+    if !d.dirty_panels.contains(&true) {
         return;
     }
-    if let Err(e) = write_panel(d, cfg, renderer, i).and_then(|_| Ok(d.dev.flush()?)) {
-        log::warn!("paint dial {i}: {e}");
+    if d.info.strip.is_some() {
+        for i in 0..d.info.dials {
+            if d.dirty_panels.get(i as usize).copied().unwrap_or(false)
+                && let Err(e) = write_panel(d, cfg, renderer, i)
+            {
+                log::warn!("paint dial {i}: {e}");
+            }
+        }
+        if let Err(e) = d.dev.flush() {
+            log::warn!("flush: {e}");
+        }
     }
+    d.dirty_panels.fill(false);
 }
 
 fn write_key(d: &Deck, cfg: &Config, page: Option<&str>, renderer: &mut Renderer, i: u8, pressed: bool) -> Result<()> {
