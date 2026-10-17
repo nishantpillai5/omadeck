@@ -13,12 +13,12 @@ use omadeck_core::probe::{self, FAST_WINDOW, Probe, SETTLE, Toggle, Value, Value
 use omadeck_core::proc;
 use omadeck_core::state::State;
 use omadeck_core::{
-    Action, AudioDevice, Config, DialConfig, KeyConfig, KeyStatus, Level, LevelSource, Live, PanelStatus, Renderer,
-    action, audio, tap_to_dial,
+    Action, AudioDevice, Config, DialConfig, Direction, KeyConfig, KeyStatus, Level, LevelSource, Live, PanelStatus,
+    Renderer, action, audio, tap_to_dial,
 };
 
 use crate::deck::{self, Deck};
-use crate::hub::Hub;
+use crate::hub::{Hub, Request};
 use crate::hypr::{self, HyprEvent};
 use crate::hypr_worker::{HyprJob, HyprWorker};
 use crate::nav::Nav;
@@ -171,7 +171,6 @@ pub enum Source {
     Flick,
     /// A control command run as itself (`omadeckd page`, `brightness`, Try it now): its
     /// reply carries a failure, so nothing is published for it.
-    #[allow(dead_code)]
     Ctl,
 }
 
@@ -292,18 +291,20 @@ impl Daemon {
 
     // --- one pass of the loop --------------------------------------------------------------
 
-    /// The config changed on disk.
-    pub fn reload(&mut self) {
-        // A typo while hand-editing shouldn't wipe the deck: keep the last good config.
+    /// The config changed on disk, or `omadeckd reload` asked. A typo while hand-editing
+    /// shouldn't wipe the deck: on a bad file it keeps the last good config, restyles and
+    /// repaints as usual, then returns `Config::load`'s error for the caller to report.
+    pub fn reload(&mut self) -> Result<()> {
         let mut hand_edit = None;
-        match Config::load() {
+        let loaded = match Config::load() {
             Ok(new_cfg) => {
                 hand_edit = self.rt.state.config_edit(new_cfg.brightness);
                 self.cfg = new_cfg;
                 self.keep_toggle_state();
+                Ok(())
             }
-            Err(e) => log::error!("{e:#}; keeping the previous config"),
-        }
+            Err(e) => Err(e),
+        };
         self.renderer.update_style(&self.cfg.style);
         self.renderer.reload_theme();
         self.renderer.clear_cache();
@@ -325,18 +326,32 @@ impl Daemon {
         }
         self.watch();
         self.paint_all();
+        loaded
     }
 
-    /// Run what the configurators asked for. Only the latest page request counts, so
-    /// flicking through pages there doesn't echo a trail of stale page changes back.
+    /// Run what the configurators and `omadeckd` verbs asked for. Only the latest page
+    /// request and brightness from a configurator count, so flicking through pages there
+    /// doesn't echo a trail of stale page changes back. Every other command is answered
+    /// at once, in arrival order.
     pub fn handle_commands(&mut self) {
         let mut show = None;
         let mut bright = None;
-        for req in self.hub.commands() {
+        // Collected first: `handle_command` needs `&mut self`, the iterator borrows `self.hub`.
+        let requests: Vec<Request> = self.hub.commands().collect();
+        for req in requests {
             match req.cmd {
-                Command::ShowPage { page } => show = Some(page),
-                Command::SetBrightness { value } => bright = Some(value),
-                _ => req.reply.send(&Reply::error("not yet")),
+                Command::ShowPage { page } => {
+                    show = Some(page);
+                    req.reply.done();
+                }
+                Command::SetBrightness { value } => {
+                    bright = Some(value);
+                    req.reply.done();
+                }
+                cmd => {
+                    let r = self.handle_command(cmd);
+                    req.reply.answer(&r);
+                }
             }
         }
         // With no deck too: it's saved and applied on connect.
@@ -354,6 +369,109 @@ impl Daemon {
                 }
             }
         }
+    }
+
+    /// Answer one control command. Never blocks: it does what a key press does.
+    fn handle_command(&mut self, cmd: Command) -> Reply {
+        match cmd {
+            Command::Press { index, page } => {
+                let Some(n) = self.deck.as_ref().map(|d| d.info.key_count()) else { return Reply::NoDeck };
+                if index >= n {
+                    return Reply::error(format!("no key {index}; this deck has {n} keys"));
+                }
+                let shown = self.nav.current().map(str::to_string);
+                let page = match page {
+                    None => shown.clone(),
+                    Some(p) if p.eq_ignore_ascii_case(omadeck_core::HOME) => None,
+                    Some(p) if !self.cfg.has_page(&p) => {
+                        return Reply::error(format!("there's no page named “{p}”"));
+                    }
+                    page => page,
+                };
+                let act = self.key_action_now(page.as_deref(), index).unwrap_or_default();
+                let message = format!("key {index}: {}", act.summary());
+                if page != shown {
+                    // Not on the deck: run what the key would run now, no flash, no flip.
+                    return match self.try_input(Source::Ctl, &act, 1) {
+                        Ok(()) => Reply::ok(message),
+                        Err(e) => Reply::error(format!("{e:#}")),
+                    };
+                }
+                if self.rt.jobs.contains_key(&KeyId { page: shown.clone(), index }) {
+                    return Reply::error(format!("key {index} is still running"));
+                }
+                let res = self.key_down(index, false);
+                // No `ButtonUp` follows: the key flashes instead. Not when the press moved
+                // the page: the new page's key at that place wasn't pressed.
+                if self.nav.current() == shown.as_deref()
+                    && let Some(f) = self.deck.as_mut().and_then(|d| d.key_flash.get_mut(index as usize))
+                {
+                    *f = Some(Instant::now());
+                }
+                match res {
+                    Ok(()) => Reply::ok(message),
+                    Err(e) => Reply::error(format!("{e:#}")),
+                }
+            }
+            Command::Dial { index, dir, steps } => {
+                let Some(n) = self.deck.as_ref().map(|d| d.info.dials) else { return Reply::NoDeck };
+                if index >= n {
+                    return Reply::error(format!("no dial {index}; this deck has {n} dials"));
+                }
+                let steps = steps.clamp(1, 8);
+                let summary = self.cfg.dial(index).map(|d| d.action(dir).summary()).unwrap_or_else(|| {
+                    // No `[[dial]]` for it: what an empty slot says.
+                    Action::None.summary()
+                });
+                let (res, what) = match dir {
+                    Direction::Left => (self.turn_dial(index, -(steps as i8), false), "left"),
+                    Direction::Right => (self.turn_dial(index, steps as i8, false), "right"),
+                    Direction::Press => (self.tap_dial(index), "press"),
+                };
+                let times = if steps > 1 && dir != Direction::Press { format!(" x{steps}") } else { String::new() };
+                match res {
+                    Ok(()) => Reply::ok(format!("dial {index} {what}{times}: {summary}")),
+                    Err(e) => Reply::error(format!("{e:#}")),
+                }
+            }
+            Command::Run { action } => match self.try_input(Source::Ctl, &action, 1) {
+                Ok(()) => Reply::ok(run_message(&action, self.nav.current(), self.rt.values.brightness)),
+                Err(e) => Reply::error(format!("{e:#}")),
+            },
+            Command::Page { page } => {
+                if let Some(p) = &page
+                    && !self.cfg.has_page(p)
+                {
+                    return Reply::error(format!("there's no page named “{p}”"));
+                }
+                if self.nav.go(page.as_deref()) {
+                    self.show_page();
+                }
+                Reply::ok(format!("page {}", self.nav.current().unwrap_or(omadeck_core::HOME)))
+            }
+            Command::Reload => {
+                self.reload_at = None;
+                match self.reload() {
+                    Ok(()) => Reply::ok(format!("reloaded config (theme: {})", self.renderer.theme.name)),
+                    Err(e) => Reply::error(format!("{e:#}; keeping the previous config")),
+                }
+            }
+            Command::State => Reply::State {
+                deck: self.deck.as_ref().map(|d| d.info.clone()),
+                page: self.nav.current().map(str::to_string),
+                pages: self.cfg.page_names(),
+                brightness: self.rt.values.brightness,
+            },
+            // `handle_commands` takes these and never answers them.
+            Command::ShowPage { .. } | Command::SetBrightness { .. } => Reply::ok(""),
+        }
+    }
+
+    /// The action key `i` on `page` runs now: the on action while it's on.
+    fn key_action_now(&self, page: Option<&str>, i: u8) -> Option<Action> {
+        let k = self.cfg.key(page, i)?;
+        let on = key_state(&self.cfg, &self.rt, page, i, false).state == Toggle::On;
+        Some(k.action_for(on).clone())
     }
 
     /// Take the watcher's new values.
@@ -997,6 +1115,17 @@ fn window_identity(w: &hypr::ActiveWindow) -> (&str, &str, Option<u32>) {
     (&w.address, &w.class, w.pid)
 }
 
+/// The reply line for a `Run` that went through: where the deck is now, or what ran.
+fn run_message(act: &Action, page: Option<&str>, brightness: u8) -> String {
+    match act {
+        Action::Page { .. } | Action::Back | Action::PageStep { .. } => {
+            format!("page {}", page.unwrap_or(omadeck_core::HOME))
+        }
+        Action::Brightness { .. } => format!("brightness {brightness}%"),
+        a => a.summary(),
+    }
+}
+
 /// What a volume panel shows for a read: the read plus what is still in flight (`f`,
 /// already net of what this read confirmed), so the bar never drops to a value the
 /// queued changes haven't reached yet. The mute is the read's: a level change doesn't
@@ -1269,6 +1398,14 @@ change = 5
         assert_eq!(Source::Turn(1).to_string(), "dial 1");
         assert_eq!(Source::Flick.to_string(), "strip flick");
         assert_eq!(Source::Ctl.to_string(), "omadeckd");
+    }
+
+    #[test]
+    fn run_messages() {
+        assert_eq!(run_message(&Action::PageStep { change: 1 }, Some("Media"), 70), "page Media");
+        assert_eq!(run_message(&Action::Back, None, 70), "page Home");
+        assert_eq!(run_message(&Action::Brightness { change: 10, set: None }, None, 40), "brightness 40%");
+        assert_eq!(run_message(&Action::Url { url: "omarchy.org".into() }, None, 40), "Open omarchy.org");
     }
 
     fn level(percent: i32) -> Level {
