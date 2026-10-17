@@ -509,18 +509,24 @@ Hardware (Stream Deck +, 0fd9:0084, Omarchy 4.0.4) — 2026-10-17, machine, medi
 
 Task 7 (GUI) — 2026-10-17, machine, GUI linked and run:
 - [x] It compiles (the `media_rows` `position_of` closure, `SpinRow` reset, `media` preset, the `Event::DialStatus` arm, `refresh_strip`, `tick_media`). (Linked and run.)
-- [ ] Presets › Media dial fills the dial; the preview shows dashes with the daemon stopped,
-      and the playing track with it running. *(user — not yet done)*
-- [ ] A key's Presets › Play/Pause makes a toggle whose *State from* reads "Follows the
+- [x] Presets › Media dial fills the dial; the preview shows the playing track. (User, 2026-10-17. Saved: `turn_left` seek −5, `turn_right` seek +5, press play/pause, no `player`.)
+- [x] A key's Presets › Play/Pause makes a toggle whose *State from* reads "Follows the
       player"; the Command combo switches between Play/Pause, Next, Previous, Stop and Seek;
-      the Player entry saves blank as no `player`. *(user — not yet done)*
-- [ ] *Try it now* on a media action plays/pauses (through the daemon, or here without it).
+      the Player entry saves blank as no `player`. (User, 2026-10-17. Saved: `type = "media"`
+      + blank `[key.on]` — an empty `on` on a play/pause key *is* the "Follows the player"
+      choice (`state_choice()`). No `player` line.)
+- [ ] *Try it now* on a media action plays/pauses. *(not done — covered by the daemon's press path)*
+
+**Also found on this pass:** bug 106 — the deck preview frame filled the hint line's width,
+stranding the 4-key grid with blank after the 4th key and 4th dial (feat/folders' longer
+hint made it visible). Fixed on `feat/folders` (`935fbf7`, `frame.set_halign(Center)`),
+cherry-picked to `pr/13-folders` (`8aa181e`), chain rebased and pushed.
 
 Assumptions and changes from the plan:
-- Nothing from "Capture on the machine first" was run. Defaults taken: Omarchy 4's
-  commands are `omarchy-shell media playPause|next|previous`; `MEDIA_REFRESH_DELAY` is
-  600 ms; no players is a non-zero exit. The two parser tests use synthetic lines in
-  playerctl's format, not fixture files (see Capture 4–5 above).
+- Captures 1–10 were run (see above). `playerctl` 2.4.1 was installed during the session;
+  the two-player fixture is real (`playerctl-two.txt`, `include_str!`), the no-length
+  stream test stays hand-written (no clean capture available). The real refresh cadence
+  is exactly 1 s (the shim saw 6 calls in 6 s).
 - Omarchy 4 is still detected by `omarchy-audio-output-volume` (`audio::backend()`); a
   machine with that but no working `omarchy-shell` (no `OMARCHY_PATH` in the service)
   would send play/pause nowhere. Capture 2 decides whether to check for it.
