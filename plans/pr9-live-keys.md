@@ -978,3 +978,19 @@ README, `examples/config.toml`, CHANGELOG. **Check:**
 
 **Size:** about 1,650 lines including tests over 8 tasks (A 250, B 200, C 250, D 250,
 E 300, F 200, G 200, H 80).
+
+## Status (2026-10-17)
+
+Reviewed against `feat/toggle-keys` as merged (tip `55d0d62`): the names in "What this
+PR builds on" match the tree (`Probe::Command`, `Value::Toggle`, `KeyStatus`,
+`probe::key_status`, `Event::KeyState`, the watcher's `Refresh`/`Leave`/`Done` and
+runner threads, `apply_value`/`mark_probe`, `publish_keys`, `watched_probes(cfg, page,
+n_dials)`). Not started.
+
+- **Open decision (awaiting the user):** a live key that also has a label — caption
+  above the value (the plan's default) or hidden as in Elgato. Only Task C's key layout
+  changes.
+- **Captures pending** ("Capture on the machine first"): items 2–5 and 7 the assistant
+  can run from the shell; item 1 (the 30 s socket2 transcript) needs the user to perform
+  the listed actions while it records; item 6 (the seven Nerd Font glyphs) needs the user
+  to confirm they render.
