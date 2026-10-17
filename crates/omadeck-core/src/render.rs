@@ -14,7 +14,7 @@ use image::Rgba;
 pub use image::RgbaImage;
 use image::imageops::{self, FilterType};
 
-use crate::config::{AudioDevice, Config, KeyConfig, LevelSource, Live, Style};
+use crate::config::{AudioDevice, Config, DialConfig, KeyConfig, LevelSource, Live, Style};
 use crate::paths;
 use crate::theme::{Rgb, Theme};
 
@@ -169,6 +169,18 @@ const B1_ICON: (u32, u32, u32, u32) = (16, 40, 48, 48);
 const B1_VALUE: (u32, u32, u32, u32) = (76, 40, 108, 32);
 /// Indicator: groove bar, rounded ends, range 0–100.
 const B1_BAR: (u32, u32, u32, u32) = (76, 74, 108, 12);
+// omadeck's own media layout on the `$B1` grid (PR 14; Elgato has none, plugins define
+// theirs): `$B1`'s title, icon and bar, with the value row split into artist and time.
+/// Media title: as wide as the panel allows, nothing sits to its right.
+const M1_TITLE: (u32, u32, u32, u32) = (16, 10, 168, 24);
+/// Media artist: the top half of `$B1`'s value row, left-aligned.
+const M1_ARTIST: (u32, u32, u32, u32) = (76, 40, 108, 18);
+/// Media time: the bottom half of `$B1`'s value row, right-aligned.
+const M1_TIME: (u32, u32, u32, u32) = (76, 58, 108, 16);
+const M1_ARTIST_PX: f32 = 14.0;
+const M1_TIME_PX: f32 = 13.0;
+const PLAY_GLYPH: &str = "f040a"; // nf-md play
+const PAUSE_GLYPH: &str = "f03e4"; // nf-md pause
 /// The panel icon box, in native pixels.
 const STRIP_ICON_PX: u32 = 48;
 /// The panel title size, in native pixels.
@@ -579,6 +591,10 @@ impl Renderer {
         // What's under each `$B1` text, taken before the image moves into `img`. On a
         // plain colour all three equal `tone`.
         let tones = (backdrop.tone_in(X1_TITLE), backdrop.tone_in(B1_VALUE), backdrop.tone_in(B1_BAR));
+        // A media panel's own rows (PR 14): title, artist, time.
+        let is_media = dial.and_then(DialConfig::level_source) == Some(LevelSource::Player);
+        let media_tones =
+            is_media.then(|| (backdrop.tone_in(M1_TITLE), backdrop.tone_in(M1_ARTIST), backdrop.tone_in(M1_TIME)));
         // An empty slot with no image is the dimmed base colour, as before; with an
         // image the empty panels show their slice undimmed, so the picture stays
         // continuous, as Elgato's strip background does.
@@ -606,6 +622,35 @@ impl Renderer {
             let level = shown.map(|l| Level { value: l.bar.unwrap_or(0.0), text: l.text.clone(), muted: false });
             let colors = self.b1_colors(&face, style, tones, st.pressed, false);
             self.draw_b1(&mut img, &face, colors, want_label, icon, level.as_ref(), live.has_bar());
+            return img;
+        }
+
+        // A media dial: the track's title, the cover (or a glyph), artist, time and a bar
+        // that follows the position. Dashes until the first read.
+        if let Some((title_tone, artist_tone, time_tone)) = media_tones {
+            let media = st.panel.media.as_ref();
+            let time = self.label_color(Some(&face), style, time_tone);
+            let track = tones.2.mix(time, 0.22);
+            let paused = media.is_some_and(|m| !m.playing && !m.is_idle());
+            let colors = M1Colors {
+                // R8: a press recolours the title only.
+                title: if st.pressed { self.theme.accent } else { self.label_color(Some(&face), style, title_tone) },
+                artist: self.label_color(Some(&face), style, artist_tone).mix(artist_tone, 0.35),
+                time,
+                // Paused: dimmed, not empty (empty means idle).
+                fill: if paused { track.mix(time, 0.5) } else { time },
+                track,
+            };
+            let icon = match (media.and_then(|m| m.art_img.as_ref()), face.icon) {
+                (Some(_), _) => None,
+                (None, Some(p)) => self.icon(&paths::resolve(p), STRIP_ICON_PX),
+                (None, None) => {
+                    let g = face.glyph.filter(|g| !g.trim().is_empty()).unwrap_or(media_glyph(media));
+                    self.glyph(g, (STRIP_ICON_PX as f32 * 0.86) as u32, glyph_color)
+                }
+            };
+            let art = media.and_then(|m| m.art_img.clone());
+            self.draw_media(&mut img, &face, colors, want_label, art.as_deref(), icon, media);
             return img;
         }
 
@@ -642,7 +687,7 @@ impl Renderer {
                 }
                 LevelSource::Brightness => self.brightness_icon(&face, glyph_color),
                 LevelSource::App => unreachable!("drawn above"),
-                LevelSource::Player => None,
+                LevelSource::Player => unreachable!("drawn above"),
             };
             let colors = self.b1_colors(&face, style, tones, st.pressed, false);
             self.draw_b1(&mut img, &face, colors, want_label, icon, st.panel.level.as_ref(), true);
@@ -765,6 +810,50 @@ impl Renderer {
         if bar {
             draw_bar(img, B1_BAR, value, colors.fill, colors.track);
         }
+    }
+
+    /// Draw the media layout: title (the track's, else the label when shown), the cover
+    /// or `icon` on the left, artist and time on the right over the bar. `art` wins over
+    /// `icon`; it is drawn as given (already 48 × 48 at most).
+    #[allow(clippy::too_many_arguments)]
+    fn draw_media(
+        &self,
+        img: &mut RgbaImage,
+        face: &Face,
+        colors: M1Colors,
+        want_label: bool,
+        art: Option<&RgbaImage>,
+        icon: Option<RgbaImage>,
+        media: Option<&MediaShow>,
+    ) {
+        let title = media.map(|m| m.title.trim()).filter(|t| !t.is_empty());
+        match title {
+            Some(t) => self.draw_text_in(img, M1_TITLE, STRIP_TITLE_PX, Align::Left, t, colors.title, true),
+            None if want_label => {
+                self.draw_text_in(img, M1_TITLE, STRIP_TITLE_PX, Align::Left, face.label, colors.title, true)
+            }
+            None => {}
+        }
+        let (x0, y0, w, h) = B1_ICON;
+        match (art, icon) {
+            (Some(a), _) => {
+                let (aw, ah) = (a.width().min(w), a.height().min(h));
+                imageops::overlay(img, a, (x0 + (w - aw) / 2) as i64, (y0 + (h - ah) / 2) as i64);
+            }
+            (None, Some(i)) => {
+                let (iw, ih) = (i.width().min(w), i.height().min(h));
+                imageops::overlay(img, &i, (x0 + (w - iw) / 2) as i64, (y0 + (h - ih) / 2) as i64);
+            }
+            (None, None) => {}
+        }
+        let (artist, time) = media_texts(media);
+        self.draw_text_in(img, M1_ARTIST, M1_ARTIST_PX, Align::Left, &artist, colors.artist, true);
+        self.draw_text_in(img, M1_TIME, M1_TIME_PX, Align::Right, &time, colors.time, true);
+        let value = match media.and_then(|m| m.length_ms.filter(|&l| l > 0).map(|l| (m.position_ms, l))) {
+            Some((p, l)) => p as f32 / l as f32,
+            None => 0.0,
+        };
+        draw_bar(img, B1_BAR, value, colors.fill, colors.track);
     }
 
     /// Pressed state: face shrinks inside an accent ring for tactile feedback.
@@ -1022,6 +1111,41 @@ struct B1Colors {
     track: Rgb,
 }
 
+/// The colours of a media panel's rows, chosen by `render_strip_panel`.
+#[derive(Debug, Clone, Copy)]
+struct M1Colors {
+    title: Rgb,
+    artist: Rgb,
+    time: Rgb,
+    fill: Rgb,
+    track: Rgb,
+}
+
+/// The glyph for a media panel: what a press will do (pause while playing).
+fn media_glyph(m: Option<&MediaShow>) -> &'static str {
+    if m.is_some_and(|m| m.playing) { PAUSE_GLYPH } else { PLAY_GLYPH }
+}
+
+/// The artist row and the time row for a media panel: dashes before the first read, the
+/// note or "Nothing playing" when idle, else the artist and `1:23 / 3:45` (`1:23` for a
+/// stream).
+fn media_texts(m: Option<&MediaShow>) -> (String, String) {
+    let dash = || "–".to_string();
+    match m {
+        None => (dash(), dash()),
+        Some(m) if m.is_idle() && !m.note.is_empty() => (m.note.clone(), dash()),
+        Some(m) if m.is_idle() => ("Nothing playing".into(), dash()),
+        Some(m) => {
+            let at = crate::player::fmt_time(m.position_ms);
+            let time = match m.length_ms.filter(|&l| l > 0) {
+                Some(l) => format!("{at} / {}", crate::player::fmt_time(l)),
+                None => at,
+            };
+            (m.artist.clone(), time)
+        }
+    }
+}
+
 /// How far an on face without its own background is mixed towards the accent.
 const ON_TINT: f32 = 0.30;
 /// The zone at the bottom of a busy key face that the progress bar sits in.
@@ -1227,11 +1351,14 @@ fn load_font(pattern: &str) -> Option<FontVec> {
 #[cfg(test)]
 mod tests {
     use super::{
-        AppShow, B1_BAR, B1_VALUE, Backdrop, DialStatus, Level, LiveShow, PANEL_H, PANEL_W, PanelStatus, Renderer,
-        RgbaImage, TEST_FONT, X1_ICON, X1_TITLE, fit_cover, glyph_char, load_cover, tap_to_dial,
+        AppShow, B1_BAR, B1_ICON, B1_VALUE, Backdrop, DialStatus, Level, LiveShow, M1_ARTIST, M1_TIME, M1_TITLE,
+        MediaShow, PANEL_H, PANEL_W, PAUSE_GLYPH, PLAY_GLYPH, PanelStatus, Renderer, RgbaImage, TEST_FONT, X1_ICON,
+        X1_TITLE, fit_cover, glyph_char, load_cover, media_glyph, media_texts, tap_to_dial,
     };
     use crate::KeyStatus;
-    use crate::config::{Action, AudioDevice, BusyFace, Config, DialConfig, KeyConfig, Live, OnFace, Style};
+    use crate::config::{
+        Action, AudioDevice, BusyFace, Config, DialConfig, KeyConfig, Live, MediaCommand, OnFace, Style,
+    };
     use crate::probe::Toggle;
     use crate::render::ON_TINT;
     use crate::theme::Rgb;
@@ -2126,5 +2253,149 @@ mod tests {
             r.render(Some(&k), &style, 72, &KeyStatus::default()),
             r.render(Some(&k), &style, 72, &KeyStatus { live: live("–"), ..KeyStatus::default() })
         );
+    }
+
+    fn media_dial() -> DialConfig {
+        DialConfig {
+            label: "Media".into(),
+            glyph: Some("A".into()),
+            press: Action::Media { command: MediaCommand::PlayPause, seek: 0, player: None },
+            ..DialConfig::new(0)
+        }
+    }
+
+    fn media(position_ms: u64, playing: bool) -> DialStatus {
+        DialStatus {
+            pressed: false,
+            panel: PanelStatus {
+                media: Some(MediaShow {
+                    title: "Song".into(),
+                    artist: "Band".into(),
+                    playing,
+                    position_ms,
+                    length_ms: Some(200_000),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+        }
+    }
+
+    fn media_cfg() -> Config {
+        let mut cfg = Config { style: test_style(), ..Default::default() };
+        cfg.dials.push(media_dial());
+        cfg
+    }
+
+    #[test]
+    fn media_bar_fills_to_progress() {
+        let mut r = renderer_with_font();
+        let cfg = media_cfg();
+        let (bx, by, bw, bh) = B1_BAR;
+        let (x, y) = (bx + bw * 3 / 4, by + bh / 2);
+        let start = r.render_strip_panel(&cfg, 0, 4, media(0, true));
+        let end = r.render_strip_panel(&cfg, 0, 4, media(200_000, true));
+        assert_ne!(start.get_pixel(x, y), end.get_pixel(x, y), "the fill should follow the position");
+        // The title, artist and time rows have ink.
+        let ink = |img: &RgbaImage, rect: (u32, u32, u32, u32)| {
+            let bg = *img.get_pixel(5, 95);
+            let (x0, y0, w, h) = rect;
+            (x0..x0 + w).any(|x| (y0..y0 + h).any(|y| *img.get_pixel(x, y) != bg))
+        };
+        assert!(ink(&start, M1_ARTIST) && ink(&start, M1_TIME) && ink(&start, M1_TITLE));
+    }
+
+    #[test]
+    fn media_paused_dims_fill() {
+        let mut r = renderer_with_font();
+        let cfg = media_cfg();
+        let (bx, by, _, bh) = B1_BAR;
+        // Inside the fill at the bar's left end.
+        let (x, y) = (bx + bh, by + bh / 2);
+        let playing = r.render_strip_panel(&cfg, 0, 4, media(100_000, true));
+        let paused = r.render_strip_panel(&cfg, 0, 4, media(100_000, false));
+        assert_ne!(playing.get_pixel(x, y), paused.get_pixel(x, y));
+        // Paused is not empty: the fill still differs from the empty track.
+        let empty = r.render_strip_panel(&cfg, 0, 4, media(0, false));
+        assert_ne!(paused.get_pixel(x, y), empty.get_pixel(x + 60, y));
+    }
+
+    #[test]
+    fn media_idle_keeps_layout() {
+        let mut r = renderer_with_font();
+        let cfg = media_cfg();
+        let (bx, by, bw, bh) = B1_BAR;
+        let (cx, cy) = (X1_ICON.0 + X1_ICON.2 / 2, X1_ICON.1 + X1_ICON.3 / 2);
+        for st in [
+            DialStatus::default(),
+            DialStatus {
+                panel: PanelStatus { media: Some(MediaShow::default()), ..Default::default() },
+                pressed: false,
+            },
+        ] {
+            let img = r.render_strip_panel(&cfg, 0, 4, st);
+            let bg = *img.get_pixel(5, 95);
+            assert_ne!(*img.get_pixel(bx + bw / 2, by + bh / 2), bg, "the bar's track is drawn");
+            assert_eq!(*img.get_pixel(cx, cy), bg, "no `$X1` icon in the middle");
+        }
+    }
+
+    #[test]
+    fn media_texts_forms() {
+        let dash = "–".to_string();
+        assert_eq!(media_texts(None), (dash.clone(), dash.clone()));
+        assert_eq!(media_texts(Some(&MediaShow::default())), ("Nothing playing".into(), dash.clone()));
+        let note = MediaShow { note: "Needs playerctl".into(), ..Default::default() };
+        assert_eq!(media_texts(Some(&note)), ("Needs playerctl".into(), dash));
+        let track = MediaShow {
+            title: "Song".into(),
+            artist: "Band".into(),
+            position_ms: 83_000,
+            length_ms: Some(225_000),
+            ..Default::default()
+        };
+        assert_eq!(media_texts(Some(&track)), ("Band".into(), "1:23 / 3:45".into()));
+        let stream = MediaShow { length_ms: None, ..track };
+        assert_eq!(media_texts(Some(&stream)), ("Band".into(), "1:23".into()));
+    }
+
+    #[test]
+    fn media_glyph_follows_state() {
+        assert_eq!(media_glyph(None), PLAY_GLYPH);
+        assert_eq!(media_glyph(Some(&MediaShow { playing: false, ..Default::default() })), PLAY_GLYPH);
+        assert_eq!(media_glyph(Some(&MediaShow { playing: true, ..Default::default() })), PAUSE_GLYPH);
+    }
+
+    #[test]
+    fn media_art_wins_over_glyph() {
+        let mut r = renderer_with_font();
+        let cfg = media_cfg();
+        let mut st = media(0, true);
+        let red = image::RgbaImage::from_pixel(48, 48, Rgba([255, 0, 0, 255]));
+        st.panel.media.as_mut().unwrap().art_img = Some(std::sync::Arc::new(red));
+        let img = r.render_strip_panel(&cfg, 0, 4, st);
+        let (x0, y0, w, h) = B1_ICON;
+        assert_eq!(*img.get_pixel(x0 + w / 2, y0 + h / 2), Rgba([255, 0, 0, 255]));
+        let without = r.render_strip_panel(&cfg, 0, 4, media(0, true));
+        assert_ne!(*without.get_pixel(x0 + w / 2, y0 + h / 2), Rgba([255, 0, 0, 255]));
+    }
+
+    #[test]
+    fn media_press_recolours_title_only() {
+        let mut r = renderer_with_font();
+        let cfg = media_cfg();
+        let up = r.render_strip_panel(&cfg, 0, 4, media(50_000, true));
+        let mut st = media(50_000, true);
+        st.pressed = true;
+        let down = r.render_strip_panel(&cfg, 0, 4, st);
+        assert_ne!(up, down, "the title changes colour");
+        let (tx, ty, tw, th) = M1_TITLE;
+        for (x, y, p) in up.enumerate_pixels() {
+            // The title's shadow sits one pixel down and right.
+            if x >= tx && x <= tx + tw && y >= ty && y <= ty + th {
+                continue;
+            }
+            assert_eq!(p, down.get_pixel(x, y), "({x}, {y}) changed outside the title");
+        }
     }
 }
