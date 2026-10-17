@@ -5,7 +5,8 @@ use std::rc::Rc;
 use adw::prelude::*;
 use gtk::{gdk, gio, glib};
 use omadeck_core::{
-    Action, AudioDevice, DialConfig, Direction, FaceTab, HOME, KeyConfig, LookField, Rgb, action, paths,
+    Action, AudioDevice, BusyFace, DialConfig, Direction, FaceTab, HOME, KeyConfig, LookField, OnFace, Rgb,
+    StateChoice, action, paths,
 };
 
 use crate::app::{ActionTarget, App, Target};
@@ -69,7 +70,12 @@ pub fn build_key(app: &Rc<App>, i: u8) -> gtk::Widget {
     };
 
     let buttons = gtk::Box::new(gtk::Orientation::Horizontal, 6);
-    buttons.append(&test_button(app, &slot));
+    // ▶ runs the face being edited: the on action while the On tab shows (falling back
+    // to the key's action when it has none), the key's action otherwise.
+    let run = Rc::new(move |a: &Rc<App>| {
+        a.key(i).map(|k| k.action_for(a.face_tab.get() == FaceTab::On).clone()).unwrap_or_default()
+    });
+    buttons.append(&test_button(app, &slot, run));
     let clear = gtk::Button::builder()
         .icon_name("user-trash-symbolic")
         .tooltip_text("Clear this key")
@@ -83,7 +89,149 @@ pub fn build_key(app: &Rc<App>, i: u8) -> gtk::Widget {
     group.set_header_suffix(Some(&buttons));
 
     action_editor(app, &group, "When pressed", &slot);
+    if key.action.is_trackable() {
+        let busy = adw::SwitchRow::builder()
+            .title("Busy while running")
+            .subtitle("Show the busy face until the command finishes")
+            .active(key.busy_while_running)
+            .build();
+        let a = app.clone();
+        busy.connect_active_notify(move |r| {
+            let on = r.is_active();
+            a.edit(i, |k| k.busy_while_running = on);
+        });
+        group.add(&busy);
+    }
     page.add(&group);
+
+    // --- toggle ---------------------------------------------------------------------------
+    let toggle = adw::PreferencesGroup::builder().title("Toggle").build();
+    let two = adw::SwitchRow::builder()
+        .title("Two faces (toggle)")
+        .subtitle("A second face while on")
+        .active(key.on.is_some())
+        .build();
+    let a = app.clone();
+    two.connect_active_notify(move |r| {
+        let on = r.is_active();
+        a.edit(i, |k| {
+            if on {
+                k.on = Some(OnFace::default());
+            } else {
+                k.on = None;
+                k.busy = None;
+            }
+        });
+        a.rebuild_editor();
+    });
+    toggle.add(&two);
+    if let Some(on) = &key.on {
+        let choices: &[&str] = key
+            .state_choices()
+            .iter()
+            .map(|c| match c {
+                StateChoice::Press => "Flips on each press",
+                StateChoice::Command => "Shell command",
+                StateChoice::Mute => "Follows mute",
+            })
+            .collect::<Vec<_>>()
+            .leak();
+        let list = gtk::StringList::new(choices);
+        let state_row = adw::ComboRow::builder().title("State from").model(&list).build();
+        state_row.set_selected(key.state_choice() as usize as u32);
+        let choices = key.state_choices().to_vec();
+        let a = app.clone();
+        state_row.connect_selected_notify(move |row| {
+            let sel = row.selected() as usize;
+            a.edit(i, |k| k.set_state_choice(choices[sel]));
+            a.rebuild_editor();
+        });
+        toggle.add(&state_row);
+        if key.state_choice() == StateChoice::Command {
+            let cmd = adw::EntryRow::builder().title("State command").text(on.state.as_deref().unwrap_or("")).build();
+            cmd.add_suffix(
+                &gtk::Label::builder().label("exit 0 = on, 75 = busy, else off").css_classes(["dim-label"]).build(),
+            );
+            let a = app.clone();
+            cmd.connect_changed(move |e| {
+                let text = e.text().to_string();
+                a.edit(i, |k| {
+                    if let Some(on) = &mut k.on {
+                        on.state = Some(text);
+                    }
+                });
+            });
+            toggle.add(&cmd);
+            let adj = gtk::Adjustment::new(on.interval as f64, 1.0, 60.0, 1.0, 1.0, 0.0);
+            let every = adw::SpinRow::builder().title("Every (seconds)").adjustment(&adj).build();
+            let a = app.clone();
+            adj.connect_value_changed(move |adj| {
+                let v = adj.value().round() as u16;
+                a.edit(i, |k| {
+                    if let Some(on) = &mut k.on {
+                        on.interval = v;
+                    }
+                });
+            });
+            toggle.add(&every);
+            let slow = adw::SwitchRow::builder().title("Slow (shows progress)").active(on.slow).build();
+            let a = app.clone();
+            slow.connect_active_notify(move |r| {
+                let active = r.is_active();
+                a.edit(i, |k| {
+                    if let Some(on) = &mut k.on {
+                        on.slow = active;
+                    }
+                });
+            });
+            toggle.add(&slow);
+        }
+        if key.is_slow_toggle() || key.busy_while_running {
+            let bar = adw::SwitchRow::builder()
+                .title("Progress bar")
+                .subtitle("Draw the last percentage of the state output")
+                .active(key.busy.as_ref().is_some_and(|b| b.bar))
+                .build();
+            let a = app.clone();
+            bar.connect_active_notify(move |r| {
+                let on = r.is_active();
+                a.edit(i, |k| {
+                    if on {
+                        k.busy.get_or_insert_with(BusyFace::default).bar = true;
+                    } else if let Some(b) = &mut k.busy {
+                        b.bar = false;
+                    }
+                });
+            });
+            toggle.add(&bar);
+        }
+        let on_slot = ActionSlot {
+            target: ActionTarget::KeyOn(app.key_ref(i)),
+            dir: None,
+            get: Rc::new(move |a| a.key(i).and_then(|k| k.on).map(|f| f.action).unwrap_or_default()),
+            set: Rc::new(move |a, act| {
+                a.edit(i, |k| {
+                    if let Some(on) = &mut k.on {
+                        on.action = act;
+                    }
+                });
+            }),
+            own_page: app.current_page(),
+            on_app_picked: Rc::new(|a, at, command, _, _| {
+                if let ActionTarget::KeyOn(k) = at {
+                    a.edit_ref(k, |k| {
+                        if let Some(on) = &mut k.on {
+                            on.action = Action::App { command };
+                        }
+                    });
+                }
+            }),
+            on_new_page: Rc::new(move |a| new_folder(a, i)),
+            on_favicon: None,
+        };
+        action_editor(app, &toggle, "When pressed while on", &on_slot);
+    }
+    page.add(&toggle);
 
     // --- appearance -----------------------------------------------------------------------
     let look = adw::PreferencesGroup::builder().title("Appearance").build();
@@ -339,13 +487,15 @@ fn dial_action_group(app: &Rc<App>, i: u8, dir: Direction) -> adw::PreferencesGr
     };
     let group = adw::PreferencesGroup::builder().title(title).build();
     let slot = ActionSlot::dial(i, dir);
-    group.set_header_suffix(Some(&test_button(app, &slot)));
+    group.set_header_suffix(Some(&test_button(app, &slot, slot.get.clone())));
     action_editor(app, &group, "Action", &slot);
     group
 }
 
 /// Handles a fetched website icon: (app, target, imported icon path, site name).
 type FaviconHandler = Rc<dyn Fn(&Rc<App>, ActionTarget, String, String) + 'static>;
+/// What the Try-it-now button executes.
+type ActionRun = Rc<dyn Fn(&Rc<App>) -> Action>;
 
 /// One action an editor edits: a key's action, one of a dial's three, and later a
 /// toggle's on action (PR 8), a multi-action step (PR 12) or a long press (PR 16).
@@ -407,10 +557,11 @@ impl ActionSlot {
     }
 }
 
-/// The ▶ "Try it now" button for a slot. Off for an empty action and for actions only
-/// the deck runs (`Action::is_deck_owned`), except Open page, which shows the page here.
-fn test_button(app: &Rc<App>, slot: &ActionSlot) -> gtk::Button {
-    let act = (slot.get)(app);
+/// The ▶ "Try it now" button for a slot. `run` is what a click executes (a key's is
+/// the face being edited). Off for an empty action and for actions only the deck runs
+/// (`Action::is_deck_owned`), except Open page, which shows the page here.
+fn test_button(app: &Rc<App>, _slot: &ActionSlot, run: ActionRun) -> gtk::Button {
+    let act = (run)(app);
     let (tip, sensitive) = match &act {
         Action::Page { page } => ("Try it now".to_string(), app.config.borrow().has_page(page)),
         a if a.is_deck_owned() => (format!("{} only works on the deck", Action::KINDS[a.kind_index()]), false),
@@ -423,14 +574,13 @@ fn test_button(app: &Rc<App>, slot: &ActionSlot) -> gtk::Button {
         .sensitive(sensitive)
         .css_classes(["flat"])
         .build();
-    let a = app.clone();
-    let get = slot.get.clone();
+    let app = app.clone();
     test.connect_clicked(move |_| {
-        let act = get(&a);
+        let act = (run)(&app);
         if let Action::Page { page } = act {
-            a.show_page(Some(page), true);
+            app.show_page(Some(page), true);
         } else if let Err(e) = action::run(&act) {
-            a.toast(&format!("{e:#}"));
+            app.toast(&format!("{e:#}"));
         }
     });
     test

@@ -53,6 +53,8 @@ impl KeyRef {
 pub enum ActionTarget {
     /// A key's action.
     Key(KeyRef),
+    /// A toggle key's on action (its `on.action`).
+    KeyOn(KeyRef),
     DialTurnLeft(u8),
     DialTurnRight(u8),
     DialPress(u8),
@@ -71,7 +73,7 @@ impl ActionTarget {
     /// The dial and slot, for a dial's action.
     pub fn dial_slot(&self) -> Option<(u8, Direction)> {
         match self {
-            ActionTarget::Key(_) => None,
+            ActionTarget::Key(_) | ActionTarget::KeyOn(_) => None,
             ActionTarget::DialTurnLeft(i) => Some((*i, Direction::Left)),
             ActionTarget::DialTurnRight(i) => Some((*i, Direction::Right)),
             ActionTarget::DialPress(i) => Some((*i, Direction::Press)),
@@ -920,10 +922,15 @@ impl App {
         let cfg = self.config.borrow();
         match at.dial_slot() {
             Some((i, dir)) => Some(cfg.dial(i).map(|d| d.action(dir).clone()).unwrap_or_default()),
-            None => {
-                let ActionTarget::Key(k) = at else { return None };
-                cfg.page(k.page()).map(|keys| keys.get(k.index).map(|kc| kc.action.clone()).unwrap_or_default())
-            }
+            None => match at {
+                ActionTarget::Key(k) => {
+                    cfg.page(k.page()).map(|keys| keys.get(k.index).map(|kc| kc.action.clone()).unwrap_or_default())
+                }
+                ActionTarget::KeyOn(k) => cfg.page(k.page()).map(|keys| {
+                    keys.get(k.index).and_then(|kc| kc.on.as_ref().map(|f| f.action.clone())).unwrap_or_default()
+                }),
+                _ => unreachable!("a dial target has a dial slot"),
+            },
         }
     }
 
@@ -938,7 +945,12 @@ impl App {
             }
             None => match at {
                 ActionTarget::Key(k) => self.edit_ref(k, |kc| kc.action = act),
-                _ => false,
+                ActionTarget::KeyOn(k) => self.edit_ref(k, |kc| {
+                    if let Some(on) = &mut kc.on {
+                        on.action = act;
+                    }
+                }),
+                _ => unreachable!("a dial target has a dial slot"),
             },
         }
     }
