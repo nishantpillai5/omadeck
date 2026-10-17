@@ -17,7 +17,7 @@ use omadeck_core::{
     Renderer, action, audio, tap_to_dial,
 };
 
-use crate::deck::{self, Deck};
+use crate::deck::{self, BackHold, Deck};
 use crate::hub::{Hub, Request};
 use crate::hypr::{self, HyprEvent};
 use crate::hypr_worker::{HyprJob, HyprWorker};
@@ -110,6 +110,12 @@ pub fn key_state(cfg: &Config, rt: &Runtime, page: Option<&str>, i: u8, pressed:
         st.state = Toggle::On;
     }
     st
+}
+
+/// Whether a press of `key` waits for its release: the action `press_key` would run
+/// (the on action while on) is `Back`.
+fn waits_for_release(key: Option<&KeyConfig>, on: bool) -> bool {
+    key.is_some_and(|k| matches!(k.action_for(on), Action::Back))
 }
 
 /// What follows a finished job. Pure apart from `rt`, so it is testable without a deck.
@@ -579,14 +585,16 @@ impl Daemon {
         self.deck.as_ref().map_or(0, |d| d.info.key_count())
     }
 
-    /// What each of the current page's first `n` keys shows now (not pressed), for
-    /// painting.
-    /// A key a ctl press is flashing is drawn pressed, so the end-of-pass paint keeps the
-    /// flash.
+    /// What each of the current page's first `n` keys shows now, for painting. A key held
+    /// down, or flashing after a ctl press, is drawn pressed, so the end-of-pass paint
+    /// keeps it pressed (BUGS.md 65).
     fn key_states(&self, n: u8) -> Vec<KeyStatus> {
-        let flashing =
-            |i: u8| self.deck.as_ref().is_some_and(|d| d.key_flash.get(i as usize).is_some_and(Option::is_some));
-        (0..n).map(|i| key_state(&self.cfg, &self.rt, self.nav.current(), i, flashing(i))).collect()
+        (0..n)
+            .map(|i| {
+                let held = self.deck.as_ref().is_some_and(|d| d.key_held(i));
+                key_state(&self.cfg, &self.rt, self.nav.current(), i, held)
+            })
+            .collect()
     }
 
     /// Groundwork's pattern for panels, for keys: build each key's status and publish
@@ -634,11 +642,13 @@ impl Daemon {
         self.rt.values.probes.retain(|p, _| *p == Probe::Workspace || all.contains(p));
     }
 
-    /// The next moment something is due: a tap flash ending, the post-connect repaint, a
-    /// debounced reload, a multi action's next step. PR 16's timers add theirs here.
+    /// The next moment something is due: a tap flash ending, a held Back key going Home,
+    /// the post-connect repaint, a debounced reload, a multi action's next step. PR 16's
+    /// timers add theirs here.
     pub fn next_deadline(&self) -> Option<Instant> {
         let flash = self.deck.as_ref().and_then(Deck::flash_deadline);
-        [flash, self.repaint_at, self.reload_at, self.seq.next_due()].into_iter().flatten().min()
+        let hold = self.deck.as_ref().and_then(|d| d.back_held).map(|h| h.deadline());
+        [flash, hold, self.repaint_at, self.reload_at, self.seq.next_due()].into_iter().flatten().min()
     }
 
     /// One pass with a deck: read and handle its input until it's quiet, then paint what
@@ -648,6 +658,12 @@ impl Daemon {
         if self.repaint_at.is_some_and(|t| now >= t) {
             self.repaint_at = None;
             self.paint_all();
+        }
+        if let Some(h) = self.deck.as_mut().and_then(|d| d.back_held.take_if(|h| now >= h.deadline())) {
+            log::info!("key {}: held Back, going Home", h.key);
+            if self.nav.home() {
+                self.show_page();
+            }
         }
         let Some(d) = &mut self.deck else { return Ok(()) };
         d.expire_flashes(now);
@@ -683,12 +699,29 @@ impl Daemon {
         match u {
             DeviceStateUpdate::ButtonDown(i) => {
                 self.clear_key_flash(i);
-                let _ = self.key_down(i, true);
+                self.set_key_pressed(i, true);
+                let page = self.nav.current();
+                let on = key_state(&self.cfg, &self.rt, page, i, false).state == Toggle::On;
+                if waits_for_release(self.cfg.key(page, i), on) {
+                    // Back waits for the release (a hold goes Home instead); show the press now.
+                    self.paint_key(i, true);
+                    self.hub.publish(Event::KeyDown { index: i, page: self.nav.current().map(str::to_string) });
+                    if let Some(d) = &mut self.deck {
+                        d.back_held = Some(BackHold { key: i, since: Instant::now() });
+                    }
+                } else {
+                    let _ = self.key_down(i, true);
+                }
             }
             DeviceStateUpdate::ButtonUp(i) => {
                 self.clear_key_flash(i);
+                self.set_key_pressed(i, false);
                 self.paint_key(i, false);
                 self.hub.publish(Event::KeyUp { index: i });
+                let held = self.deck.as_mut().and_then(|d| d.back_held.take_if(|h| h.key == i));
+                if held.is_some() {
+                    let _ = self.press_key(i); // a tap: Back, through the normal press path
+                }
             }
             DeviceStateUpdate::EncoderTwist(i, delta) => {
                 let _ = self.turn_dial(i, delta, true);
@@ -786,6 +819,14 @@ impl Daemon {
     fn clear_key_flash(&mut self, i: u8) {
         if let Some(f) = self.deck.as_mut().and_then(|d| d.key_flash.get_mut(i as usize)) {
             *f = None;
+        }
+    }
+
+    /// Record key `i` as held down or released. Doesn't mark it dirty: the button arms
+    /// paint it themselves.
+    fn set_key_pressed(&mut self, i: u8, pressed: bool) {
+        if let Some(p) = self.deck.as_mut().and_then(|d| d.key_pressed.get_mut(i as usize)) {
+            *p = pressed;
         }
     }
 
@@ -1113,6 +1154,12 @@ impl Daemon {
     /// Repaint the deck after `nav` moved to another page, watch the new page's keys,
     /// and tell the configurators.
     fn show_page(&mut self) {
+        // The key under your finger on the new page is drawn released; its release only
+        // repaints it.
+        if let Some(d) = &mut self.deck {
+            d.key_pressed.fill(false);
+            d.back_held = None;
+        }
         log::info!("page: {}", self.nav.current().unwrap_or(omadeck_core::HOME));
         self.paint_all();
         self.watch();
@@ -1252,6 +1299,21 @@ mod tests {
         probe::{FAST_WINDOW, SETTLE},
         proc,
     };
+
+    #[test]
+    fn only_a_back_press_waits_for_release() {
+        let cfg = Config::parse(
+            "[[key]]\nindex = 0\n[key.action]\ntype = \"back\"\n\n\
+             [[key]]\nindex = 1\n[key.action]\ntype = \"page\"\npage = \"A\"\n\n\
+             [[key]]\nindex = 2\n[key.action]\ntype = \"app\"\ncommand = \"true\"\n[key.on]\n[key.on.action]\ntype = \"back\"\n",
+        )
+        .unwrap();
+        assert!(waits_for_release(cfg.key(None, 0), false), "a Back key");
+        assert!(!waits_for_release(cfg.key(None, 1), false), "Open page acts on key-down");
+        assert!(!waits_for_release(cfg.key(None, 2), false), "a toggle runs its off action while off");
+        assert!(waits_for_release(cfg.key(None, 2), true), "and its Back on action while on");
+        assert!(!waits_for_release(None, false), "no key");
+    }
 
     #[test]
     fn config_probes_keeps_app_dials() {
