@@ -342,14 +342,16 @@ impl Action {
     }
 
     /// The action a kind pick starts from in one of a dial's slots. Turning left gets
-    /// the opposite sign of turning right (lower the volume, the previous page), and a
-    /// Volume press mutes, as on Elgato's volume dial. Everything else is `empty_of_kind`.
+    /// the opposite sign of turning right (lower the volume or brightness, the previous
+    /// page), and a Volume press mutes, as on Elgato's volume dial. Everything else is
+    /// `empty_of_kind`.
     pub fn default_for(kind: usize, dir: Direction) -> Self {
         match (Self::empty_of_kind(kind), dir) {
             (Action::Volume { device, .. }, Direction::Press) => Action::Volume { device, change: 0, mute: true },
             (Action::Volume { device, change, mute }, Direction::Left) => {
                 Action::Volume { device, change: -change, mute }
             }
+            (Action::Brightness { change, set }, Direction::Left) => Action::Brightness { change: -change, set },
             (Action::PageStep { change }, Direction::Left) => Action::PageStep { change: -change },
             (act, _) => act,
         }
@@ -861,6 +863,8 @@ mod tests {
         );
         let step = Action::PageStep { change: 1 }.kind_index();
         assert_eq!(Action::default_for(step, Direction::Left), Action::PageStep { change: -1 });
+        let bright = Action::Brightness { change: 5, set: None }.kind_index();
+        assert_eq!(Action::default_for(bright, Direction::Left), Action::Brightness { change: -5, set: None });
         for kind in 0..Action::KINDS.len() {
             assert_eq!(Action::default_for(kind, Direction::Right), Action::empty_of_kind(kind));
         }
