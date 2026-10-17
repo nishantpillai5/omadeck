@@ -41,7 +41,9 @@ pub struct Stream {
     pub binary: String,
     /// `application.name`, else `media.name`, else `node.name` ("" if none).
     pub name: String,
-    /// `pipewire.access.portal.app_id`, else `application.id`, lowercased.
+    /// `pipewire.access.portal.app_id`, else `application.id`, as written: Flatpak ids
+    /// are case-sensitive file names for the icon lookup (`com.Spotify.Client.desktop`).
+    /// Compare it lowercased (BUGS.md 96).
     pub app_id: Option<String>,
     /// `application.icon_name`.
     pub icon_name: Option<String>,
@@ -139,10 +141,7 @@ pub fn parse_pactl_streams(json: &str) -> Option<Vec<Stream>> {
             pid: json_u64(props.get("application.process.id")).and_then(|n| u32::try_from(n).ok()),
             binary: json_str(props, "application.process.binary").unwrap_or_default().to_lowercase(),
             name,
-            app_id: ["pipewire.access.portal.app_id", "application.id"]
-                .iter()
-                .find_map(|k| json_str(props, k))
-                .map(|s| s.to_lowercase()),
+            app_id: ["pipewire.access.portal.app_id", "application.id"].iter().find_map(|k| json_str(props, k)),
             icon_name: json_str(props, "application.icon_name"),
             level: Level {
                 percent: percent.min(255) as u8,
@@ -194,7 +193,7 @@ pub fn select_named<'a>(s: &'a [Stream], name: &str) -> Vec<&'a Stream> {
     if n.is_empty() {
         return vec![];
     }
-    s.iter().filter(|st| st.binary == n || st.name.to_lowercase() == n || st.app_id.as_deref() == Some(&n)).collect()
+    s.iter().filter(|st| st.binary == n || st.name.to_lowercase() == n || app_id_is(st, &n)).collect()
 }
 
 /// The streams of the focused window's app. By pid first: the window's process or any
@@ -212,9 +211,12 @@ pub fn select_window<'a>(s: &'a [Stream], w: &Window, parent: impl Fn(u32) -> Op
     if class.is_empty() {
         return vec![];
     }
-    s.iter()
-        .filter(|st| st.app_id.as_deref() == Some(&class) || st.binary == class || st.name.to_lowercase() == class)
-        .collect()
+    s.iter().filter(|st| app_id_is(st, &class) || st.binary == class || st.name.to_lowercase() == class).collect()
+}
+
+/// Whether the stream's app id is `lower` (already lowercased), ignoring case.
+fn app_id_is(st: &Stream, lower: &str) -> bool {
+    st.app_id.as_deref().is_some_and(|id| id.to_lowercase() == lower)
 }
 
 /// Whether `pid` is `ancestor` or one of its descendants. Stops at pid 1, at a repeat
@@ -258,7 +260,7 @@ pub fn app_level(matched: &[&Stream]) -> Option<AppLevel> {
     let key = if !first.binary.is_empty() {
         first.binary.clone()
     } else if let Some(id) = first.app_id.as_ref().filter(|s| !s.is_empty()) {
-        id.clone()
+        id.to_lowercase()
     } else {
         first.name.to_lowercase()
     };
@@ -291,14 +293,13 @@ pub fn app_level(matched: &[&Stream]) -> Option<AppLevel> {
 pub fn resolve_named(s: &[Stream], name: &str) -> AppLevel {
     app_level(&select_named(s, name)).unwrap_or_else(|| {
         let n = normalise_app(name);
-        AppLevel {
-            name: display_app(name),
-            key: String::new(),
-            icon: None,
-            icon_names: if n.is_empty() { vec![] } else { vec![n] },
-            level: None,
-            ids: vec![],
-        }
+        // As written first (a Flatpak id's icon file keeps its case), then lowercased.
+        let last = name.trim().rsplit('/').next().unwrap_or("");
+        let written = last.strip_suffix(".desktop").unwrap_or(last).trim();
+        let mut icon_names: Vec<String> = [written, n.as_str()].into_iter().map(str::to_string).collect();
+        icon_names.dedup();
+        icon_names.retain(|n| !n.is_empty());
+        AppLevel { name: display_app(name), key: String::new(), icon: None, icon_names, level: None, ids: vec![] }
     })
 }
 
@@ -657,7 +658,8 @@ mod tests {
         assert_eq!(s.len(), 2);
         assert_eq!((s[0].id, s[0].pid), (12, Some(77)));
         assert_eq!(s[0].name, "audio-src");
-        assert_eq!(s[0].app_id.as_deref(), Some("com.spotify.client"));
+        // As written: the icon lookup needs the case (BUGS.md 96).
+        assert_eq!(s[0].app_id.as_deref(), Some("com.Spotify.Client"));
         assert_eq!(s[0].level, Level { percent: 255, muted: true });
         assert!(s[0].corked);
         assert_eq!(s[0].binary, "");
@@ -688,7 +690,7 @@ mod tests {
     #[test]
     fn select_named_forms() {
         let mut spot = st(87, 100, "spotify");
-        spot.app_id = Some("com.spotify.client".into());
+        spot.app_id = Some("com.Spotify.Client".into());
         let s = vec![spot, st(90, 200, "firefox")];
         for q in ["spotify", "Spotify", "spotify.desktop", "/usr/bin/spotify", "com.spotify.Client", " spotify "] {
             let hit = select_named(&s, q);
@@ -717,12 +719,18 @@ mod tests {
     #[test]
     fn select_window_class_fallback() {
         let mut flat = st(5, 4000, "");
-        flat.app_id = Some("com.spotify.client".into());
+        flat.app_id = Some("com.Spotify.Client".into());
         let s = vec![flat, st(6, 50, "mpv")];
         let none = |_| None;
-        // The window's pid is outside the sandbox: no pid match, so its class matches.
-        let w = Window { pid: Some(10), class: "com.spotify.Client".into() };
+        // The window's pid is outside the sandbox: no pid match, so its class matches,
+        // in any case.
+        let w = Window { pid: Some(10), class: "com.spotify.client".into() };
         assert_eq!(select_window(&s, &w, none).iter().map(|s| s.id).collect::<Vec<_>>(), vec![5]);
+        // BUGS.md 96: the icon is looked up by the id as written (Flatpak's file names
+        // keep their case); the key is lowercased.
+        let lv = app_level(&select_window(&s, &w, none)).unwrap();
+        assert_eq!(lv.key, "com.spotify.client");
+        assert!(lv.icon_names.contains(&"com.Spotify.Client".to_string()), "{:?}", lv.icon_names);
         // A pid match wins over the class.
         let w = Window { pid: Some(50), class: "com.spotify.Client".into() };
         assert_eq!(select_window(&s, &w, none).iter().map(|s| s.id).collect::<Vec<_>>(), vec![6]);
@@ -761,7 +769,9 @@ mod tests {
         // Not playing: named and iconed after what was chosen.
         let lv = resolve_named(&[], "Spotify.desktop");
         assert_eq!((lv.name.as_str(), lv.key.as_str(), lv.level), ("Spotify", "", None));
-        assert_eq!(lv.icon_names, vec!["spotify".to_string()]);
+        assert_eq!(lv.icon_names, vec!["Spotify".to_string(), "spotify".to_string()]);
+        let lv = resolve_named(&[], "/usr/bin/mpv");
+        assert_eq!(lv.icon_names, vec!["mpv".to_string()]);
     }
 
     #[test]
