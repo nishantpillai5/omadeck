@@ -159,6 +159,7 @@ pub fn dial_status(dial: Option<&DialConfig>, values: &Values, pressed: bool) ->
     let level = dial.and_then(DialConfig::level_source).and_then(|src| match src {
         LevelSource::Volume(dev) => values.level(dev).cloned(),
         LevelSource::Brightness => Some(brightness_level(values.brightness)),
+        LevelSource::App => None,
     });
     let live = dial.and_then(|d| d.live.as_ref()).and_then(|l| live_show(l, values));
     DialStatus { pressed, panel: PanelStatus { level, live } }
