@@ -542,15 +542,11 @@ impl Daemon {
             match ev {
                 HyprEvent::Workspace { name, .. } => self.apply_value(Probe::Workspace, Some(Value::Text(name)), 0),
                 HyprEvent::ActiveWindow(w) => {
-                    // A retitle of the focused window comes as an `ActiveWindow` too: only
-                    // another window is news (each would re-read `pactl`).
-                    if self.rt.window.as_ref().map(window_identity) != w.as_ref().map(window_identity) {
-                        // Nothing focused included: the watcher only remembers it when no
-                        // focused dial is watched, and a focused dial with no window falls
-                        // back to its sticky app.
-                        let focus = w.as_ref().map(|w| audio::Window { pid: w.pid, class: w.class.clone() });
-                        let _ = self.watcher.cmd.send(WatchCmd::Focus(focus));
-                    }
+                    // Always, nothing focused included: the watcher only remembers it
+                    // when no focused dial is watched, and a focused dial with no window
+                    // falls back to its sticky app.
+                    let focus = w.as_ref().map(|w| audio::Window { pid: w.pid, class: w.class.clone() });
+                    let _ = self.watcher.cmd.send(WatchCmd::Focus(focus));
                     self.rt.window = w;
                 }
             }
@@ -1096,11 +1092,8 @@ impl Daemon {
             Action::Page { page } => Err(anyhow::anyhow!("there's no page named “{page}”")),
             Action::Back => Ok(self.nav.back()),
             Action::PageStep { change } => {
-                // From inside a folder, step from the folder's parent, leaving the folder.
-                let in_folder =
-                    self.cfg.pages.iter().any(|p| p.folder && self.nav.current().is_some_and(|c| p.name == c));
-                let origin =
-                    if in_folder { self.nav.parent().flatten() } else { self.nav.current().map(str::to_string) };
+                // From inside a folder (however deep), step from the page the folders hang off.
+                let origin = self.nav.nearest(|p| !self.cfg.is_folder(p)).map(str::to_string);
                 let by = i32::from(*change) * steps as i32;
                 Ok(match self.cfg.step_page(origin.as_deref(), by) {
                     Some(page) => self.nav.switch(page.as_deref()),
@@ -1294,11 +1287,6 @@ impl Daemon {
         self.watcher.stop();
         self.saver.finish();
     }
-}
-
-/// What makes a focused window another one: a retitle keeps all three.
-fn window_identity(w: &hypr::ActiveWindow) -> (&str, &str, Option<u32>) {
-    (&w.address, &w.class, w.pid)
 }
 
 /// The reply line for a `Run` that went through: where the deck is now, or what ran.
