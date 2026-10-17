@@ -278,11 +278,6 @@ pub fn connect() -> Result<(Sender, impl Iterator<Item = Event>)> {
     Ok((Sender(writer), events))
 }
 
-/// Read commands sent by a client until it disconnects.
-pub fn commands(stream: UnixStream) -> impl Iterator<Item = Command> {
-    BufReader::new(stream).lines().map_while(|l| l.ok()).filter_map(|l| serde_json::from_str(&l).ok())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
