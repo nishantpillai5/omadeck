@@ -9,7 +9,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::audio::{AppLevel, AppQuery};
 use crate::config::{AudioDevice, Config, DialConfig, KeyConfig, LevelSource, Live};
-use crate::render::{AppShow, DialStatus, KeyStatus, Level, LiveShow, PanelStatus};
+use crate::player::{self, PlayStatus, PlayerRead};
+use crate::render::{AppShow, DialStatus, KeyStatus, Level, LiveShow, MediaShow, PanelStatus};
 
 /// A volume set from the keyboard or `pavucontrol` lands in well under this.
 const VOLUME_REFRESH: [Duration; 1] = [Duration::from_millis(150)];
@@ -17,6 +18,11 @@ const VOLUME_REFRESH: [Duration; 1] = [Duration::from_millis(150)];
 /// at 1.2 s a fast toggle that really failed shows its true state (outside the 1 s
 /// `SETTLE` window).
 const COMMAND_REFRESH: [Duration; 2] = [Duration::from_millis(300), Duration::from_millis(1200)];
+/// How long a player takes to report a new status after a command.
+pub const MEDIA_REFRESH_DELAY: Duration = Duration::from_millis(600);
+/// After a media command: the first read usually confirms the guess; the second lands
+/// after `SETTLE`, so a failed command shows the truth.
+const PLAYER_REFRESH: [Duration; 2] = [MEDIA_REFRESH_DELAY, Duration::from_millis(1500)];
 
 /// While a toggle is busy, or a slow press is waiting for its state to move.
 pub const FAST_INTERVAL: Duration = Duration::from_millis(500);
@@ -49,6 +55,9 @@ pub enum Probe {
     Output { command: String, interval_ms: u32 },
     /// One app's playback streams. Every app probe is answered from one stream read.
     AppVolume(AppQuery),
+    /// The media player: the wanted player (`playerctl --player` name), `None` for
+    /// whichever plays. Read inline by the watcher, like volume.
+    Player(Option<String>),
 }
 
 impl Probe {
@@ -68,6 +77,7 @@ impl Probe {
             // Never used: the Hyprland listener feeds it.
             Probe::Workspace => Duration::from_secs(1),
             Probe::AppVolume(_) => Duration::from_secs(1),
+            Probe::Player(_) => Duration::from_secs(1),
         }
     }
 
@@ -77,6 +87,7 @@ impl Probe {
         match self {
             Probe::Volume(_) => &VOLUME_REFRESH,
             Probe::Command { .. } | Probe::Output { .. } => &COMMAND_REFRESH,
+            Probe::Player(_) => &PLAYER_REFRESH,
             // Nothing sends `Refresh` for an app: its own changes are read back at once.
             Probe::Clock { .. }
             | Probe::Cpu
@@ -127,6 +138,20 @@ pub enum Value {
     Battery { percent: u8, charging: bool },
     /// One app's streams added up.
     App(AppLevel),
+    /// The media player's track, nothing playing, or why it can't be read.
+    Player(PlayerRead),
+}
+
+impl Value {
+    /// Whether `newer` says the same as `self`, for "send / store only on change".
+    /// Players compare with `player::same` (a moving position is not a change); all
+    /// other values compare with `==`.
+    pub fn same_as(&self, newer: &Value) -> bool {
+        match (self, newer) {
+            (Value::Player(Ok(a)), Value::Player(Ok(b))) => player::same(a.as_ref(), b.as_ref()),
+            (a, b) => a == b,
+        }
+    }
 }
 
 /// Everything the panels show: the last value of each probe, and the panel brightness.
@@ -163,7 +188,7 @@ pub fn live_show(live: &Live, values: &Values) -> Option<LiveShow> {
         Value::Battery { percent, charging } => {
             Some(LiveShow { text: format!("{percent}%"), bar: Some(*percent as f32 / 100.0), charging: *charging })
         }
-        Value::Level(_) | Value::Toggle(_) | Value::App(_) => None,
+        Value::Level(_) | Value::Toggle(_) | Value::App(_) | Value::Player(_) => None,
     }
 }
 
@@ -190,9 +215,61 @@ pub fn dial_status(dial: Option<&DialConfig>, values: &Values, pressed: bool) ->
                 panel.level = level;
             }
         }
-        Some(LevelSource::Player) | None => {}
+        // Anchored at the read: no clock here, so the panel only changes with the value.
+        Some(LevelSource::Player) => panel.media = media_show(dial, values),
+        None => {}
     }
     DialStatus { pressed, panel }
+}
+
+/// What a media dial's panel shows: the track the dial's player probe last read, a
+/// "nothing playing" or a note, or `None` before the first read.
+pub fn media_show(dial: Option<&DialConfig>, values: &Values) -> Option<MediaShow> {
+    let wanted = Probe::Player(dial.and_then(DialConfig::media_player).map(str::to_string));
+    match values.probes.get(&wanted) {
+        Some(Value::Player(Ok(Some(t)))) => Some(t.show()),
+        Some(Value::Player(Ok(None))) => Some(MediaShow::default()),
+        Some(Value::Player(Err(note))) => Some(MediaShow { note: note.clone(), ..MediaShow::default() }),
+        _ => None,
+    }
+}
+
+/// The player a media action names: its own `player`, trimmed, when not blank; else, for an
+/// action on a dial, the player the dial's panel follows (`DialConfig::media_player`), so
+/// the panel and the dial's actions follow the same player. `None`: whatever plays.
+pub fn media_wanted<'a>(player: Option<&'a str>, dial: Option<&'a DialConfig>) -> Option<&'a str> {
+    player.map(str::trim).filter(|p| !p.is_empty()).or_else(|| dial.and_then(DialConfig::media_player))
+}
+
+/// Where a media action goes, from [`media_target`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MediaSend {
+    /// Send it to this `playerctl --player` instance or name; `None`: untargeted
+    /// (Omarchy's own command, or playerctl's choice).
+    To(Option<String>),
+    /// A seek while the player probe, watched, read "nothing playing": dropped.
+    NothingToSeek,
+}
+
+/// Where a media action goes. The one targeting rule; the daemon follows it for every
+/// media action, and the offline path (no values, nothing watched) gets rule 3.
+///
+/// 1. `wanted` (from [`media_wanted`]) names the player: the action's own, or its dial's.
+/// 2. If `Probe::Player(wanted)` is in `watched` and has read a track, the action goes to
+///    the instance that read shows (the one its panel or key shows). A value of a probe no
+///    longer watched is kept for faces but never targeted: it was read on another page and
+///    may name an instance that's gone.
+/// 3. Otherwise it goes to `wanted` as given, untargeted when `None`.
+/// 4. A seek (`seek`) is dropped only when that watched probe read "nothing playing"; with
+///    nothing known it is sent per 2–3, as without the daemon.
+pub fn media_target(values: &Values, watched: &[Probe], wanted: Option<&str>, seek: bool) -> MediaSend {
+    let probe = Probe::Player(wanted.map(str::to_string));
+    let read = if watched.contains(&probe) { values.probes.get(&probe) } else { None };
+    match read {
+        Some(Value::Player(Ok(Some(t)))) if !t.player.is_empty() => MediaSend::To(Some(t.player.clone())),
+        Some(Value::Player(Ok(None))) if seek => MediaSend::NothingToSeek,
+        _ => MediaSend::To(wanted.map(str::to_string)),
+    }
 }
 
 /// The face and level of an app volume panel. `lv` is the watcher's value, `None`
@@ -241,6 +318,7 @@ pub fn shows(dial: Option<&DialConfig>, probe: &Probe) -> bool {
     match (dial.and_then(DialConfig::level_source), probe) {
         (Some(LevelSource::Volume(dev)), Probe::Volume(p)) => dev == *p,
         (Some(LevelSource::App), Probe::AppVolume(q)) => dial.and_then(DialConfig::app_query).as_ref() == Some(q),
+        (Some(LevelSource::Player), Probe::Player(w)) => dial.and_then(DialConfig::media_player) == w.as_deref(),
         _ => false,
     }
 }
@@ -254,6 +332,8 @@ pub fn key_status(key: Option<&KeyConfig>, values: &Values, pressed: bool) -> Ke
         Some(p) => match values.probes.get(&p) {
             Some(Value::Toggle(t)) => t.clone(),
             Some(Value::Level(l)) if l.muted => Toggle::On, // "on" for a mute key is muted
+            // "on" for a play/pause key is playing: its on face shows the pause glyph.
+            Some(Value::Player(Ok(Some(t)))) if t.status == PlayStatus::Playing => Toggle::On,
             _ => Toggle::Off,
         },
         None => Toggle::Off,
@@ -333,7 +413,10 @@ pub fn watched_probes(cfg: &Config, page: Option<&str>, n_dials: usize, n_keys: 
                     add(Probe::AppVolume(q));
                 }
             }
-            Some(LevelSource::Brightness | LevelSource::Player) | None => {}
+            Some(LevelSource::Player) => {
+                add(Probe::Player(dial.and_then(DialConfig::media_player).map(str::to_string)))
+            }
+            Some(LevelSource::Brightness) | None => {}
         }
         if let Some(l) = dial.and_then(|d| d.live.as_ref()) {
             add(l.probe());
@@ -830,5 +913,184 @@ live = { source = "workspace" }
         assert_eq!(key_status(Some(&KeyConfig::new(0)), &values, false).live, None);
         let d = DialConfig { live: Some(Live::Workspace), ..DialConfig::new(0) };
         assert_eq!(dial_status(Some(&d), &values, false).panel.live.unwrap().text, "3");
+    }
+
+    fn media_track(status: player::PlayStatus, position_ms: u64, read_ms: u64) -> player::Track {
+        player::Track {
+            player: "spotify".into(),
+            name: "spotify".into(),
+            status,
+            position_ms,
+            length_ms: Some(225_000),
+            title: "Song".into(),
+            artist: "Band".into(),
+            art: None,
+            art_img: None,
+            read_ms,
+        }
+    }
+
+    #[test]
+    fn dial_status_shows_paused_track() {
+        let dial = DialConfig {
+            label: "Media".into(),
+            press: Action::Media { command: crate::MediaCommand::PlayPause, seek: 0, player: None },
+            ..DialConfig::new(0)
+        };
+        let track = player::Track {
+            player: "spotify".into(),
+            name: "spotify".into(),
+            status: player::PlayStatus::Paused,
+            position_ms: 83_000,
+            length_ms: Some(225_000),
+            title: "Song".into(),
+            artist: "Band".into(),
+            art: None,
+            art_img: None,
+            read_ms: 1_000,
+        };
+        let mut values = Values::default();
+        values.probes.insert(Probe::Player(None), Value::Player(Ok(Some(track))));
+        let st = dial_status(Some(&dial), &values, false);
+        let m = st.panel.media.expect("a media panel");
+        assert_eq!((m.title.as_str(), m.artist.as_str(), m.playing), ("Song", "Band", false));
+        assert_eq!((m.position_ms, m.as_of_ms), (83_000, 1_000), "anchored at the read, not advanced");
+        assert!(st.panel.level.is_none());
+        assert!(shows(Some(&dial), &Probe::Player(None)));
+        assert!(!shows(Some(&dial), &Probe::Player(Some("mpv".into()))));
+        // No value yet: no media model, the renderer draws the dashes.
+        assert!(dial_status(Some(&dial), &Values::default(), false).panel.media.is_none());
+        // Nothing playing, and no playerctl.
+        values.probes.insert(Probe::Player(None), Value::Player(Ok(None)));
+        assert_eq!(dial_status(Some(&dial), &values, false).panel.media, Some(MediaShow::default()));
+        values.probes.insert(Probe::Player(None), Value::Player(Err("Needs playerctl".into())));
+        assert_eq!(dial_status(Some(&dial), &values, false).panel.media.unwrap().note, "Needs playerctl");
+        // Other dials carry no media.
+        assert!(dial_status(Some(&volume_dial(0, AudioDevice::Output)), &values, false).panel.media.is_none());
+    }
+
+    #[test]
+    fn value_same_as_player_and_others() {
+        let l = |v: f32| Value::Level(Level { value: v, text: String::new(), muted: false });
+        assert!(l(0.5).same_as(&l(0.5)));
+        assert!(!l(0.5).same_as(&l(0.6)), "a level change is a change");
+        let playing = |pos, read| Value::Player(Ok(Some(media_track(player::PlayStatus::Playing, pos, read))));
+        assert!(playing(10_000, 1_000).same_as(&playing(11_000, 2_000)), "a playing tick is not a change");
+        assert!(playing(10_000, 1_000) != playing(11_000, 2_000), "though == says it is");
+        assert!(!playing(10_000, 1_000).same_as(&playing(60_000, 2_000)), "a seek is");
+        assert!(!playing(10_000, 1_000).same_as(&Value::Player(Ok(None))));
+        assert!(Value::Player(Ok(None)).same_as(&Value::Player(Ok(None))));
+        assert!(Value::Player(Err("x".into())).same_as(&Value::Player(Err("x".into()))));
+        assert!(!Value::Player(Err("x".into())).same_as(&Value::Player(Ok(None))));
+    }
+
+    #[test]
+    fn media_target_prefers_shown_player() {
+        use MediaSend::*;
+        let mut values = Values::default();
+        let any = Probe::Player(None);
+        let spot = Probe::Player(Some("spotify".into()));
+        let watched = [any.clone(), spot.clone()];
+        assert_eq!(media_target(&values, &watched, None, false), To(None), "nothing known: untargeted");
+        assert_eq!(media_target(&values, &watched, Some("spotify"), false), To(Some("spotify".into())));
+        let mut t = media_track(player::PlayStatus::Playing, 0, 0);
+        t.player = "chromium.instance4821".into();
+        values.probes.insert(any.clone(), Value::Player(Ok(Some(t.clone()))));
+        assert_eq!(media_target(&values, &watched, None, false), To(Some("chromium.instance4821".into())));
+        assert_eq!(media_target(&values, &watched, None, true), To(Some("chromium.instance4821".into())));
+        // A pinned dial reads its own probe.
+        assert_eq!(media_target(&values, &watched, Some("spotify"), false), To(Some("spotify".into())));
+        t.player = "spotify.instance2".into();
+        values.probes.insert(spot, Value::Player(Ok(Some(t))));
+        assert_eq!(media_target(&values, &watched, Some("spotify"), false), To(Some("spotify.instance2".into())));
+        values.probes.insert(any, Value::Player(Ok(None)));
+        assert_eq!(media_target(&values, &watched, None, false), To(None), "nothing playing: untargeted");
+        assert_eq!(media_target(&values, &watched, None, true), NothingToSeek);
+    }
+
+    // A value read on another page (its probe no longer watched) is never the target.
+    #[test]
+    fn media_target_ignores_a_probe_no_longer_watched() {
+        let mut values = Values::default();
+        let mut t = media_track(player::PlayStatus::Playing, 0, 0);
+        t.player = "chromium.instance4821".into();
+        values.probes.insert(Probe::Player(None), Value::Player(Ok(Some(t))));
+        assert_eq!(media_target(&values, &[], None, false), MediaSend::To(None));
+        values.probes.insert(Probe::Player(None), Value::Player(Ok(None)));
+        assert_eq!(media_target(&values, &[], None, true), MediaSend::To(None), "and doesn't drop a seek");
+    }
+
+    // A seek key with nothing watching the player seeks untargeted.
+    #[test]
+    fn media_seek_with_nothing_watched_is_sent_untargeted() {
+        let values = Values::default();
+        assert_eq!(media_target(&values, &[], None, true), MediaSend::To(None));
+        assert_eq!(media_target(&values, &[Probe::Player(None)], None, true), MediaSend::To(None), "not read yet");
+        assert_eq!(media_target(&values, &[], Some("mpv"), true), MediaSend::To(Some("mpv".into())));
+    }
+
+    // A dial's action with no player follows the dial's panel.
+    #[test]
+    fn media_wanted_falls_back_to_the_dial() {
+        let dial = DialConfig {
+            turn_right: Action::Media { command: crate::MediaCommand::Next, seek: 5, player: Some("spotify".into()) },
+            press: Action::Media { command: crate::MediaCommand::PlayPause, seek: 0, player: None },
+            ..DialConfig::new(0)
+        };
+        assert_eq!(media_wanted(None, Some(&dial)), Some("spotify"));
+        assert_eq!(media_wanted(Some("  "), Some(&dial)), Some("spotify"));
+        assert_eq!(media_wanted(Some(" mpv "), Some(&dial)), Some("mpv"));
+        assert_eq!(media_wanted(None, None), None, "a key: whatever plays");
+        assert_eq!(media_wanted(Some(" mpv "), None), Some("mpv"));
+    }
+
+    #[test]
+    fn watched_probes_include_media_dials() {
+        let media = |index: u8, player: Option<&str>| DialConfig {
+            press: Action::Media { command: crate::MediaCommand::PlayPause, seek: 0, player: player.map(Into::into) },
+            ..DialConfig::new(index)
+        };
+        let cfg = Config {
+            dials: vec![
+                media(0, None),
+                volume_dial(1, AudioDevice::Output),
+                media(2, Some(" spotify ")),
+                media(3, None),
+            ],
+            ..Config::default()
+        };
+        assert_eq!(
+            watched_probes(&cfg, None, 4, 8),
+            vec![Probe::Player(None), Probe::Volume(AudioDevice::Output), Probe::Player(Some("spotify".into())),]
+        );
+    }
+
+    #[test]
+    fn play_pause_key_follows_player() {
+        let k = KeyConfig {
+            action: Action::Media { command: crate::MediaCommand::PlayPause, seek: 0, player: None },
+            on: Some(crate::OnFace { label: Some("Pause".into()), ..Default::default() }),
+            ..KeyConfig::new(0)
+        };
+        assert_eq!(k.state_probe(), Some(Probe::Player(None)));
+        assert!(!k.is_press_toggle());
+        let mut values = Values::default();
+        assert_eq!(key_status(Some(&k), &values, false).state, Toggle::Off);
+        values
+            .probes
+            .insert(Probe::Player(None), Value::Player(Ok(Some(media_track(player::PlayStatus::Playing, 0, 0)))));
+        assert_eq!(key_status(Some(&k), &values, false).state, Toggle::On);
+        values
+            .probes
+            .insert(Probe::Player(None), Value::Player(Ok(Some(media_track(player::PlayStatus::Paused, 0, 0)))));
+        assert_eq!(key_status(Some(&k), &values, false).state, Toggle::Off);
+        // Next, or a seek, is not a toggle source.
+        let next = KeyConfig {
+            action: Action::Media { command: crate::MediaCommand::Next, seek: 0, player: None },
+            ..k.clone()
+        };
+        assert_eq!(next.state_probe(), None);
+        // Without an on face there's nothing to follow.
+        assert_eq!(KeyConfig { on: None, ..k }.state_probe(), None);
     }
 }

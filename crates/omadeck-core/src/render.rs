@@ -53,6 +53,9 @@ pub struct PanelStatus {
     /// The app on an app volume panel; its level is in `level`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub app: Option<AppShow>,
+    /// The track on a media panel; `None` before the first read or with no daemon.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub media: Option<MediaShow>,
 }
 
 /// The app on an app volume panel.
@@ -1557,6 +1560,7 @@ mod tests {
                 level: Some(Level { value: v, text: if muted { "Muted".into() } else { "50%".into() }, muted }),
                 live: None,
                 app: None,
+                media: None,
             },
         }
     }

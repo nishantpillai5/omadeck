@@ -153,6 +153,7 @@ pub fn build_key(app: &Rc<App>, i: u8) -> gtk::Widget {
                 StateChoice::Press => "Flips on each press",
                 StateChoice::Command => "Shell command",
                 StateChoice::Mute => "Follows mute",
+                StateChoice::Player => "Follows the player",
             })
             .collect();
         let list = gtk::StringList::new(&names);
