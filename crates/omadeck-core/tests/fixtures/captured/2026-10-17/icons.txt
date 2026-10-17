@@ -1,0 +1,37 @@
+# hicolor apps matching spotify|firefox|chromium|mpv
+/usr/share/icons/hicolor/128x128/apps/chromium.png
+/usr/share/icons/hicolor/128x128/apps/mpv.png
+/usr/share/icons/hicolor/16x16/apps/chromium.png
+/usr/share/icons/hicolor/16x16/apps/mpv.png
+/usr/share/icons/hicolor/24x24/apps/chromium.png
+/usr/share/icons/hicolor/256x256/apps/chromium.png
+/usr/share/icons/hicolor/32x32/apps/chromium.png
+/usr/share/icons/hicolor/32x32/apps/mpv.png
+/usr/share/icons/hicolor/48x48/apps/chromium.png
+/usr/share/icons/hicolor/64x64/apps/chromium.png
+/usr/share/icons/hicolor/64x64/apps/mpv.png
+/usr/share/icons/hicolor/scalable/apps/mpv.svg
+/usr/share/icons/hicolor/symbolic/apps/mpv-symbolic.svg
+
+# Icon= lines
+/usr/share/applications/chromium.desktop:Icon=chromium
+/usr/share/applications/mpv.desktop:Icon=mpv
+/home/noobaf/.local/share/applications/Basecamp.desktop:Icon=basecamp
+/home/noobaf/.local/share/applications/dev.omadeck.Omadeck.desktop:Icon=dev.omadeck.Omadeck
+/home/noobaf/.local/share/applications/Discord.desktop:Icon=omarchy-discord
+/home/noobaf/.local/share/applications/Disk Usage.desktop:Icon=disk-usage
+/home/noobaf/.local/share/applications/Docker.desktop:Icon=docker
+/home/noobaf/.local/share/applications/foot.desktop:Icon=foot
+/home/noobaf/.local/share/applications/Google Contacts.desktop:Icon=google-contacts
+/home/noobaf/.local/share/applications/Google Maps.desktop:Icon=google-maps
+/home/noobaf/.local/share/applications/Google Messages.desktop:Icon=google-messages
+/home/noobaf/.local/share/applications/Google Photos.desktop:Icon=google-photos
+/home/noobaf/.local/share/applications/HEY.desktop:Icon=hey
+/home/noobaf/.local/share/applications/imv.desktop:Icon=imv
+/home/noobaf/.local/share/applications/mpv.desktop:Icon=mpv
+/home/noobaf/.local/share/applications/Valheim.desktop:Icon=steam_icon_892970
+/home/noobaf/.local/share/applications/WhatsApp.desktop:Icon=whatsapp
+/home/noobaf/.local/share/applications/X.desktop:Icon=x
+/home/noobaf/.local/share/applications/YouTube.desktop:Icon=youtube
+/home/noobaf/.local/share/applications/Zoom.desktop:Icon=zoom
+(none)

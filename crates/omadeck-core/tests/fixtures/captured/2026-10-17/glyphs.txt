@@ -1,0 +1,5 @@
+# fc-list ':charset=f056e' family
+JetBrainsMono Nerd Font,JetBrainsMono NF
+live keys (f0150 f061a f035b f0079 f0084 f056e f018d): yes
+app volume (f08c6): yes
+media (f040a f03e4 f04ad f04ae f04db f075a): yes

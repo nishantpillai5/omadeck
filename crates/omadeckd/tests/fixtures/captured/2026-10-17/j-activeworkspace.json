@@ -1,0 +1,12 @@
+{
+    "id": 1,
+    "name": "1",
+    "monitor": "DP-2",
+    "monitorID": 0,
+    "windows": 3,
+    "hasfullscreen": false,
+    "lastwindow": "0x55fc9d652d80",
+    "lastwindowtitle": "omarchy:omadeck",
+    "ispersistent": false,
+    "tiledLayout": "dwindle"
+}
