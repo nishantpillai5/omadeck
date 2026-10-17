@@ -37,7 +37,6 @@ use omadeck_core::proc::Job;
 use omadeck_core::{AudioDevice, action, audio, live, sysinfo};
 
 /// A message the deck loop sends the watcher.
-#[allow(dead_code)] // `Focus` and `AppVolume` are sent from task G
 #[derive(Debug, Clone, PartialEq)]
 pub enum WatchCmd {
     /// The complete set to read from now on (replaces the previous set).
