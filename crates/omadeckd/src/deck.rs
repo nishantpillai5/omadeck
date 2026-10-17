@@ -14,6 +14,34 @@ use omadeck_core::{Config, DeckInfo, DialStatus, KeyStatus, PANEL_W, Renderer};
 pub const DIAL_FLASH: Duration = Duration::from_millis(150);
 /// How long a key stays drawn pressed after a ctl press.
 pub const KEY_FLASH: Duration = Duration::from_millis(150);
+/// How long a Back key is held before it goes Home instead (Elgato's "hold to exit";
+/// its time isn't documented).
+pub const BACK_HOLD: Duration = Duration::from_millis(500);
+
+/// A key whose press would run `Back` that's down. Back waits for the release, so
+/// holding it can go Home instead.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BackHold {
+    pub key: u8,
+    pub since: Instant,
+}
+
+impl BackHold {
+    /// When holding turns into "go Home".
+    pub fn deadline(&self) -> Instant {
+        self.since + BACK_HOLD
+    }
+}
+
+/// What a page move or a reload does to the keys held down. A held Back is dropped, so
+/// its release runs nothing: the key under the finger may be another one now. When the
+/// page `moved`, every key is drawn released too; its release then only repaints it.
+pub fn forget_holds(back_held: &mut Option<BackHold>, key_pressed: &mut [bool], moved: bool) {
+    *back_held = None;
+    if moved {
+        key_pressed.fill(false);
+    }
+}
 
 pub struct Deck {
     pub dev: Arc<StreamDeck>,
@@ -22,6 +50,10 @@ pub struct Deck {
     pub info: DeckInfo,
     /// Whether each dial is physically pressed down.
     pub dial_pressed: Vec<bool>,
+    /// Whether each key is physically held down (ButtonDown to ButtonUp).
+    pub key_pressed: Vec<bool>,
+    /// The Back key being held, until it's released or goes Home.
+    pub back_held: Option<BackHold>,
     /// When each dial's panel was tapped (the tap time, not a deadline), while it flashes.
     pub flash_until: Vec<Option<Instant>>,
     /// When each key was pressed through the socket (the press time, as `flash_until`),
@@ -48,6 +80,14 @@ impl Deck {
         let n = i as usize;
         let flashed = self.flash_until.get(n).and_then(|t| *t).is_some_and(|t| now.duration_since(t) < DIAL_FLASH);
         self.dial_pressed.get(n).copied().unwrap_or(false) || flashed
+    }
+
+    /// Whether key `i` is drawn pressed: held down, or still flashing after a ctl press
+    /// (`key_flash`; `expire_key_flashes` clears it when it ends).
+    pub fn key_held(&self, i: u8) -> bool {
+        let n = i as usize;
+        let flashed = self.key_flash.get(n).is_some_and(Option::is_some);
+        self.key_pressed.get(n).copied().unwrap_or(false) || flashed
     }
 
     /// Mark dial `i`'s panel for the end-of-pass paint.
@@ -129,6 +169,8 @@ pub fn open(hid: &mut HidApi) -> Option<Deck> {
         kind,
         info,
         dial_pressed: vec![false; n_dials],
+        key_pressed: vec![false; n_keys],
+        back_held: None,
         flash_until: vec![None; n_dials],
         key_flash: vec![None; n_keys],
         dirty_panels: vec![false; n_dials],
@@ -253,6 +295,19 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_reload_drops_a_held_back_and_a_page_move_releases_the_keys() {
+        // A reload that moved the page while Back was held ran key `i` of the new page on
+        // release, and left it drawn pressed.
+        let hold = || Some(BackHold { key: 2, since: Instant::now() });
+        let (mut back, mut pressed) = (hold(), vec![false, false, true]);
+        forget_holds(&mut back, &mut pressed, false);
+        assert_eq!((back, pressed.as_slice()), (None, &[false, false, true][..]), "same page: still drawn down");
+        let (mut back, mut pressed) = (hold(), vec![false, false, true]);
+        forget_holds(&mut back, &mut pressed, true);
+        assert_eq!((back, pressed.as_slice()), (None, &[false, false, false][..]));
+    }
+
+    #[test]
     fn key_flashes_end_after_their_time() {
         let t0 = Instant::now();
         let ms = Duration::from_millis;
@@ -261,5 +316,11 @@ mod tests {
         assert_eq!(take_ended(&mut flashes, t0 + ms(150), KEY_FLASH), vec![0]);
         assert_eq!(flashes, vec![None, None, Some(t0 + ms(100))]);
         assert_eq!(take_ended(&mut flashes, t0 + ms(250), KEY_FLASH), vec![2]);
+    }
+
+    #[test]
+    fn back_hold_deadline() {
+        let t = Instant::now();
+        assert_eq!(BackHold { key: 0, since: t }.deadline(), t + BACK_HOLD);
     }
 }
