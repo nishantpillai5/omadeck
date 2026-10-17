@@ -66,8 +66,10 @@ pub struct Level {
 /// `serde(default)` and skipped when default, so fields can be added (PR 9: `live`).
 #[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct KeyStatus {
+    /// Drawn with the press ring.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub pressed: bool,
+    /// Off, on or busy; drawn by `KeyConfig::face_for`.
     #[serde(default, skip_serializing_if = "crate::probe::Toggle::is_off")]
     pub state: crate::probe::Toggle,
 }

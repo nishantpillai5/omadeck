@@ -10,12 +10,12 @@ All notable changes to omadeck are documented here. The format follows
 - Toggle keys: a second face (`[key.on]`) that follows real state — a shell command's
   exit status polled in the background (exit 0 = on, 75 = busy with a progress line,
   else off), the mute a volume mute key already changes, or a flip on each press. A
-  `slow = true` toggle shows busy at once and polls fast until the state moves; `[key.busy]
-  bar = true` draws a progress bar from the last `NN%`. Any key running a command or
-  script can set `busy_while_running = true` to look busy for as long as it runs (the
-  command keeps running if the daemon stops). The configurator mirrors what the deck
-  shows, edits each face in its own tab, and has toggle presets: mic mute, output
-  mute, night light, stay awake, do-not-disturb, bluetooth, and a service… dialog.
+  `slow = true` toggle shows busy at once and polls fast until the state moves (at most 15
+  seconds); `[key.busy] bar = true` draws a progress bar from the first `NN%`. Any key
+  running a command or script can set `busy_while_running = true` to look busy for as long
+  as it runs (the command keeps running if the daemon stops). The configurator mirrors
+  what the deck shows, edits each face in its own tab, and has toggle presets: mic mute,
+  output mute, night light, stay awake, do-not-disturb, bluetooth, and a service… dialog.
 - Pages and folders. Extra pages live in `[[page]]` tables (top-level keys stay the Home page),
   with two new actions: `page` opens a page by name and `back` returns to the previous one.
   The configurator gets a page switcher (new, rename, delete), and "New page" on a key builds a
@@ -58,6 +58,7 @@ All notable changes to omadeck are documented here. The format follows
   panel's look.
 
 ### Fixed
+- Hyprland actions never hold up the deck.
 - Replugging a smaller deck no longer leaves the configurator editing a key or dial the
   hardware doesn't have.
 - A colour value with a non-ASCII character (in the config or the Omarchy theme) crashed the
