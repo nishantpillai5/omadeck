@@ -119,6 +119,8 @@ pub enum Target {
     Strip,
 }
 
+// One message at a time through the channel: boxing `Event` would buy nothing.
+#[allow(clippy::large_enum_variant)]
 enum Msg {
     DaemonUp(ipc::Sender),
     DaemonDown,
