@@ -1198,7 +1198,10 @@ slow = true
 
     #[test]
     fn old_config_writes_no_toggle_fields() {
-        let c = Config::parse(include_str!("../../../examples/config.toml")).unwrap();
+        // The example's first toggle key is a live example; "old" means the part of the
+        // file before it (what the config looked like before this PR).
+        let src = include_str!("../../../examples/config.toml");
+        let c = Config::parse(&src[..src.find("[[key]]\nindex = 10").unwrap()]).unwrap();
         let out = toml::to_string_pretty(&c).unwrap();
         assert!(!out.contains("[key.on]"), "{}", out);
         assert!(!out.contains("[key.busy]"));
@@ -1750,6 +1753,7 @@ slow = true
         let s = include_str!("../../../examples/config.toml");
         let c: Config = toml::from_str(s).unwrap();
         assert!(!c.keys.is_empty());
+        assert!(c.keys.iter().any(|k| k.on.is_some()), "the example shows a toggle key");
     }
 
     #[test]
