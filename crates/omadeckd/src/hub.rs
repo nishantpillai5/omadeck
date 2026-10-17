@@ -1,8 +1,10 @@
 //! Talks to configurator windows over the Unix socket: broadcasts daemon events to all of
-//! them and collects the commands they send.
+//! them, collects the commands they send, and carries each control command's reply back
+//! to the client that sent it.
 
 use std::collections::BTreeMap;
-use std::io::Write;
+use std::io::{BufRead, BufReader, Read, Write};
+use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;
 use std::sync::mpsc::{self, SyncSender, TrySendError};
@@ -10,7 +12,7 @@ use std::sync::{Arc, Mutex};
 
 use anyhow::{Context, Result};
 use omadeck_core::KeyStatus;
-use omadeck_core::ipc::{self, Command, Event};
+use omadeck_core::ipc::{self, Command, Event, Reply};
 
 /// Lines queued per client. A client this far behind loses events, never the deck loop's
 /// time and never its connection.
@@ -19,7 +21,35 @@ const CLIENT_QUEUE: usize = 256;
 pub struct Hub {
     path: PathBuf,
     inner: Arc<Mutex<Inner>>,
-    commands: mpsc::Receiver<Command>,
+    commands: mpsc::Receiver<Request>,
+}
+
+/// One command from a client, with the way back to that client.
+pub struct Request {
+    pub cmd: Command,
+    pub reply: ReplyTo,
+}
+
+/// A client's queue to its writer thread (the same one events go into), and a handle to
+/// close its socket.
+#[derive(Clone)]
+pub struct ReplyTo {
+    queue: SyncSender<Arc<str>>,
+    stream: Arc<UnixStream>,
+}
+
+impl ReplyTo {
+    /// Queue a reply line. Never blocks the loop, and never drops a reply silently: if the
+    /// client's queue is full, the client is disconnected (its CLI then says "daemon busy").
+    pub fn send(&self, r: &Reply) {
+        match self.queue.try_send(r.to_line().into()) {
+            Ok(()) | Err(TrySendError::Disconnected(_)) => {}
+            Err(TrySendError::Full(_)) => {
+                log::warn!("a client isn't reading; closing its connection so the reply isn't lost");
+                let _ = self.stream.shutdown(std::net::Shutdown::Both);
+            }
+        }
+    }
 }
 
 struct Inner {
@@ -82,6 +112,9 @@ impl Hub {
     pub fn start(path: PathBuf) -> Result<Self> {
         let _ = std::fs::remove_file(&path);
         let listener = UnixListener::bind(&path).with_context(|| format!("binding {}", path.display()))?;
+        // The runtime dir is already 0700; the socket accepts commands, so make it explicit.
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))
+            .with_context(|| format!("restricting {}", path.display()))?;
         let inner = Arc::new(Mutex::new(Inner {
             clients: Vec::new(),
             replay: Replay {
@@ -96,17 +129,14 @@ impl Hub {
         let shared = inner.clone();
         std::thread::Builder::new().name("ipc".into()).spawn(move || {
             for stream in listener.incoming().flatten() {
-                // The queue first: PR 11's reader sends replies into it.
+                // The queue first: the reader sends replies into it.
                 let (queue, lines) = mpsc::sync_channel::<Arc<str>>(CLIENT_QUEUE);
-                if let Ok(reader) = stream.try_clone() {
+                if let (Ok(reader), Ok(closer)) = (stream.try_clone(), stream.try_clone()) {
                     let tx = tx.clone();
-                    let _ = std::thread::Builder::new().name("ipc-client".into()).spawn(move || {
-                        for cmd in ipc::commands(reader) {
-                            if tx.send(cmd).is_err() {
-                                break;
-                            }
-                        }
-                    });
+                    let reply = ReplyTo { queue: queue.clone(), stream: Arc::new(closer) };
+                    let _ = std::thread::Builder::new()
+                        .name("ipc-client".into())
+                        .spawn(move || read_requests(reader, reply, tx));
                 }
                 let mut g = shared.lock().unwrap();
                 // Queued under the lock, so nothing published meanwhile can overtake it.
@@ -133,13 +163,44 @@ impl Hub {
         });
     }
 
-    /// Commands received since the last call.
-    pub fn commands(&self) -> mpsc::TryIter<'_, Command> {
+    /// Commands received since the last call, each with the way back to its client.
+    pub fn commands(&self) -> mpsc::TryIter<'_, Request> {
         self.commands.try_iter()
     }
 
     pub fn shutdown(self) {
         let _ = std::fs::remove_file(&self.path);
+    }
+}
+
+/// The `ipc-client` thread's body: read command lines, hand them to the loop, answer
+/// parse errors itself. Ends when the client hangs up, sends a line longer than
+/// `ipc::MAX_LINE`, or the loop is gone.
+fn read_requests(stream: UnixStream, reply: ReplyTo, tx: mpsc::Sender<Request>) {
+    let mut reader = BufReader::new(stream);
+    let mut line = String::new();
+    loop {
+        line.clear();
+        match (&mut reader).take(ipc::MAX_LINE as u64 + 1).read_line(&mut line) {
+            Ok(0) | Err(_) => return,
+            Ok(_) => {}
+        }
+        if line.len() > ipc::MAX_LINE {
+            reply.send(&Reply::error("command too long"));
+            return;
+        }
+        if line.trim().is_empty() {
+            continue;
+        }
+        match ipc::parse_command(&line) {
+            Ok(cmd) => {
+                if tx.send(Request { cmd, reply: reply.clone() }).is_err() {
+                    return;
+                }
+            }
+            // Through the writer like any reply: only it writes to the socket.
+            Err(msg) => reply.send(&Reply::error(msg)),
+        }
     }
 }
 
@@ -160,6 +221,55 @@ mod tests {
     use super::*;
     use std::io::{BufRead, BufReader};
     use std::time::{Duration, Instant};
+
+    #[test]
+    fn a_full_queue_disconnects_instead_of_dropping_the_reply() {
+        // No socket file needed: a connected pair stands in for the client.
+        let (ours, mut theirs) = UnixStream::pair().unwrap();
+        let (queue, _lines) = mpsc::sync_channel::<Arc<str>>(1);
+        queue.try_send("{\"event\":\"disconnected\"}\n".into()).unwrap(); // full now
+        let reply = ReplyTo { queue, stream: Arc::new(ours) };
+        reply.send(&Reply::ok("page Media"));
+        theirs.set_read_timeout(Some(Duration::from_secs(1))).unwrap();
+        let mut buf = String::new();
+        assert_eq!(theirs.read_to_string(&mut buf).unwrap(), 0, "the client sees EOF at once, not a timeout");
+    }
+
+    /// Wait up to 3 s for the next request to reach the loop.
+    fn next_request(hub: &Hub) -> Request {
+        let start = Instant::now();
+        loop {
+            if let Some(r) = hub.commands().next() {
+                return r;
+            }
+            assert!(start.elapsed() < Duration::from_secs(3), "no command arrived");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    #[test]
+    fn command_reply_over_socket() {
+        let path = socket("reply");
+        let hub = Hub::start(path.clone()).unwrap();
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600);
+        let mut client = UnixStream::connect(&path).unwrap();
+        client.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+        client.write_all(Command::State.to_line().as_bytes()).unwrap();
+        let req = next_request(&hub);
+        assert_eq!(req.cmd, Command::State);
+        let state = Reply::State { deck: None, page: None, pages: vec![], brightness: 40 };
+        req.reply.send(&state);
+        // The replay comes first and is skipped.
+        assert_eq!(ipc::read_reply(BufReader::new(client)).unwrap(), state);
+        // A command this daemon doesn't know is answered by the reader itself.
+        let mut other = UnixStream::connect(&path).unwrap();
+        other.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+        other.write_all(b"{\"command\":\"explode\"}\n").unwrap();
+        let r = ipc::read_reply(BufReader::new(other)).unwrap();
+        assert!(matches!(r, Reply::Error { .. }), "{r:?}");
+        hub.shutdown();
+    }
 
     fn socket(name: &str) -> PathBuf {
         std::env::temp_dir().join(format!("omadeck-{name}-{}.sock", std::process::id()))
