@@ -1,9 +1,14 @@
 //! Running a short command and waiting for it, with a time limit, so a hung tool (a
 //! `pactl` while PipeWire restarts, a stalled Hyprland) can never block whoever waits.
+//!
+//! [`Job`] is the other half: a child whose output is read on its own thread, for callers
+//! that must not block (the watcher's state commands, `busy_while_running` keys).
 
-use std::io::Read;
-use std::process::{Command, Output, Stdio};
-use std::sync::mpsc;
+use std::io::{Read, Result as IoResult};
+use std::os::unix::process::{CommandExt, ExitStatusExt};
+use std::process::{Child, Command, ExitStatus, Output, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, mpsc};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -50,6 +55,110 @@ pub fn output_timeout(cmd: &mut Command, timeout: Duration) -> Option<Output> {
         stdout: stdout.recv_timeout(left).unwrap_or_default(),
         stderr: stderr.recv_timeout(left).unwrap_or_default(),
     })
+}
+
+/// A child whose output is read line by line on its own thread, so polling it never
+/// blocks and a chatty command can't fill a pipe. The child runs in its own process
+/// group, so [`Job::kill_group`] takes a pipeline down with it.
+pub struct Job {
+    child: Child,
+    lines: mpsc::Receiver<String>,
+    reader_done: Arc<AtomicBool>,
+    exited: Option<(ExitStatus, Instant)>,
+    started: Instant,
+}
+
+/// Chars kept per output line.
+const LINE_MAX: usize = 64;
+/// Bytes buffered per line before cutting (so nothing grows unbounded).
+const PIECE_MAX: usize = 4096;
+/// Wait for output this long after the child exits (a background grandchild can hold
+/// the pipe open forever).
+pub const GRACE: Duration = Duration::from_millis(100);
+
+impl Job {
+    /// Spawn in its own process group; stdin and stderr null; stdout split into lines on
+    /// a helper thread ("job-out").
+    pub fn spawn(mut cmd: Command) -> IoResult<Job> {
+        cmd.stdin(Stdio::null()).stderr(Stdio::null()).stdout(Stdio::piped()).process_group(0);
+        let mut child = cmd.spawn()?;
+        let stdout = child.stdout.take().expect("stdout is piped");
+        let (tx, lines) = mpsc::channel();
+        let reader_done = Arc::new(AtomicBool::new(false));
+        let done = reader_done.clone();
+        thread::Builder::new().name("job-out".into()).spawn(move || {
+            read_lines(stdout, |l| {
+                let _ = tx.send(l);
+            });
+            done.store(true, Ordering::Release);
+        })?;
+        Ok(Job { child, lines, reader_done, exited: None, started: Instant::now() })
+    }
+
+    pub fn started(&self) -> Instant {
+        self.started
+    }
+
+    /// Lines that arrived since the last call.
+    pub fn lines(&self) -> mpsc::TryIter<'_, String> {
+        self.lines.try_iter()
+    }
+
+    /// The exit status once the child has exited and its output is read, or `GRACE` after
+    /// exit.
+    pub fn try_finish(&mut self) -> Option<ExitStatus> {
+        if self.exited.is_none() {
+            match self.child.try_wait() {
+                Ok(Some(s)) => self.exited = Some((s, Instant::now())),
+                Ok(None) => return None,
+                Err(_) => self.exited = Some((ExitStatus::from_raw(1 << 8), Instant::now())),
+            }
+        }
+        let (s, at) = self.exited?;
+        (self.reader_done.load(Ordering::Acquire) || at.elapsed() >= GRACE).then_some(s)
+    }
+
+    /// SIGKILL the whole process group, so a pipeline dies too, then reap.
+    pub fn kill_group(&mut self) {
+        if self.exited.is_none() {
+            unsafe { libc::killpg(self.child.id() as libc::pid_t, libc::SIGKILL) };
+            let _ = self.child.wait();
+            self.exited = Some((ExitStatus::from_raw(libc::SIGKILL), Instant::now()));
+        }
+    }
+}
+
+/// Split on `\n` **and** `\r` (progress bars redraw with `\r`), trim, skip empty pieces,
+/// keep `LINE_MAX` chars. A piece is cut at `PIECE_MAX` bytes, so nothing grows
+/// unbounded.
+fn read_lines(mut r: impl Read, mut each: impl FnMut(String)) {
+    let mut buf = [0u8; 4096];
+    let mut cur: Vec<u8> = Vec::new();
+    let mut emit = |cur: &mut Vec<u8>| {
+        let s = String::from_utf8_lossy(cur);
+        let t = s.trim();
+        if !t.is_empty() {
+            each(t.chars().take(LINE_MAX).collect());
+        }
+        cur.clear();
+    };
+    loop {
+        match r.read(&mut buf) {
+            Ok(0) => break,
+            Ok(n) => {
+                for &b in &buf[..n] {
+                    if b == b'\n' || b == b'\r' {
+                        emit(&mut cur);
+                    } else if cur.len() < PIECE_MAX {
+                        cur.push(b);
+                    }
+                }
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(_) => break,
+        }
+    }
+    emit(&mut cur);
 }
 
 /// Read a pipe to the end on a helper thread; the bytes arrive on the returned channel.
@@ -105,5 +214,16 @@ mod tests {
         // More than a pipe buffer (64 KiB): would deadlock if we read only after exit.
         let out = output_timeout(&mut sh("head -c 200000 /dev/zero"), Duration::from_secs(2)).unwrap();
         assert_eq!(out.stdout.len(), 200_000);
+    }
+
+    #[test]
+    fn read_lines_splits_on_cr_and_lf() {
+        let mut got = Vec::new();
+        read_lines(&b"one\r two \n\n\rthree"[..], |l| got.push(l));
+        assert_eq!(got, ["one", "two", "three"]);
+        let mut long = Vec::new();
+        read_lines(&[b'x'; 10_000][..], |l| long.push(l));
+        assert_eq!(long.len(), 1);
+        assert_eq!(long[0].chars().count(), 64, "cut to LINE_MAX");
     }
 }
