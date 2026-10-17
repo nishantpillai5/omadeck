@@ -197,17 +197,20 @@ fn read_requests(stream: UnixStream, reply: ReplyTo, tx: mpsc::Sender<Request>) 
 
 fn serve_requests(stream: UnixStream, reply: &ReplyTo, tx: mpsc::Sender<Request>) {
     let mut reader = BufReader::new(stream);
-    let mut line = String::new();
+    let mut bytes = Vec::new();
     loop {
-        line.clear();
-        match (&mut reader).take(ipc::MAX_LINE as u64 + 1).read_line(&mut line) {
+        bytes.clear();
+        // Bytes, decoded after: `read_line` fails on a cap that cuts a character in two,
+        // and that client got no answer at all (BUGS.md 86).
+        match (&mut reader).take(ipc::MAX_LINE as u64 + 1).read_until(b'\n', &mut bytes) {
             Ok(0) | Err(_) => return,
             Ok(_) => {}
         }
-        if line.len() > ipc::MAX_LINE {
+        if bytes.len() > ipc::MAX_LINE {
             reply.send(&Reply::error("command too long"));
             return;
         }
+        let line = String::from_utf8_lossy(&bytes);
         if line.trim().is_empty() {
             continue;
         }
@@ -274,6 +277,39 @@ mod tests {
             assert!(start.elapsed() < Duration::from_secs(2), "the writer is still alive");
             std::thread::sleep(Duration::from_millis(5));
         }
+    }
+
+    #[test]
+    fn long_and_odd_lines_are_read_or_answered() {
+        // BUGS.md 86: a command past 4 KiB was refused, and a cap cut through a UTF-8
+        // character got no answer at all.
+        let (ours, theirs) = UnixStream::pair().unwrap();
+        let (queue, lines) = mpsc::sync_channel::<Arc<str>>(CLIENT_QUEUE);
+        let reply = ReplyTo { queue, stream: Arc::new(ours.try_clone().unwrap()) };
+        let (tx, rx) = mpsc::channel();
+        let reader = ours.try_clone().unwrap();
+        std::thread::spawn(move || read_requests(reader, reply, tx));
+        spawn_writer(ours, lines);
+        theirs.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+        let mut client = theirs.try_clone().unwrap();
+        let mut replies = BufReader::new(theirs);
+
+        // A 10 KB command goes through.
+        let run = Command::Run { action: omadeck_core::Action::App { command: "x".repeat(10_000) } };
+        client.write_all(run.to_line().as_bytes()).unwrap();
+        assert_eq!(rx.recv_timeout(Duration::from_secs(3)).unwrap().cmd, run);
+
+        // Bad UTF-8 is answered, not dropped.
+        client.write_all(b"{\"command\":\"\xff\"}\n").unwrap();
+        assert!(matches!(ipc::read_reply(&mut replies).unwrap(), Reply::Error { .. }));
+
+        // A line past the cap with the cap inside a two-byte character: "command too long".
+        let mut long = b"{\"command\":\"".to_vec();
+        long.extend("é".repeat(ipc::MAX_LINE).as_bytes());
+        long.extend(b"\"}\n");
+        client.write_all(&long[..ipc::MAX_LINE + 1]).unwrap();
+        let r = ipc::read_reply(&mut replies).unwrap();
+        assert_eq!(r, Reply::error("command too long"));
     }
 
     /// Wait up to 3 s for the next request to reach the loop.
