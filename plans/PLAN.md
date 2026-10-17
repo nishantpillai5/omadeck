@@ -49,12 +49,13 @@ were rewritten against `d7bd448` and the two new steps below.
 (`workflow_dispatch`); the goldens use a bundled OFL font subset. One plan typo fixed
 along the way: the Arch font package is `fonts-dejavu`.
 
-Next, in this order:
+Next: **PR 8, `feat/toggle-keys`** (base `feat/groundwork`), then the remaining features,
+each based on the previous branch.
 
-1. **`feat/groundwork`** ([groundwork.md](groundwork.md), base `fix/review`): BUGS.md
-   44–49 plus the restructuring PRs 8–16 all need, built once (see Shared building blocks).
-   Almost nothing changes for the user.
-2. Then the features, each based on the previous branch.
+`feat/groundwork` is **done** (ten task commits on `fix/review`, plus the in-flight
+volume fix and the start-time brightness precedence found on the hardware pass — see
+the verification notes at the end of [groundwork.md](groundwork.md)). BUGS.md 44–49
+are closed.
 
 Each feature gets its own `feat/*` branch, plan file and (later) PR. Work them in this
 order; the order is mine, not upstream's roadmap order.
@@ -62,7 +63,7 @@ order; the order is mine, not upstream's roadmap order.
 | # | Branch | Feature | Plan |
 |---|--------|---------|------|
 | – | `fix/review` | Bugs from the 2026-10-17 review — **done** (`87be396`) | [review-fixes](review-fixes.md) |
-| – | `feat/groundwork` | Daemon split, watcher, ordered volume, non-blocking hub, GUI mirrors the daemon, `ActionSlot` | [groundwork](groundwork.md) |
+| – | `feat/groundwork` | Daemon split, watcher, ordered volume, non-blocking hub, GUI mirrors the daemon, `ActionSlot` — **done** (2026-10-17) | [groundwork](groundwork.md) |
 | 8 | `feat/toggle-keys` | Keys with on/off faces that follow real state, plus a busy state with progress for slow toggles (e.g. a model server starting up) and for any key while its command runs | [pr8](pr8-toggle-keys.md) |
 | 9 | `feat/live-keys` | Keys that show a clock, CPU, workspace, … and update themselves; the Hyprland event listener | [pr9](pr9-live-keys.md) |
 | 10 | `feat/app-volume` | Per-app volume: a dial for a chosen app, or for the focused app | [pr10](pr10-app-volume.md) |

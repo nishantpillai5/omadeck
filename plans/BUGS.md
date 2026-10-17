@@ -600,7 +600,7 @@ numbers). 22–43 are fixed on `fix/review` ([review-fixes.md](review-fixes.md))
 
 #### 45. Brightness can revert on a quick replug
 
-- **Status:** open. **Found:** 2026-10-17, code review.
+- **Status:** fixed in `87e08c7` + `0badd8e` (brightness in `Runtime`, which outlives the deck). **Found:** 2026-10-17, code review.
 - **Where:** `main.rs` `Deck.brightness`, re-read in `connect()` from `state.toml`.
 - **What goes wrong:** turn the dial, and the USB link drops within the saver's 200 ms:
   the new `Deck` reads the old value from the file.
@@ -608,7 +608,7 @@ numbers). 22–43 are fixed on `fix/review` ([review-fixes.md](review-fixes.md))
 
 #### 46. Volume changes run unordered, and the mic pop-up can show the old level
 
-- **Status:** open. **Found:** 2026-10-17, code review.
+- **Status:** fixed in `edc4bdb` (one watcher thread, changes in order, each followed by its read). **Found:** 2026-10-17, code review.
 - **Where:** `action.rs` `run_volume`: a thread per call; the Omarchy 4 mic pop-up sleeps
   80 ms on another thread and reads.
 - **What goes wrong:** detents ~20 ms apart run `wpctl`/`omarchy-audio-*` concurrently;
@@ -619,7 +619,7 @@ numbers). 22–43 are fixed on `fix/review` ([review-fixes.md](review-fixes.md))
 
 #### 47. A stale volume read can overwrite the optimistic bar
 
-- **Status:** open. **Found:** 2026-10-17, code review.
+- **Status:** fixed in `edc4bdb` (the read happens after the change on the same thread) and the in-flight follow-up (the bar shows confirmed + in-flight, so a late read-back can't pull it back — see the note at the end of groundwork.md). **Found:** 2026-10-17, code review.
 - **Where:** `main.rs` `after_volume` + `AUDIO_REFRESH_DELAY` + the worker's `Refresh`.
 - **What goes wrong:** when the volume command takes longer than 150 ms (Omarchy 4's
   script, Omarchy 3's `hyprctl`), or a 1 s poll is already running, the read returns the
@@ -629,7 +629,7 @@ numbers). 22–43 are fixed on `fix/review` ([review-fixes.md](review-fixes.md))
 
 #### 48. A hung `pactl` or `wpctl` freezes the bars for good
 
-- **Status:** open. **Found:** 2026-10-17, code review.
+- **Status:** fixed in `66373ff` + `edc4bdb` (`proc::output_timeout` on the watcher's reads and changes). **Found:** 2026-10-17, code review.
 - **Where:** `audio.rs` `capture` (`Command::output()`, no timeout).
 - **What goes wrong:** while PipeWire restarts, a read can hang; the worker stops, the
   bars freeze, and a `Refresh` per turn piles up in the unbounded channel.
@@ -637,7 +637,7 @@ numbers). 22–43 are fixed on `fix/review` ([review-fixes.md](review-fixes.md))
 
 #### 49. A slow configurator stalls the deck loop and is then dropped
 
-- **Status:** open. **Found:** 2026-10-17, code review.
+- **Status:** fixed in `75738f8` (per-client bounded queue + writer thread; the loop never writes to a socket). Verified with a frozen GUI: the deck stayed responsive. **Found:** 2026-10-17, code review.
 - **Where:** `hub.rs` `Hub::publish` (upstream): `write_all` to every client on the loop,
   200 ms write timeout. We added per-report events (`DialTurn`, `StripSwipe`, …).
 - **What goes wrong:** the GUI busy for a moment (rebuilding the editor) while a dial

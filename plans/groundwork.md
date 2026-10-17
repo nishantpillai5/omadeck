@@ -3241,3 +3241,31 @@ The PR 4 and PR 6 checks again, since their code moved:
   `run_input -> bool`, `Runtime: Default`, `ActionTarget`, `ActionSlot`.
 - Note in PR 8's plan: `Daemon::show_page` must call `self.watch()` once key probes exist
   (today's set doesn't depend on the page).
+
+## Verification notes (2026-10-17, hardware pass on the Stream Deck +)
+
+Two places where the implemented design misbehaved and was fixed on the branch after
+the ten task commits:
+
+1. **The volume bar snapped back on a fast spin.** The plan's guess (last known level +
+   change) reached the end of the spin at once, while the sequential ~150 ms commands
+   caught up one read-back at a time — each read-back, reflecting only what had
+   finished, visibly pulled the bar back down. (fix/review's parallel worker + one
+   debounced re-read had hidden this.) Fixed: the watcher's read-backs now carry the
+   change they confirm, and the daemon keeps an in-flight total per device (a turn
+   adds to it, a read-back takes its part off); the bar shows the read plus what is
+   still in flight, so it only ever moves forward while a spin is in flight. The total
+   is clamped like the watcher's coalesce, so the two stay in step. `settle_volume`
+   is unit-tested.
+2. **A config `brightness` edited while the daemon was stopped was ignored at start.**
+   The state file's docs promise a hand edit wins again, but that only happened on
+   reload. The settings slider with no daemon writes `config.toml` (the no-daemon
+   fallback), and a start afterwards came back at the saved value. Fixed: at start,
+   the config wins when its mtime is newer than the state file's (`start_brightness`).
+
+All hardware checks passed: ±5 per detent, folded fast spins (no snap-back), mute +
+"Muted" panel, keyboard volume on the panel in ~1 s, mic dial, brightness dial live,
+restart after a turn (new value), unplug/replug (values back), hand-edited config
+brightness (deck + slider follow), tap flash + held highlight (title to accent),
+flicks and Open page/Back, frozen GUI (deck responsive, `kill -STOP`), stop under a
+second back to the logo, idle 0.1 % CPU with the volume dial watched.
