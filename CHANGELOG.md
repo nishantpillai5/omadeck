@@ -7,6 +7,9 @@ All notable changes to omadeck are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- Stream Deck +: press and hold a dial's panel on the touch strip to run its
+  `long_press` action (Elgato's "long touch"). The configurator's dial editor has a
+  **Long press on the strip** group.
 - Pages can follow apps, like Elgato's Smart Profiles: `apps = ["spotify"]` on a
   `[[page]]` (Hyprland window classes, `*` matches anything) shows that page while one of
   those apps is focused, and goes back to where the deck was, open folder included, when
@@ -83,6 +86,8 @@ All notable changes to omadeck are documented here. The format follows
   panel's look.
 
 ### Changed
+- Stream Deck +: holding a dial's panel on the touch strip runs the dial's press when it
+  has no `long_press`, as a tap does (it did nothing before).
 - A Back key goes back when you let go of it, not when you press it, so holding it can
   go Home.
 - With the daemon running, the configurator's brightness slider goes through the daemon
