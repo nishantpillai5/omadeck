@@ -202,6 +202,9 @@ pub fn build_dial(app: &Rc<App>, i: u8) -> gtk::Widget {
             d.glyph = Some("f00de".into());
             d.turn_left = Action::Brightness { change: -5, set: None };
             d.turn_right = Action::Brightness { change: 5, set: None };
+            // A preset sets every slot: a Volume press left over from the Volume preset
+            // would make the panel show the volume.
+            d.press = Action::None;
         });
         a.rebuild_editor();
     });
@@ -411,7 +414,7 @@ fn action_editor(
         }
     });
     group.add(&kind_row);
-    action_rows(app, group, target, get, edit, edit_at, on_app_picked, on_new_page, on_favicon);
+    action_rows(app, group, target, get, edit, default_for, edit_at, on_app_picked, on_new_page, on_favicon);
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -421,6 +424,7 @@ fn action_rows(
     target: impl Fn(&Rc<App>) -> Target + Clone + 'static,
     get: impl Fn(&Rc<App>) -> Action + Clone + 'static,
     edit: impl Fn(&Rc<App>, Action) + Clone + 'static,
+    default_for: impl Fn(usize) -> Action + Clone + 'static,
     edit_at: impl Fn(&Rc<App>, Target, Action) + Clone + 'static,
     on_app_picked: impl Fn(&Rc<App>, &Target, String, String, Option<String>) + Clone + 'static,
     on_new_page: impl Fn(&Rc<App>) -> String + Clone + 'static,
@@ -794,12 +798,14 @@ fn action_rows(
                 let a = app.clone();
                 let get = get.clone();
                 let edit = edit.clone();
+                let default_for = default_for.clone();
                 move |row| {
                     let sel = row.selected() as usize;
                     if sel != mode_of(&get(&a)) {
+                        // Back to "change": the slot's default, so Turn left lowers again.
                         let act = match sel {
                             1 => Action::Brightness { change: 0, set: Some(50) },
-                            _ => Action::Brightness { change: 5, set: None },
+                            _ => default_for(Action::Brightness { change: 0, set: None }.kind_index()),
                         };
                         edit(&a, act);
                         a.rebuild_editor();
