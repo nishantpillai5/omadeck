@@ -260,7 +260,7 @@ impl App {
         page_bar.append(&page_actions);
 
         let hint = gtk::Label::builder()
-            .label("Click a key to edit it · drag keys to rearrange · press a key on your deck to jump to it")
+            .label("Click a key to edit it · drag keys to rearrange · press a key on your deck to jump to it · double-click a folder to open it")
             .css_classes(["deck-hint", "caption"])
             .wrap(true)
             .justify(gtk::Justification::Center)
@@ -387,6 +387,8 @@ impl App {
             }
             let Some(page) = app.current_page() else { return };
             app.config.borrow_mut().set_folder(&page, b.is_active());
+            // Only a folder shows its path in the switcher.
+            app.sync_page_list();
             app.schedule_save();
         });
         let weak = Rc::downgrade(&app);
@@ -504,6 +506,25 @@ impl App {
                     app.select(Some(Selection::Key(i)));
                 }
             });
+            // Double-click a folder key to open its page, or a Back key to go up, as in the
+            // Elgato app. Capture phase, so the first click still selects; the second is
+            // claimed, so its release doesn't select the key under it on the new page.
+            let open = gtk::GestureClick::builder()
+                .button(gdk::BUTTON_PRIMARY)
+                .propagation_phase(gtk::PropagationPhase::Capture)
+                .build();
+            let weak = Rc::downgrade(self);
+            open.connect_pressed(move |g: &gtk::GestureClick, n_press: i32, _x: f64, _y: f64| {
+                if n_press == 2
+                    && let Some(app) = weak.upgrade()
+                    && let Some(target) = app.key_target(i)
+                {
+                    g.set_state(gtk::EventSequenceState::Claimed);
+                    // The deck follows, as with the page switcher.
+                    app.show_page(target, true);
+                }
+            });
+            button.add_controller(open);
             self.add_dnd(&button, &image, i);
             self.grid.attach(&button, (i % deck.cols) as i32, (i / deck.cols) as i32, 1, 1);
             self.keys.borrow_mut().push((button, image));
@@ -1216,13 +1237,30 @@ impl App {
         }
     }
 
-    /// Mirror the config's pages in the page switcher.
+    /// Where double-clicking key `i` goes: an Open page key's page, a Back key's the page
+    /// that opens this one (Home if none). `None` when it goes nowhere (any other key, a
+    /// missing page, Back on Home).
+    fn key_target(&self, i: u8) -> Option<Option<String>> {
+        match self.key(i).map(|k| k.action) {
+            Some(Action::Page { page }) if self.config.borrow().has_page(&page) => Some(Some(page)),
+            Some(Action::Back) => {
+                let cur = self.current_page()?;
+                let up = self.config.borrow().opener(&cur).flatten().map(str::to_string);
+                Some(up)
+            }
+            _ => None,
+        }
+    }
+
+    /// Mirror the config's pages in the page switcher. A folder reads as its path
+    /// (`Music › Media › Spotify`), so nested folders are told apart.
     fn sync_page_list(&self) {
         self.syncing_pages.set(true);
         let cfg = self.config.borrow();
         let names = cfg.page_names();
+        let labels: Vec<String> = names.iter().map(|n| cfg.page_path(n).join(" › ")).collect();
         let mut items: Vec<&str> = vec![HOME];
-        items.extend(names.iter().map(String::as_str));
+        items.extend(labels.iter().map(String::as_str));
         self.page_list.splice(0, self.page_list.n_items(), &items);
         let page = self.page.borrow();
         let pos = page.as_deref().and_then(|p| names.iter().position(|n| n == p)).map(|n| n + 1).unwrap_or(0);
