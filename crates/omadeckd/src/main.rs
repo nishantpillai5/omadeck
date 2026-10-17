@@ -217,7 +217,9 @@ fn run() -> Result<()> {
         }
         if daemon.reload_at.is_some_and(|t| Instant::now() >= t) {
             daemon.reload_at = None;
-            daemon.reload();
+            if let Err(e) = daemon.reload() {
+                log::error!("{e:#}; keeping the previous config");
+            }
         }
         daemon.handle_commands();
         daemon.apply_values();
