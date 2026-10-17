@@ -19,10 +19,11 @@ pub const COMMAND_TIMEOUT: Duration = Duration::from_secs(2);
 const POLL: Duration = Duration::from_millis(5);
 
 /// Run `cmd` with stdin closed and stdout/stderr captured, and wait at most `timeout`.
-/// `None` if it couldn't start or ran too long (it is killed then). A non-zero exit is
-/// still `Some`: look at `status`.
+/// `None` if it couldn't start or ran too long (then its whole process group is killed,
+/// so a script's children go too). A non-zero exit is still `Some`: look at `status`.
+/// The child leads its own process group.
 pub fn output_timeout(cmd: &mut Command, timeout: Duration) -> Option<Output> {
-    cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).process_group(0);
     let mut child = match cmd.spawn() {
         Ok(c) => c,
         Err(e) => {
@@ -40,20 +41,22 @@ pub fn output_timeout(cmd: &mut Command, timeout: Duration) -> Option<Output> {
             Ok(Some(status)) => break status,
             Ok(None) if Instant::now() < deadline => thread::sleep(POLL),
             _ => {
-                let _ = child.kill();
+                // Not reaped yet, so the group id is still ours: take the grandchildren
+                // (and the pipes they hold) down with the child.
+                unsafe { libc::killpg(child.id() as libc::pid_t, libc::SIGKILL) };
                 let _ = child.wait();
                 log::warn!("{cmd:?} took longer than {timeout:?}; killed it");
                 return None;
             }
         }
     };
-    // A background grandchild can keep a pipe open after the child exits; don't wait
-    // for it past the deadline.
-    let left = deadline.saturating_duration_since(Instant::now()).max(Duration::from_millis(50));
+    // A background grandchild can keep a pipe open after the child exits: wait at most
+    // `GRACE` for the rest of the output, as `Job` does, not the rest of the deadline
+    // (the watcher would sit out every queued volume change behind it).
     Some(Output {
         status,
-        stdout: stdout.recv_timeout(left).unwrap_or_default(),
-        stderr: stderr.recv_timeout(left).unwrap_or_default(),
+        stdout: stdout.recv_timeout(GRACE).unwrap_or_default(),
+        stderr: stderr.recv_timeout(GRACE).unwrap_or_default(),
     })
 }
 
@@ -202,6 +205,24 @@ mod tests {
         let start = Instant::now();
         assert!(output_timeout(&mut sh("sleep 5"), Duration::from_millis(200)).is_none());
         assert!(start.elapsed() < Duration::from_secs(2), "took {:?}", start.elapsed());
+    }
+
+    #[test]
+    fn output_timeout_does_not_wait_for_a_background_child() {
+        // The child exits at once, but its background `sleep` holds stdout open.
+        let start = Instant::now();
+        let out = output_timeout(&mut sh("sleep 5 & echo hi"), Duration::from_secs(5)).unwrap();
+        assert!(out.status.success());
+        // (Its output is lost: the pipe never closes. The point is not waiting 5 s.)
+        assert!(start.elapsed() < Duration::from_secs(1), "took {:?}", start.elapsed());
+    }
+
+    #[test]
+    fn output_timeout_kills_the_whole_group() {
+        // `sleep` is a grandchild: killing only `sh` would leave it holding the pipe.
+        let start = Instant::now();
+        assert!(output_timeout(&mut sh("sleep 30 | cat"), Duration::from_millis(200)).is_none());
+        assert!(start.elapsed() < Duration::from_secs(1), "took {:?}", start.elapsed());
     }
 
     #[test]

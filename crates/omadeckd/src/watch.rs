@@ -40,8 +40,10 @@ pub enum WatchCmd {
     /// A slow toggle was pressed while showing `from`: poll every `FAST_INTERVAL` until a
     /// read is neither busy nor `from`, or `FAST_WINDOW` passes.
     Leave { probe: Probe, from: Toggle },
-    /// A runner thread finished. Sent by the runner, not by the daemon.
-    Done { probe: Probe, result: RunResult },
+    /// A runner thread finished. Sent by the runner, not by the daemon. `run` is the id
+    /// `run_due` gave the run: a `Done` from a run that was cancelled and replaced (the
+    /// probe dropped and watched again meanwhile) doesn't match and is ignored.
+    Done { probe: Probe, run: u64, result: RunResult },
     /// End the thread (shutdown), cancelling the runners. Explicit, because the thread
     /// holds a sender itself (for the runners), so its `recv()` never sees a
     /// disconnect.
@@ -112,9 +114,11 @@ struct Poller {
     forced: HashSet<Probe>,
     /// Scheduled forced re-reads (`Refresh`), at their due times.
     refresh_at: Vec<(Instant, Probe)>,
-    /// Running probes → their cancel flag. A probe in here is never started again until
-    /// its `Done` (or a `Watch` that drops it).
-    in_flight: HashMap<Probe, Arc<AtomicBool>>,
+    /// Running probes → their run id and cancel flag. A probe in here is never started
+    /// again until its `Done` (or a `Watch` that drops it).
+    in_flight: HashMap<Probe, (u64, Arc<AtomicBool>)>,
+    /// The id the next run gets.
+    next_run: u64,
     /// A `Leave` window: (the state the press left, the deadline).
     fast_until: HashMap<Probe, (Toggle, Instant)>,
     /// Probes that failed and were warned about; cleared on a good read.
@@ -133,6 +137,7 @@ impl Default for Poller {
             forced: HashSet::new(),
             refresh_at: Vec::new(),
             in_flight: HashMap::new(),
+            next_run: 0,
             fast_until: HashMap::new(),
             failing: HashSet::new(),
             read_volume,
@@ -155,7 +160,7 @@ impl Poller {
                 let keep = |p: &Probe| set_d.contains(p);
                 // Dropped probes: tell their runners to kill the command; their `Done` is
                 // ignored.
-                self.in_flight.retain(|p, cancel| {
+                self.in_flight.retain(|p, (_, cancel)| {
                     keep(p) || {
                         cancel.store(true, Ordering::Relaxed);
                         false
@@ -208,10 +213,12 @@ impl Poller {
                 }
             }
             WatchCmd::Stop => {} // the thread loop handles it
-            WatchCmd::Done { probe, result } => {
-                if self.in_flight.remove(&probe).is_none() {
-                    return; // unwatched meanwhile
+            WatchCmd::Done { probe, run, result } => {
+                // Unwatched meanwhile, or a cancelled run whose probe has a new one.
+                if self.in_flight.get(&probe).is_none_or(|(id, _)| *id != run) {
+                    return;
                 }
+                self.in_flight.remove(&probe);
                 match result {
                     RunResult::Exit { code, .. } if is_missing(code) => {
                         self.warn_once(&probe, "state command not found or not executable");
@@ -237,7 +244,11 @@ impl Poller {
 
     /// Do what is due. Volume reads happen inline; the commands to start are returned,
     /// and the thread loop gives each a runner.
-    fn run_due(&mut self, now: Instant, out: &mut Vec<(Probe, Option<Value>, i32)>) -> Vec<(Probe, Arc<AtomicBool>)> {
+    fn run_due(
+        &mut self,
+        now: Instant,
+        out: &mut Vec<(Probe, Option<Value>, i32)>,
+    ) -> Vec<(Probe, u64, Arc<AtomicBool>)> {
         // 1. Due refreshes become forced reads, but not while a run is going: its answer
         //    may predate the change. They wait for its `Done`.
         let mut i = 0;
@@ -274,8 +285,9 @@ impl Poller {
                         continue;
                     }
                     let cancel = Arc::new(AtomicBool::new(false));
-                    self.in_flight.insert(p.clone(), cancel.clone());
-                    start.push((p, cancel));
+                    self.next_run += 1;
+                    self.in_flight.insert(p.clone(), (self.next_run, cancel.clone()));
+                    start.push((p, self.next_run, cancel));
                 }
             }
         }
@@ -287,17 +299,18 @@ impl Poller {
     /// and for every command result).
     fn record(&mut self, p: Probe, v: Value, now: Instant, out: &mut Vec<(Probe, Option<Value>, i32)>, applied: i32) {
         let busy = matches!(v, Value::Toggle(Toggle::Busy(_)));
+        // A window that ran out without the state moving sends its read anyway: the deck
+        // is still showing busy, and would otherwise never hear that nothing changed.
+        let expired = self.fast_until.get(&p).is_some_and(|(_, until)| now >= *until);
         // Decide first, then remove: `from` borrows `fast_until`.
-        let window_over = self
-            .fast_until
-            .get(&p)
-            .is_some_and(|(from, until)| (!busy && v != Value::Toggle(from.clone())) || now >= *until);
+        let window_over =
+            expired || self.fast_until.get(&p).is_some_and(|(from, _)| !busy && v != Value::Toggle(from.clone()));
         if window_over {
             self.fast_until.remove(&p);
         }
         let fast = busy || self.fast_until.contains_key(&p);
         self.next_due.insert(p.clone(), now + if fast { omadeck_core::probe::FAST_INTERVAL } else { p.interval() });
-        let forced = self.forced.remove(&p);
+        let forced = self.forced.remove(&p) | expired;
         if forced || self.last.get(&p) != Some(&v) {
             self.last.insert(p.clone(), v.clone());
             out.push((p, Some(v), applied));
@@ -325,7 +338,7 @@ impl Poller {
 
     /// Tell every runner to kill its command (unwatched, or the thread is ending).
     fn cancel_all(&mut self) {
-        for c in self.in_flight.values() {
+        for (_, c) in self.in_flight.values() {
             c.store(true, Ordering::Relaxed);
         }
         self.in_flight.clear();
@@ -418,15 +431,19 @@ fn run(
             poller.handle(c, Instant::now(), &mut out);
         }
         // The commands `run_due` returned each get a runner thread.
-        for (probe, cancel) in poller.run_due(Instant::now(), &mut out) {
+        for (probe, run, cancel) in poller.run_due(Instant::now(), &mut out) {
             let Probe::Command { command, .. } = &probe else { continue };
-            let (command, tx) = (command.clone(), runner_tx.clone());
+            let (command, tx, p) = (command.clone(), runner_tx.clone(), probe.clone());
             let spawned = thread::Builder::new().name("watch-run".into()).spawn(move || {
                 let result = run_state(&command, STATE_TIMEOUT, &cancel);
-                let _ = tx.send(WatchCmd::Done { probe, result }); // watcher gone: nothing to do
+                let _ = tx.send(WatchCmd::Done { probe: p, run, result }); // watcher gone: nothing to do
             });
             if let Err(e) = spawned {
+                // No run, so no `Done` will come: don't leave it in flight (it would never
+                // be polled again); try again at the next interval.
                 log::warn!("could not start a runner thread: {e}");
+                poller.in_flight.remove(&probe);
+                poller.next_due.insert(probe.clone(), Instant::now() + probe.interval());
             }
         }
         for v in out.drain(..) {
@@ -473,6 +490,13 @@ mod tests {
         Value::Level(Level { value: percent as f32 / 100.0, text: format!("{percent}%"), muted: false })
     }
 
+    impl Poller {
+        /// The id of the run in flight for `p` (0 if none), for a test's `Done`.
+        fn run_of(&self, p: &Probe) -> u64 {
+            self.in_flight.get(p).map_or(0, |(id, _)| *id)
+        }
+    }
+
     fn cmd(c: &str) -> Probe {
         Probe::Command { command: c.into(), interval_ms: 2000 }
     }
@@ -498,7 +522,11 @@ mod tests {
         assert_eq!(start.len(), 1, "due at once, handed to a runner");
         assert!(p.run_due(t0, &mut out).is_empty(), "never two runs of one probe");
         assert_eq!(p.next_due(), None, "in flight: its Done wakes the thread");
-        p.handle(WatchCmd::Done { probe: probe.clone(), result: exit(75, "Loading 43%") }, t0, &mut out);
+        p.handle(
+            WatchCmd::Done { probe: probe.clone(), run: p.run_of(&probe), result: exit(75, "Loading 43%") },
+            t0,
+            &mut out,
+        );
         assert_eq!(out, vec![(probe.clone(), Some(Value::Toggle(Toggle::Busy("Loading 43%".into()))), 0)]);
         assert_eq!(p.next_due(), Some(t0 + FAST_INTERVAL), "busy polls fast");
     }
@@ -510,13 +538,13 @@ mod tests {
         let mut out = Vec::new();
         let t0 = Instant::now();
         watched(&mut p, probe.clone(), t0, &mut out);
-        p.handle(WatchCmd::Done { probe: probe.clone(), result: exit(0, "") }, t0, &mut out);
+        p.handle(WatchCmd::Done { probe: probe.clone(), run: p.run_of(&probe), result: exit(0, "") }, t0, &mut out);
         assert_eq!(out, vec![(probe.clone(), Some(Value::Toggle(Toggle::On)), 0)]);
         out.clear();
         // The next interval: a new run, and this time off.
         assert_eq!(p.run_due(t0 + Duration::from_millis(2000), &mut out).len(), 1);
         p.handle(
-            WatchCmd::Done { probe: probe.clone(), result: exit(1, "") },
+            WatchCmd::Done { probe: probe.clone(), run: p.run_of(&probe), result: exit(1, "") },
             t0 + Duration::from_millis(2000),
             &mut out,
         );
@@ -530,12 +558,16 @@ mod tests {
         let mut out = Vec::new();
         let t0 = Instant::now();
         watched(&mut p, probe.clone(), t0, &mut out);
-        p.handle(WatchCmd::Done { probe: probe.clone(), result: exit(75, "10%") }, t0, &mut out);
+        p.handle(WatchCmd::Done { probe: probe.clone(), run: p.run_of(&probe), result: exit(75, "10%") }, t0, &mut out);
         assert_eq!(out, vec![(probe.clone(), Some(Value::Toggle(Toggle::Busy("10%".into()))), 0)]);
         out.clear();
         // Busy polls fast; a new busy text counts as a change.
         p.run_due(t0 + FAST_INTERVAL, &mut out);
-        p.handle(WatchCmd::Done { probe: probe.clone(), result: exit(75, "20%") }, t0 + FAST_INTERVAL, &mut out);
+        p.handle(
+            WatchCmd::Done { probe: probe.clone(), run: p.run_of(&probe), result: exit(75, "20%") },
+            t0 + FAST_INTERVAL,
+            &mut out,
+        );
         assert_eq!(out, vec![(probe, Some(Value::Toggle(Toggle::Busy("20%".into()))), 0)]);
     }
 
@@ -546,10 +578,14 @@ mod tests {
         let mut out = Vec::new();
         let t0 = Instant::now();
         watched(&mut p, probe.clone(), t0, &mut out);
-        p.handle(WatchCmd::Done { probe: probe.clone(), result: exit(0, "") }, t0, &mut out);
+        p.handle(WatchCmd::Done { probe: probe.clone(), run: p.run_of(&probe), result: exit(0, "") }, t0, &mut out);
         out.clear();
         p.run_due(t0 + Duration::from_millis(2000), &mut out);
-        p.handle(WatchCmd::Done { probe, result: exit(0, "") }, t0 + Duration::from_millis(2000), &mut out);
+        p.handle(
+            WatchCmd::Done { run: p.run_of(&probe), probe, result: exit(0, "") },
+            t0 + Duration::from_millis(2000),
+            &mut out,
+        );
         assert!(out.is_empty());
     }
 
@@ -560,14 +596,14 @@ mod tests {
         let mut out = Vec::new();
         let t0 = Instant::now();
         watched(&mut p, probe.clone(), t0, &mut out);
-        p.handle(WatchCmd::Done { probe: probe.clone(), result: exit(0, "") }, t0, &mut out);
+        p.handle(WatchCmd::Done { probe: probe.clone(), run: p.run_of(&probe), result: exit(0, "") }, t0, &mut out);
         out.clear();
         // A refresh schedules forced re-reads at 300 ms and 1.2 s.
         p.handle(WatchCmd::Refresh(probe.clone()), t0, &mut out);
         assert_eq!(p.next_due(), Some(t0 + Duration::from_millis(300)));
         p.run_due(t0 + Duration::from_millis(300), &mut out);
         p.handle(
-            WatchCmd::Done { probe: probe.clone(), result: exit(0, "") },
+            WatchCmd::Done { probe: probe.clone(), run: p.run_of(&probe), result: exit(0, "") },
             t0 + Duration::from_millis(300),
             &mut out,
         );
@@ -577,7 +613,7 @@ mod tests {
         assert_eq!(p.next_due(), Some(t0 + Duration::from_millis(1200)));
         p.run_due(t0 + Duration::from_millis(1200), &mut out);
         p.handle(
-            WatchCmd::Done { probe: probe.clone(), result: exit(0, "") },
+            WatchCmd::Done { probe: probe.clone(), run: p.run_of(&probe), result: exit(0, "") },
             t0 + Duration::from_millis(1200),
             &mut out,
         );
@@ -596,7 +632,7 @@ mod tests {
         p.handle(WatchCmd::Refresh(probe.clone()), t0, &mut out);
         assert!(p.run_due(t0 + Duration::from_millis(300), &mut out).is_empty(), "no second run while one is going");
         p.handle(
-            WatchCmd::Done { probe: probe.clone(), result: exit(0, "") },
+            WatchCmd::Done { probe: probe.clone(), run: p.run_of(&probe), result: exit(0, "") },
             t0 + Duration::from_millis(300),
             &mut out,
         );
@@ -611,20 +647,24 @@ mod tests {
         let mut out = Vec::new();
         let t0 = Instant::now();
         watched(&mut p, probe.clone(), t0, &mut out);
-        p.handle(WatchCmd::Done { probe: probe.clone(), result: exit(0, "") }, t0, &mut out);
+        p.handle(WatchCmd::Done { probe: probe.clone(), run: p.run_of(&probe), result: exit(0, "") }, t0, &mut out);
         out.clear();
         // A slow press while showing on: fast polling until a read is neither busy nor on.
         p.handle(WatchCmd::Leave { probe: probe.clone(), from: Toggle::On }, t0, &mut out);
         assert_eq!(p.next_due(), Some(t0 + FAST_INTERVAL));
         p.run_due(t0 + FAST_INTERVAL, &mut out);
         // Still on: not resent (unchanged), and the window continues fast.
-        p.handle(WatchCmd::Done { probe: probe.clone(), result: exit(0, "") }, t0 + FAST_INTERVAL, &mut out);
+        p.handle(
+            WatchCmd::Done { probe: probe.clone(), run: p.run_of(&probe), result: exit(0, "") },
+            t0 + FAST_INTERVAL,
+            &mut out,
+        );
         assert!(out.is_empty());
         assert_eq!(p.next_due(), Some(t0 + 2 * FAST_INTERVAL));
         // A busy read inside the window keeps it fast too.
         p.run_due(t0 + 2 * FAST_INTERVAL, &mut out);
         p.handle(
-            WatchCmd::Done { probe: probe.clone(), result: exit(75, "starting") },
+            WatchCmd::Done { probe: probe.clone(), run: p.run_of(&probe), result: exit(75, "starting") },
             t0 + 2 * FAST_INTERVAL,
             &mut out,
         );
@@ -633,7 +673,11 @@ mod tests {
         // Now off: the value is sent and the normal interval resumes.
         p.run_due(t0 + 3 * FAST_INTERVAL, &mut out);
         out.clear();
-        p.handle(WatchCmd::Done { probe: probe.clone(), result: exit(1, "") }, t0 + 3 * FAST_INTERVAL, &mut out);
+        p.handle(
+            WatchCmd::Done { probe: probe.clone(), run: p.run_of(&probe), result: exit(1, "") },
+            t0 + 3 * FAST_INTERVAL,
+            &mut out,
+        );
         assert_eq!(out, vec![(probe.clone(), Some(Value::Toggle(Toggle::Off)), 0)]);
         assert_eq!(p.next_due(), Some(t0 + 3 * FAST_INTERVAL + Duration::from_millis(2000)));
         // An expired window ends even if the state never moved: the normal interval
@@ -641,8 +685,52 @@ mod tests {
         p.fast_until.insert(probe.clone(), (Toggle::On, t0)); // already expired
         let t_due = t0 + 3 * FAST_INTERVAL + Duration::from_millis(2000);
         p.run_due(t_due, &mut out);
-        p.handle(WatchCmd::Done { probe, result: exit(0, "") }, t_due, &mut out);
+        p.handle(WatchCmd::Done { run: p.run_of(&probe), probe, result: exit(0, "") }, t_due, &mut out);
         assert_eq!(p.next_due(), Some(t_due + Duration::from_millis(2000)));
+    }
+
+    #[test]
+    fn a_leave_window_that_runs_out_sends_the_unchanged_state() {
+        // A slow toggle pressed while on, whose state never moves (the service fails to
+        // stop): at the end of the window the deck must hear "still on", or it shows
+        // busy for good.
+        let probe = cmd("state");
+        let mut p = Poller::default();
+        let mut out = Vec::new();
+        let t0 = Instant::now();
+        watched(&mut p, probe.clone(), t0, &mut out);
+        p.handle(WatchCmd::Done { probe: probe.clone(), run: p.run_of(&probe), result: exit(0, "") }, t0, &mut out);
+        out.clear();
+        p.handle(WatchCmd::Leave { probe: probe.clone(), from: Toggle::On }, t0, &mut out);
+        // Inside the window an unchanged read is not sent…
+        let t1 = t0 + FAST_INTERVAL;
+        p.run_due(t1, &mut out);
+        p.handle(WatchCmd::Done { probe: probe.clone(), run: p.run_of(&probe), result: exit(0, "") }, t1, &mut out);
+        assert!(out.is_empty());
+        // …but the first read after it ends is, unchanged or not.
+        let end = t0 + omadeck_core::probe::FAST_WINDOW;
+        p.run_due(end, &mut out);
+        p.handle(WatchCmd::Done { probe: probe.clone(), run: p.run_of(&probe), result: exit(0, "") }, end, &mut out);
+        assert_eq!(out, vec![(probe, Some(Value::Toggle(Toggle::On)), 0)]);
+    }
+
+    #[test]
+    fn a_cancelled_runs_done_does_not_end_the_new_run() {
+        // Page A → B → A while A's command runs: run 1 is cancelled, run 2 starts.
+        let probe = cmd("slow");
+        let mut p = Poller::default();
+        let mut out = Vec::new();
+        let t0 = Instant::now();
+        watched(&mut p, probe.clone(), t0, &mut out);
+        let first = p.run_of(&probe);
+        p.handle(WatchCmd::Watch(vec![]), t0, &mut out);
+        watched(&mut p, probe.clone(), t0, &mut out);
+        // Run 1's late `Done` (it was killed) is ignored: run 2 is still in flight.
+        p.handle(WatchCmd::Done { probe: probe.clone(), run: first, result: RunResult::TimedOut }, t0, &mut out);
+        assert!(p.run_due(t0, &mut out).is_empty(), "never two runs of one probe");
+        assert!(!p.failing.contains(&probe), "no spurious timeout warning");
+        p.handle(WatchCmd::Done { probe: probe.clone(), run: p.run_of(&probe), result: exit(0, "") }, t0, &mut out);
+        assert_eq!(out, vec![(probe, Some(Value::Toggle(Toggle::On)), 0)]);
     }
 
     #[test]
@@ -669,14 +757,18 @@ mod tests {
         let mut out = Vec::new();
         let t0 = Instant::now();
         watched(&mut p, probe.clone(), t0, &mut out);
-        p.handle(WatchCmd::Done { probe: probe.clone(), result: RunResult::TimedOut }, t0, &mut out);
+        p.handle(
+            WatchCmd::Done { probe: probe.clone(), run: p.run_of(&probe), result: RunResult::TimedOut },
+            t0,
+            &mut out,
+        );
         assert!(out.is_empty(), "a timeout sends nothing: the key keeps its face");
         assert!(p.failing.contains(&probe), "warned once");
         assert_eq!(p.next_due(), Some(t0 + Duration::from_millis(2000)));
         // A second failure is not warned again.
         p.run_due(t0 + Duration::from_millis(2000), &mut out);
         p.handle(
-            WatchCmd::Done { probe: probe.clone(), result: RunResult::TimedOut },
+            WatchCmd::Done { probe: probe.clone(), run: p.run_of(&probe), result: RunResult::TimedOut },
             t0 + Duration::from_millis(2000),
             &mut out,
         );
@@ -684,7 +776,7 @@ mod tests {
         // A good read clears the failure.
         p.run_due(t0 + 2 * Duration::from_millis(2000), &mut out);
         p.handle(
-            WatchCmd::Done { probe: probe.clone(), result: exit(0, "") },
+            WatchCmd::Done { probe: probe.clone(), run: p.run_of(&probe), result: exit(0, "") },
             t0 + 2 * Duration::from_millis(2000),
             &mut out,
         );
@@ -700,7 +792,7 @@ mod tests {
         watched(&mut p, probe.clone(), t0, &mut out);
         // Unwatched while the run is in flight: the runner is killed, its `Done` ignored.
         p.handle(WatchCmd::Watch(vec![]), t0, &mut out);
-        p.handle(WatchCmd::Done { probe: probe.clone(), result: exit(0, "") }, t0, &mut out);
+        p.handle(WatchCmd::Done { probe: probe.clone(), run: p.run_of(&probe), result: exit(0, "") }, t0, &mut out);
         assert!(out.is_empty());
         assert!(p.last.is_empty());
     }

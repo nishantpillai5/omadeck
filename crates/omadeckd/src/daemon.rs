@@ -19,6 +19,7 @@ use omadeck_core::{
 
 use crate::deck::{self, Deck};
 use crate::hub::Hub;
+use crate::hypr_worker::{HyprJob, HyprWorker};
 use crate::nav::Nav;
 use crate::saver::StateSaver;
 use crate::watch::{WatchCmd, Watcher};
@@ -186,6 +187,8 @@ pub struct Daemon {
     pub hub: Hub,
     pub watcher: Watcher,
     pub saver: StateSaver,
+    /// Runs every Hyprland dispatch off the loop, in order.
+    pub hypr: HyprWorker,
     pub rt: Runtime,
     pub deck: Option<Deck>,
     /// What was last published per strip panel (`Event::DialStatus`), so only changes go out.
@@ -221,6 +224,7 @@ impl Daemon {
             hub,
             watcher,
             saver,
+            hypr: HyprWorker::start(),
             rt,
             deck: None,
             published: HashMap::new(),
@@ -244,7 +248,10 @@ impl Daemon {
         }
         self.hub.publish(Event::Connected { deck: d.info.clone() });
         self.deck = Some(d);
+        // The configurators forgot every panel and key state on `Disconnected` (so did
+        // the hub's replay): send them all again.
         self.published.clear();
+        self.published_keys.clear();
         self.repaint_at = Some(Instant::now() + POST_CONNECT_REPAINT);
         self.watch();
     }
@@ -255,6 +262,7 @@ impl Daemon {
             log::warn!("lost {} ({e}); waiting for it to come back", d.info.model);
         }
         self.published.clear();
+        self.published_keys.clear();
         self.repaint_at = None;
         // `in_flight` stays: the watcher still acknowledges every queued change.
         let _ = self.watcher.cmd.send(WatchCmd::Watch(Vec::new()));
@@ -265,7 +273,8 @@ impl Daemon {
     /// connect, on every reload and on every page change.
     fn watch(&mut self) {
         let dials = self.deck.as_ref().map_or(0, |d| d.info.dials as usize);
-        let probes = probe::watched_probes(&self.cfg, self.nav.current(), dials);
+        // No deck: no dials and no keys, so nothing is polled until one is attached.
+        let probes = probe::watched_probes(&self.cfg, self.nav.current(), dials, self.key_count());
         let _ = self.watcher.cmd.send(WatchCmd::Watch(probes));
     }
 
@@ -452,7 +461,7 @@ impl Daemon {
     fn keep_toggle_state(&mut self) {
         retain_flips(&self.cfg, &mut self.rt.flipped);
         let n_dials = self.deck.as_ref().map_or(0, |d| d.info.dials as usize);
-        let watched = probe::watched_probes(&self.cfg, self.nav.current(), n_dials);
+        let watched = probe::watched_probes(&self.cfg, self.nav.current(), n_dials, self.key_count());
         self.rt.settle.retain(|p, _| watched.contains(p));
         // Values: the dials' probes plus every key's, on any page, so a page you return
         // to shows the last known faces at once.
@@ -692,7 +701,7 @@ impl Daemon {
         } else {
             log::info!("{src}: {}", act.summary());
         }
-        match self.dispatch(act, steps) {
+        match self.dispatch(src, act, steps) {
             Ok(moved) => {
                 if moved {
                     self.show_page();
@@ -700,26 +709,36 @@ impl Daemon {
                 true
             }
             Err(e) => {
-                log::warn!("{src}: {e:#}");
-                let message = format!("{e:#}");
-                match src {
-                    Source::Key(index) => {
-                        let page = self.nav.current().map(str::to_string);
-                        self.hub.publish(Event::ActionFailed { index, page, message })
-                    }
-                    Source::Turn(index) | Source::Press(index) | Source::Tap(index) => {
-                        self.hub.publish(Event::DialActionFailed { index, message })
-                    }
-                    Source::Flick => {}
-                }
+                let page = self.nav.current().map(str::to_string);
+                self.report_failure(src, page, format!("{e:#}"));
                 false
             }
         }
     }
 
+    /// Tell the configurators an input's action failed, against the key (on `page`) or
+    /// dial it came from.
+    fn report_failure(&self, src: Source, page: Option<String>, message: String) {
+        log::warn!("{src}: {message}");
+        match src {
+            Source::Key(index) => self.hub.publish(Event::ActionFailed { index, page, message }),
+            Source::Turn(index) | Source::Press(index) | Source::Tap(index) => {
+                self.hub.publish(Event::DialActionFailed { index, message })
+            }
+            Source::Flick => {}
+        }
+    }
+
+    /// Every pass: report the Hyprland dispatches that failed on the worker.
+    pub fn poll_hypr(&mut self) {
+        while let Ok(f) = self.hypr.failed.try_recv() {
+            self.report_failure(f.src, f.page, f.message);
+        }
+    }
+
     /// Run an action: page moves, brightness and volume are handled here, everything else
     /// goes to `action::run_steps`. Returns whether the page moved.
-    fn dispatch(&mut self, act: &Action, steps: u8) -> Result<bool> {
+    fn dispatch(&mut self, src: Source, act: &Action, steps: u8) -> Result<bool> {
         match act {
             Action::Page { page } if self.cfg.has_page(page) => Ok(self.nav.go(Some(page))),
             Action::Page { page } => Err(anyhow::anyhow!("there's no page named “{page}”")),
@@ -747,6 +766,17 @@ impl Daemon {
                 self.guess_volume(*device, change, *mute);
                 // Runs on the watcher, after any earlier change, and is read back there.
                 let _ = self.watcher.cmd.send(WatchCmd::Volume { device: *device, change, mute: *mute });
+                Ok(false)
+            }
+            Action::Hyprland { dispatch } => {
+                // Queued on the worker, in order behind earlier ones: `hyprctl` waits for
+                // Hyprland, which must never stall the deck. Only an empty dispatcher fails
+                // here; anything else comes back through `poll_hypr`.
+                if dispatch.trim().is_empty() {
+                    anyhow::bail!("no dispatcher set");
+                }
+                let page = self.nav.current().map(str::to_string);
+                self.hypr.send(HyprJob { src, page, dispatch: dispatch.clone(), steps });
                 Ok(false)
             }
             a => action::run_steps(a, steps).map(|_| false),
@@ -1008,6 +1038,21 @@ mod tests {
         assert_eq!(key_state(&cfg, &rt, None, 1, false).state, Toggle::Off);
         rt.flipped.insert(KeyId { page: None, index: 1 });
         assert_eq!(key_state(&cfg, &rt, None, 1, false).state, Toggle::On, "a press toggle reads `flipped`");
+    }
+
+    #[test]
+    fn a_flipped_press_toggle_paints_its_on_face() {
+        // What `paint_key` draws: `key_state` through the renderer, with the bundled font
+        // (core's `test-support`), so the pixels don't depend on this machine.
+        let cfg = Config::parse("[[key]]\nindex = 0\nlabel = \"A\"\n[key.on]\nlabel = \"B\"\n").unwrap();
+        let mut r = Renderer::with_font_bytes(&cfg.style, omadeck_core::render::TEST_FONT);
+        let mut rt = Runtime::default();
+        let paint = |rt: &Runtime, r: &mut Renderer| {
+            r.render(cfg.key(None, 0), &cfg.style, 72, &key_state(&cfg, rt, None, 0, false))
+        };
+        let off = paint(&rt, &mut r);
+        rt.flipped.insert(KeyId { page: None, index: 0 });
+        assert_ne!(paint(&rt, &mut r), off);
     }
 
     #[test]

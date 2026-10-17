@@ -29,6 +29,13 @@ pub fn on_path(bin: &str) -> bool {
     which(bin)
 }
 
+/// A preset's glyph replaces the key's icon too: an icon would beat the glyph on the off
+/// face (and the on face's glyph would then be the only one shown).
+fn set_glyph(k: &mut KeyConfig, glyph: &str) {
+    k.icon = None;
+    k.glyph = Some(glyph.into());
+}
+
 fn on_face(label: &str, glyph: Option<&str>, state: Option<&str>) -> OnFace {
     OnFace {
         label: Some(label.into()),
@@ -42,21 +49,21 @@ fn on_face(label: &str, glyph: Option<&str>, state: Option<&str>) -> OnFace {
 /// with no state follows it.
 fn mic_mute(k: &mut KeyConfig) {
     k.label = "Mic".into();
-    k.glyph = Some("f036c".into());
+    set_glyph(k, "f036c");
     k.action = Action::Volume { device: AudioDevice::Input, change: 0, mute: true };
     k.on = Some(on_face("Muted", Some("f036d"), None));
 }
 
 fn output_mute(k: &mut KeyConfig) {
     k.label = "Sound".into();
-    k.glyph = Some("f057e".into());
+    set_glyph(k, "f057e");
     k.action = Action::Volume { device: AudioDevice::Output, change: 0, mute: true };
     k.on = Some(on_face("Muted", Some("f075f"), None));
 }
 
 fn night_light(k: &mut KeyConfig) {
     k.label = "Night light".into();
-    k.glyph = Some("f18e".into());
+    set_glyph(k, "f18e");
     k.action = Action::App { command: "omarchy-toggle-nightlight".into() };
     k.on = Some(on_face("Night on", Some("f18e"), Some("omarchy-toggle-nightlight --status | jq -e .enabled")));
 }
@@ -81,19 +88,26 @@ fn bluetooth(k: &mut KeyConfig) {
 }
 
 /// The Service preset: a slow toggle for a systemd user unit, optional health URL.
-/// `Err` when `unit` has characters outside `[A-Za-z0-9@._:-]`.
+/// `Err` when `unit` has characters outside `[A-Za-z0-9@._:-]`, or the URL has a control
+/// character; then `k` is untouched, so it can be applied to the key in place. The key's
+/// index, background and colours are kept.
 pub fn apply_service(k: &mut KeyConfig, unit: &str, health_url: Option<&str>) -> Result<()> {
     if unit.is_empty() || !unit.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '@' | '.' | '_' | ':' | '-')) {
         bail!("invalid unit name: {unit:?}");
     }
+    if let Some(url) = health_url
+        && url.chars().any(char::is_control)
+    {
+        bail!("the health URL has a control character in it");
+    }
     k.label = unit.into();
-    k.glyph = Some("f048b".into());
+    set_glyph(k, "f048b");
     k.action = Action::App {
         command: format!(
             "systemctl --user is-active -q {unit} && systemctl --user stop --no-block {unit} || systemctl --user start --no-block {unit}"
         ),
     };
-    let state = match health_url {
+    let state = match health_url.map(shell_words::quote) {
         Some(url) => format!(
             "s=$(systemctl --user is-active {unit})\ncase $s in\n  active) curl -sf -o /dev/null -m 2 {url} && exit 0\n          echo Loading; exit 75 ;;\n  activating|deactivating|reloading) echo \"$s\"; exit 75 ;;\n  *) exit 1 ;;\nesac"
         ),
@@ -136,6 +150,33 @@ mod tests {
         apply_service(&mut k, "backup.timer", None).unwrap();
         assert!(k.is_slow_toggle());
         assert!(!k.on.as_ref().unwrap().state.as_deref().unwrap().contains("curl"));
+    }
+
+    #[test]
+    fn service_quotes_the_health_url() {
+        let mut k = KeyConfig::new(5);
+        apply_service(&mut k, "llm.service", Some("http://127.0.0.1:8000/h?a=1&b=2")).unwrap();
+        assert_eq!(k.index, 5, "applied in place, the key keeps its slot");
+        let state = k.on.unwrap().state.unwrap();
+        assert!(state.contains("-m 2 'http://127.0.0.1:8000/h?a=1&b=2' && exit 0"), "{state}");
+        // The script still parses as shell.
+        let ok = std::process::Command::new("sh").args(["-n", "-c", &state]).status().unwrap();
+        assert!(ok.success());
+        assert!(apply_service(&mut KeyConfig::new(0), "llm.service", Some("http://x/\nrm -rf ~")).is_err());
+    }
+
+    #[test]
+    fn presets_keep_the_key_and_replace_its_icon() {
+        for p in PRESETS {
+            let mut k =
+                KeyConfig { icon: Some("old.png".into()), background: Some("#112233".into()), ..KeyConfig::new(7) };
+            (p.apply)(&mut k);
+            assert_eq!(k.index, 7, "{}", p.name);
+            assert_eq!(k.background.as_deref(), Some("#112233"), "{}", p.name);
+            if k.glyph.is_some() {
+                assert_eq!(k.icon, None, "{}: its glyph would hide behind the old icon", p.name);
+            }
+        }
     }
 
     #[test]

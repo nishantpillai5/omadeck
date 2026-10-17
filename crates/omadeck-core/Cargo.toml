@@ -20,3 +20,9 @@ resvg = "0.48"
 ab_glyph = "0.2"
 shell-words = "1"
 libc = "0.2"
+
+[features]
+# `Renderer::with_font_bytes` and the bundled test font, for other crates' tests:
+# `omadeck-core = { workspace = true, features = ["test-support"] }` under
+# `[dev-dependencies]`.
+test-support = []
