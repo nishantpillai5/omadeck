@@ -6,7 +6,7 @@ use std::rc::Rc;
 use adw::prelude::*;
 use gtk::{gdk, gio, glib};
 use omadeck_core::{
-    Action, AudioDevice, BusyFace, DialConfig, Direction, FaceTab, HOME, KeyConfig, LookField, OnFace, Rgb,
+    Action, AudioDevice, BusyFace, DialConfig, Direction, FaceTab, HOME, KeyConfig, Live, LookField, OnFace, Rgb,
     StateChoice, action, paths,
 };
 
@@ -277,6 +277,19 @@ pub fn build_key(app: &Rc<App>, i: u8) -> gtk::Widget {
     }
     page.add(&toggle);
 
+    // --- live value -----------------------------------------------------------------------
+    let live_group = adw::PreferencesGroup::builder().title("Live value").build();
+    let at = app.key_ref(i); // the key it was built for, even if the page changes first
+    let edit: LiveEdit = Rc::new(move |a: &Rc<App>, f: Box<dyn FnOnce(&mut Option<Live>)>| {
+        a.edit_ref(&at, |k: &mut KeyConfig| f(&mut k.live));
+    });
+    live_rows(app, &live_group, key.live.as_ref(), edit);
+    if key.live.is_some() {
+        live_group
+            .add(&hint_row("The label shows as a small caption; with an icon, the value takes the label's place."));
+    }
+    page.add(&live_group);
+
     // --- appearance -----------------------------------------------------------------------
     let look = adw::PreferencesGroup::builder().title("Appearance").build();
     appearance_tabs(app, &look, &key);
@@ -463,6 +476,17 @@ pub fn build_dial(app: &Rc<App>, i: u8) -> gtk::Widget {
     for dir in [Direction::Left, Direction::Right, Direction::Press] {
         page.add(&dial_action_group(app, i, dir));
     }
+
+    // --- panel value ----------------------------------------------------------------------
+    let panel_group = adw::PreferencesGroup::builder().title("Panel value").build();
+    let edit: LiveEdit = Rc::new(move |a: &Rc<App>, f: Box<dyn FnOnce(&mut Option<Live>)>| {
+        a.edit_dial(i, |d: &mut DialConfig| f(&mut d.live));
+    });
+    live_rows(app, &panel_group, dial.live.as_ref(), edit);
+    if dial.live.is_some() {
+        panel_group.add(&hint_row("Shown instead of the volume or brightness the dial's actions change."));
+    }
+    page.add(&panel_group);
 
     // --- appearance (the strip panel) -----------------------------------------------------
     let look = adw::PreferencesGroup::builder()
@@ -750,6 +774,123 @@ fn action_editor(app: &Rc<App>, group: &adw::PreferencesGroup, combo_title: &str
     });
     group.add(&kind_row);
     action_rows(app, group, slot);
+}
+
+/// Changes a key's or a dial's `live` (the one it was built for).
+type LiveEdit = Rc<dyn Fn(&Rc<App>, Box<dyn FnOnce(&mut Option<Live>)>)>;
+
+/// A clock's example, on one line.
+fn clock_example(format: &str) -> String {
+    omadeck_core::live::clock_text(format).replace('\n', " · ")
+}
+
+/// The rows of a key's Live value group or a dial's Panel value group: what it shows,
+/// and that source's settings. The GUI never reads the value itself: the preview shows
+/// what the daemon sends (`–` without it).
+fn live_rows(app: &Rc<App>, group: &adw::PreferencesGroup, live: Option<&Live>, edit: LiveEdit) {
+    let list = gtk::StringList::new(&Live::KINDS);
+    let shows = adw::ComboRow::builder().title("Shows").model(&list).build();
+    // Before connecting, so building the row edits nothing.
+    shows.set_selected(Live::kind_index(live) as u32);
+    let a = app.clone();
+    let e = edit.clone();
+    shows.connect_selected_notify(move |row: &adw::ComboRow| {
+        let sel = row.selected() as usize;
+        e(&a, Box::new(move |l: &mut Option<Live>| *l = Live::of_kind(sel)));
+        // The source's own rows come and go with it.
+        a.rebuild_editor();
+    });
+    group.add(&shows);
+
+    match live {
+        Some(Live::Clock { format }) => {
+            let entry = adw::EntryRow::builder().title("Format").text(format.as_str()).build();
+            entry.add_suffix(
+                &gtk::Label::builder().label("strftime, e.g. %H:%M or %a %d %b").css_classes(["dim-label"]).build(),
+            );
+            let example = adw::ActionRow::builder()
+                .title(clock_example(format))
+                .subtitle("Now")
+                .use_markup(false)
+                .activatable(false)
+                .build();
+            // Formatting runs nothing, so it is saved per keystroke, like a label. The
+            // example follows the entry's text, not the config.
+            let a = app.clone();
+            let e = edit.clone();
+            let ex = example.clone();
+            entry.connect_changed(move |en: &adw::EntryRow| {
+                let text = en.text().to_string();
+                ex.set_title(&clock_example(&text));
+                e(
+                    &a,
+                    Box::new(move |l: &mut Option<Live>| {
+                        if let Some(Live::Clock { format }) = l {
+                            *format = text;
+                        }
+                    }),
+                );
+            });
+            group.add(&entry);
+            group.add(&example);
+        }
+        Some(Live::Command { command, interval }) => {
+            let cmd = adw::EntryRow::builder().title("Command").text(command.as_str()).show_apply_button(true).build();
+            cmd.add_suffix(&gtk::Label::builder().label("its first output line").css_classes(["dim-label"]).build());
+            // Saved on Enter, ✓ or focus-out, not per keystroke: the daemon runs whatever
+            // is saved (as for a state command).
+            let saved = Rc::new(RefCell::new(command.clone()));
+            let save: Rc<dyn Fn(&adw::EntryRow)> = {
+                let a = app.clone();
+                let e = edit.clone();
+                Rc::new(move |en: &adw::EntryRow| {
+                    let text = en.text().to_string();
+                    if *saved.borrow() == text {
+                        return;
+                    }
+                    saved.replace(text.clone());
+                    e(
+                        &a,
+                        Box::new(move |l: &mut Option<Live>| {
+                            if let Some(Live::Command { command, .. }) = l {
+                                *command = text;
+                            }
+                        }),
+                    );
+                })
+            };
+            cmd.connect_apply({
+                let save = save.clone();
+                move |en: &adw::EntryRow| save(en)
+            });
+            let focus = gtk::EventControllerFocus::new();
+            let weak = cmd.downgrade();
+            focus.connect_leave(move |_| {
+                if let Some(en) = weak.upgrade() {
+                    save(&en);
+                }
+            });
+            cmd.add_controller(focus);
+            group.add(&cmd);
+            let adj = gtk::Adjustment::new(*interval as f64, 1.0, 3600.0, 1.0, 10.0, 0.0);
+            let every = adw::SpinRow::builder().title("Every (seconds)").adjustment(&adj).build();
+            let a = app.clone();
+            let e = edit.clone();
+            adj.connect_value_changed(move |adj: &gtk::Adjustment| {
+                let v = adj.value().round() as u16;
+                e(
+                    &a,
+                    Box::new(move |l: &mut Option<Live>| {
+                        if let Some(Live::Command { interval, .. }) = l {
+                            *interval = v;
+                        }
+                    }),
+                );
+            });
+            group.add(&every);
+        }
+        _ => {}
+    }
 }
 
 /// A short explanation under an action's rows. Its own row, not the group's
