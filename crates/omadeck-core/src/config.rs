@@ -412,6 +412,7 @@ impl KeyConfig {
         }
         match &self.action {
             Action::Volume { device, mute: true, .. } => Some(Probe::Volume(*device)),
+            Action::Media { command: MediaCommand::PlayPause, seek: 0, player } => Some(Probe::Player(player.clone())),
             _ => None,
         }
     }
@@ -507,6 +508,8 @@ pub enum StateChoice {
     Command,
     /// The mute a volume mute key already changes.
     Mute,
+    /// The media player a play/pause key already controls: on while it plays.
+    Player,
 }
 
 impl KeyConfig {
@@ -514,18 +517,23 @@ impl KeyConfig {
     pub fn state_choices(&self) -> &'static [StateChoice] {
         match &self.action {
             Action::Volume { mute: true, .. } => &[StateChoice::Mute, StateChoice::Command],
+            Action::Media { command: MediaCommand::PlayPause, seek: 0, .. } => {
+                &[StateChoice::Player, StateChoice::Command]
+            }
             _ => &[StateChoice::Press, StateChoice::Command],
         }
     }
 
-    /// `on.state` set (even blank) → Command; else Mute for a volume mute action; else
-    /// Press. Only called for keys with an on face.
+    /// `on.state` set (even blank) → Command; else Mute for a volume mute action, Player
+    /// for a play/pause media action; else Press. Only called for keys with an on face.
     pub fn state_choice(&self) -> StateChoice {
         let on = self.on.as_ref().expect("a state choice only exists with an on face");
         if on.state.is_some() {
             StateChoice::Command
         } else if matches!(self.action, Action::Volume { mute: true, .. }) {
             StateChoice::Mute
+        } else if matches!(self.action, Action::Media { command: MediaCommand::PlayPause, seek: 0, .. }) {
+            StateChoice::Player
         } else {
             StateChoice::Press
         }
@@ -541,7 +549,7 @@ impl KeyConfig {
                     on.state = Some(String::new());
                 }
             }
-            StateChoice::Press | StateChoice::Mute => {
+            StateChoice::Press | StateChoice::Mute | StateChoice::Player => {
                 on.state = None;
                 on.slow = false;
             }
@@ -2835,5 +2843,26 @@ player = "spotify"
             Action::Media { command: MediaCommand::PlayPause, seek: 5, player: None }
         );
         assert_eq!(Action::default_for(14, Direction::Press), Action::empty_of_kind(14));
+    }
+
+    #[test]
+    fn play_pause_key_state_choice_is_player() {
+        let mut k = KeyConfig {
+            action: Action::Media { command: MediaCommand::PlayPause, seek: 0, player: None },
+            on: Some(OnFace::default()),
+            ..KeyConfig::new(0)
+        };
+        assert_eq!(k.state_choices(), &[StateChoice::Player, StateChoice::Command]);
+        assert_eq!(k.state_choice(), StateChoice::Player);
+        k.set_state_choice(StateChoice::Command);
+        assert_eq!(k.state_choice(), StateChoice::Command);
+        k.on.as_mut().unwrap().slow = true;
+        k.set_state_choice(StateChoice::Player);
+        assert_eq!((k.on.as_ref().unwrap().state.clone(), k.on.as_ref().unwrap().slow), (None, false));
+        assert_eq!(k.state_choice(), StateChoice::Player);
+        // Next track is no toggle source: back to the press flip.
+        k.action = Action::Media { command: MediaCommand::Next, seek: 0, player: None };
+        assert_eq!(k.state_choices(), &[StateChoice::Press, StateChoice::Command]);
+        assert_eq!(k.state_choice(), StateChoice::Press);
     }
 }
