@@ -50,9 +50,9 @@ pub fn run(action: &Action) -> Result<()> {
 
 /// Run a multi's steps in order on this thread, for callers with no deck loop (the
 /// offline CLI and the configurator's Try it now with no daemon). Delays sleep; a volume
-/// step waits for its command; a Hyprland step waits for hyprctl's answer. Deck-owned
-/// steps fail (`run` bails), and so do nested multis. Returns each failed step's number
-/// (from 0) and error; the other steps still run.
+/// or app volume step waits for its commands; a Hyprland step waits for hyprctl's
+/// answer. Deck-owned steps fail (`run` bails), and so do nested multis. Returns each
+/// failed step's number (from 0) and error; the other steps still run.
 pub fn run_multi_blocking(steps: &[Action]) -> Vec<(usize, anyhow::Error)> {
     let mut failed = Vec::new();
     for (n, step) in steps.iter().enumerate() {
@@ -66,6 +66,11 @@ pub fn run_multi_blocking(steps: &[Action]) -> Vec<(usize, anyhow::Error)> {
                 apply_volume(*device, *change, *mute);
                 Ok(())
             }
+            // Inline like volume, so the next step sees the new level (BUGS.md 93).
+            Action::AppVolume { change, mute, .. } => match step.app_query() {
+                Some(query) => apply_app_volume(&query, i32::from(*change), *mute),
+                None => Err(anyhow::anyhow!("no app set")),
+            },
             // In order too: the next step may depend on the player having moved.
             Action::Media { command, seek, player } => {
                 let target = player.as_deref().map(str::trim).filter(|p| !p.is_empty());
@@ -164,25 +169,32 @@ fn apply_media(backend: audio::Backend, cmd: MediaCommand, seek: i32, target: Op
 }
 
 /// Change an app's volume on a helper thread (`omadeckd press`, "Try it now"). The
-/// daemon runs `WatchCmd::AppVolume` on its watcher instead. No sticky app here: a
-/// focused action outside the daemon changes the focused window's app or nothing.
+/// daemon runs `WatchCmd::AppVolume` on its watcher instead.
 fn run_app_volume(action: &Action, change: i32, mute: bool) -> Result<()> {
     let Some(query) = action.app_query() else { bail!("no app set") };
     thread::Builder::new().name("app-volume".into()).spawn(move || {
-        let Some(streams) = audio::streams() else {
-            log::warn!("app volume: couldn't read the audio streams (is pactl installed?)");
-            return;
-        };
-        let window = if query == audio::AppQuery::Focused { audio::focused_window() } else { None };
-        let mut sticky = None;
-        let lv = audio::resolve(&streams, &query, window.as_ref(), &mut sticky, audio::proc_parent);
-        if lv.ids.is_empty() {
-            log::info!("no app with audio for {query:?}");
-            return;
+        if let Err(e) = apply_app_volume(&query, change, mute) {
+            log::info!("app volume: {e:#}");
         }
-        let mute_to = mute.then(|| !lv.level.is_some_and(|l| l.muted));
-        audio::run_commands(&audio::app_volume_commands(&lv.ids, change, mute_to));
     })?;
+    Ok(())
+}
+
+/// Change an app's volume and wait until it's done. Blocking: never call it on the deck
+/// loop. No sticky app here: a focused action outside the daemon changes the focused
+/// window's app or nothing. `Err` when the streams can't be read or no app matches.
+fn apply_app_volume(query: &audio::AppQuery, change: i32, mute: bool) -> Result<()> {
+    let Some(streams) = audio::streams() else {
+        bail!("couldn't read the audio streams (is pactl installed?)");
+    };
+    let window = if *query == audio::AppQuery::Focused { audio::focused_window() } else { None };
+    let mut sticky = None;
+    let lv = audio::resolve(&streams, query, window.as_ref(), &mut sticky, audio::proc_parent);
+    if lv.ids.is_empty() {
+        bail!("no app with audio for {query:?}");
+    }
+    let mute_to = mute.then(|| !lv.level.is_some_and(|l| l.muted));
+    audio::run_commands(&audio::app_volume_commands(&lv.ids, change, mute_to));
     Ok(())
 }
 
@@ -599,6 +611,21 @@ mod tests {
         );
         let owned = Action::Multi { steps: vec![Action::Delay { ms: 10 }, Action::PageStep { change: 1 }] };
         assert!(run(&owned).unwrap_err().to_string().contains("only work on the deck"));
+    }
+
+    #[test]
+    fn multi_app_volume_step_runs_inline() {
+        // BUGS.md 93: the step ran on a helper thread, so it could land after the next
+        // step and its failure was only logged. Inline, the multi reports it. Nothing
+        // changes: there's no such app (and on a machine without pactl, no streams).
+        let steps = [
+            Action::AppVolume { app: "omadeck-test-no-such-app".into(), focused: false, change: 5, mute: false },
+            Action::AppVolume { app: " ".into(), focused: false, change: 5, mute: false },
+        ];
+        let failed = run_multi_blocking(&steps);
+        let got: Vec<usize> = failed.iter().map(|(n, _)| *n).collect();
+        assert_eq!(got, vec![0, 1], "{failed:?}");
+        assert_eq!(failed[1].1.to_string(), "no app set");
     }
 
     #[test]
