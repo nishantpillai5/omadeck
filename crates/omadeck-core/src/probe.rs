@@ -7,8 +7,8 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
-use crate::config::{AudioDevice, Config, DialConfig, LevelSource};
-use crate::render::{DialStatus, Level, PanelStatus};
+use crate::config::{AudioDevice, Config, DialConfig, KeyConfig, LevelSource};
+use crate::render::{DialStatus, KeyStatus, Level, PanelStatus};
 
 /// A volume set from the keyboard or `pavucontrol` lands in well under this.
 const VOLUME_REFRESH: [Duration; 1] = [Duration::from_millis(150)];
@@ -135,6 +135,22 @@ pub fn shows(dial: Option<&DialConfig>, probe: &Probe) -> bool {
         (Some(LevelSource::Volume(dev)), Probe::Volume(p)) => dev == *p,
         _ => false,
     }
+}
+
+/// The ONE builder of a key's status from the watcher's values, like `dial_status`. It
+/// covers what `Values` knows (a command's state, a mute); the two per-(page, key) things
+/// `Values` can't key (a press toggle's flip and a running job) are laid over it by the
+/// daemon's `key_state`.
+pub fn key_status(key: Option<&KeyConfig>, values: &Values, pressed: bool) -> KeyStatus {
+    let state = match key.filter(|k| k.on.is_some()).and_then(KeyConfig::state_probe) {
+        Some(p) => match values.probes.get(&p) {
+            Some(Value::Toggle(t)) => t.clone(),
+            Some(Value::Level(l)) if l.muted => Toggle::On, // "on" for a mute key is muted
+            _ => Toggle::Off,
+        },
+        None => Toggle::Off,
+    };
+    KeyStatus { pressed, state }
 }
 
 /// A state command's exit code: 0 on, 75 busy (with its first output line as the
