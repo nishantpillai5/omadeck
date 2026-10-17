@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use omadeck_core::device::{self, DeviceStateReader, HidApi, ImageRect, Kind, StreamDeck};
-use omadeck_core::probe::{self, Toggle, Values};
+use omadeck_core::probe::{self, Values};
 use omadeck_core::{Config, DeckInfo, DialStatus, KeyStatus, PANEL_W, Renderer};
 
 /// How long a panel stays highlighted after a tap on the strip.
@@ -22,11 +22,21 @@ pub struct Deck {
     /// When each dial's panel was tapped (the tap time, not a deadline), while it flashes.
     pub flash_until: Vec<Option<Instant>>,
     /// Panels to repaint at the end of this pass (`flush_dirty`), however many changes
-    /// dirtied them. PR 8 adds `dirty_keys` next to it.
+    /// dirtied them.
     pub dirty_panels: Vec<bool>,
+    /// Keys to repaint at the end of this pass (`flush_dirty`), however many changes
+    /// dirtied them.
+    pub dirty_keys: Vec<bool>,
 }
 
 impl Deck {
+    /// Mark key `i` for the end-of-pass paint.
+    pub fn mark_key_dirty(&mut self, i: u8) {
+        if let Some(f) = self.dirty_keys.get_mut(i as usize) {
+            *f = true;
+        }
+    }
+
     /// Whether dial `i` is drawn pressed: held down, or tapped less than `DIAL_FLASH` ago.
     pub fn pressed(&self, i: u8, now: Instant) -> bool {
         let n = i as usize;
@@ -85,6 +95,7 @@ pub fn open(hid: &mut HidApi) -> Option<Deck> {
     let reader = dev.get_reader();
     let info = DeckInfo::new(kind, &serial);
     let n_dials = info.dials as usize;
+    let n_keys = info.key_count() as usize;
     let deck = Deck {
         dev,
         reader,
@@ -93,6 +104,7 @@ pub fn open(hid: &mut HidApi) -> Option<Deck> {
         dial_pressed: vec![false; n_dials],
         flash_until: vec![None; n_dials],
         dirty_panels: vec![false; n_dials],
+        dirty_keys: vec![false; n_keys],
     };
     log::info!(
         "connected {} (serial {}, firmware {})",
@@ -108,18 +120,19 @@ pub fn panel_status(d: &Deck, cfg: &Config, values: &Values, i: u8, now: Instant
     probe::dial_status(cfg.dial(i), values, d.pressed(i, now))
 }
 
-/// Repaint everything: brightness, every key, every strip panel, one flush. Clears the
-/// dirty panels, which it has just painted.
+/// Repaint everything: brightness, every key (in its state), every strip panel, one
+/// flush. Clears the dirty panels and keys, which it has just painted.
 pub fn paint_all(
     d: &mut Deck,
     cfg: &Config,
     page: Option<&str>,
     renderer: &mut Renderer,
     values: &Values,
+    keys: &[KeyStatus],
 ) -> Result<()> {
     d.dev.set_brightness(values.brightness)?;
     for i in 0..d.kind.key_count() {
-        write_key(d, cfg, page, renderer, i, false)?;
+        write_key(d, cfg, page, renderer, i, &keys[i as usize])?;
     }
     // The touch strip, panel by panel (the same 200×100 writes a single-panel update
     // uses); it repaints on connect, reload and theme change, so follow_theme and hot
@@ -132,34 +145,57 @@ pub fn paint_all(
         }
     }
     d.dirty_panels.fill(false);
+    d.dirty_keys.fill(false);
     d.dev.flush()?;
     Ok(())
 }
 
-/// Paint what this pass dirtied, with one flush, and clear it. The only place panels are
-/// painted outside `paint_all`. PR 8 adds `dirty_keys` here (and to `paint_all`'s clear).
-pub fn flush_dirty(d: &mut Deck, cfg: &Config, renderer: &mut Renderer, values: &Values) {
-    if d.info.strip.is_none() || !d.dirty_panels.contains(&true) {
+/// Paint what this pass dirtied, with one flush, and clear it. The only place panels and
+/// keys are painted outside `paint_all`.
+pub fn flush_dirty(
+    d: &mut Deck,
+    cfg: &Config,
+    page: Option<&str>,
+    renderer: &mut Renderer,
+    values: &Values,
+    keys: &[KeyStatus],
+) {
+    let dirty_panels = d.info.strip.is_some() && d.dirty_panels.contains(&true);
+    let dirty_keys = d.dirty_keys.contains(&true);
+    if !dirty_panels && !dirty_keys {
         d.dirty_panels.fill(false);
+        d.dirty_keys.fill(false);
         return;
     }
     let now = Instant::now();
-    for i in 0..d.info.dials {
-        if d.dirty_panels[i as usize]
-            && let Err(e) = write_panel(d, cfg, renderer, values, i, now)
-        {
-            log::warn!("paint dial {i}: {e}");
+    if dirty_panels {
+        for i in 0..d.info.dials {
+            if d.dirty_panels[i as usize]
+                && let Err(e) = write_panel(d, cfg, renderer, values, i, now)
+            {
+                log::warn!("paint dial {i}: {e}");
+            }
+        }
+    }
+    if dirty_keys {
+        for i in 0..d.kind.key_count() {
+            if d.dirty_keys[i as usize]
+                && let Err(e) = write_key(d, cfg, page, renderer, i, &keys[i as usize])
+            {
+                log::warn!("paint key {i}: {e}");
+            }
         }
     }
     d.dirty_panels.fill(false);
+    d.dirty_keys.fill(false);
     if let Err(e) = d.dev.flush() {
         log::warn!("flush: {e}");
     }
 }
 
 /// Paint one key at once (presses must show without waiting for the pass to end).
-pub fn paint_key(d: &Deck, cfg: &Config, page: Option<&str>, renderer: &mut Renderer, i: u8, pressed: bool) {
-    if let Err(e) = write_key(d, cfg, page, renderer, i, pressed).and_then(|_| Ok(d.dev.flush()?)) {
+pub fn paint_key(d: &Deck, cfg: &Config, page: Option<&str>, renderer: &mut Renderer, i: u8, st: &KeyStatus) {
+    if let Err(e) = write_key(d, cfg, page, renderer, i, st).and_then(|_| Ok(d.dev.flush()?)) {
         log::warn!("paint key {i}: {e}");
     }
 }
@@ -173,11 +209,8 @@ fn write_panel(d: &Deck, cfg: &Config, renderer: &mut Renderer, values: &Values,
     Ok(())
 }
 
-fn write_key(d: &Deck, cfg: &Config, page: Option<&str>, renderer: &mut Renderer, i: u8, pressed: bool) -> Result<()> {
-    // PR 8's Task F passes the key's real state; until then, off (not pressed is the
-    // only state the daemon has).
-    let st = KeyStatus { pressed, state: Toggle::Off };
-    let face = renderer.render(cfg.key(page, i), &cfg.style, d.info.key_size, &st);
+fn write_key(d: &Deck, cfg: &Config, page: Option<&str>, renderer: &mut Renderer, i: u8, st: &KeyStatus) -> Result<()> {
+    let face = renderer.render(cfg.key(page, i), &cfg.style, d.info.key_size, st);
     d.dev.set_button_image(i, image::DynamicImage::ImageRgba8(face))?;
     Ok(())
 }

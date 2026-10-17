@@ -202,14 +202,24 @@ pub fn progress(text: &str) -> Option<u8> {
 }
 
 /// Everything the watcher should read while `page` is shown on a deck with `n_dials`
-/// dials, each once: today the dials' volume levels, in dial order. PR 8 adds the probes
-/// of the keys on `page` (hence the parameter), PR 9 live keys, PR 10 app volumes.
-pub fn watched_probes(cfg: &Config, _page: Option<&str>, n_dials: usize) -> Vec<Probe> {
+/// dials, each once: the dials' volume levels in dial order, then the current page's key
+/// probes (a toggle's state command, or the mute it follows). PR 9 adds live keys, PR 10
+/// app volumes.
+pub fn watched_probes(cfg: &Config, page: Option<&str>, n_dials: usize) -> Vec<Probe> {
     let mut out = Vec::new();
     for i in 0..n_dials {
         if let Some(LevelSource::Volume(dev)) = cfg.dial(i as u8).and_then(DialConfig::level_source) {
             let p = Probe::Volume(dev);
             if !out.contains(&p) {
+                out.push(p);
+            }
+        }
+    }
+    if let Some(ks) = cfg.page(page) {
+        for k in ks.iter() {
+            if let Some(p) = k.state_probe()
+                && !out.contains(&p)
+            {
                 out.push(p);
             }
         }
@@ -256,6 +266,51 @@ mod tests {
         assert_eq!(dial_status(Some(&brightness_dial(0)), &values, false).panel.level, Some(brightness_level(70)));
         assert_eq!(dial_status(Some(&DialConfig::new(0)), &values, false).panel, PanelStatus::default());
         assert_eq!(dial_status(None, &values, false).panel, PanelStatus::default());
+    }
+
+    #[test]
+    fn watched_probes_current_page_dials_and_dedup() {
+        let cfg = Config::parse(
+            r#"
+[[key]]
+index = 0
+[key.action]
+type = "volume"
+mute = true
+[key.on]
+
+[[key]]
+index = 1
+[key.on]
+state = "true"
+
+[[key]]
+index = 2
+[key.on]
+state = "true"
+
+[[page]]
+name = "Other"
+[[page.key]]
+index = 0
+[page.key.on]
+state = "false"
+
+[[dial]]
+index = 0
+[dial.turn_right]
+type = "volume"
+change = 5
+"#,
+        )
+        .unwrap();
+        let cmd = |c: &str| Probe::Command { command: c.into(), interval_ms: 2000 };
+        // The mute key's probe (the output's) is the dial's: deduped. The two "true" keys
+        // share one probe.
+        assert_eq!(watched_probes(&cfg, None, 4), vec![Probe::Volume(AudioDevice::Output), cmd("true")]);
+        // The other page watches its own keys, not the home page's.
+        assert_eq!(watched_probes(&cfg, Some("Other"), 4), vec![Probe::Volume(AudioDevice::Output), cmd("false")]);
+        assert_eq!(watched_probes(&cfg, Some("Other"), 0), vec![cmd("false")], "no dials, no dial probes");
     }
 
     #[test]
