@@ -245,8 +245,8 @@ A key with a `[key.on]` table has a second face. Which face shows comes from the
 real system, in this order of precedence:
 
 1. **A state command** (`state = "…"` on `[key.on]`) is run in the background, every
-   `interval` seconds (1–60, default 2): exit **0** = on, **75** = busy, anything else
-   = off. While busy, the command's last output line is the key's label — put a
+   `interval` seconds (at least 1, default 2): exit **0** = on, **75** = busy, anything else
+   = off. While busy, the command's first output line is the key's label — put a
    percentage in it (`echo 43%`) and, with `[key.busy] bar = true`, it becomes a
    progress bar. A `slow = true` toggle shows busy at once on a press and polls fast
    until the state moves, for things that take a while to come up or go down.
@@ -254,9 +254,14 @@ real system, in this order of precedence:
    state follows its mute.
 3. **A flip on each press**, as the Elgato app's two-state actions do.
 
+`[key.on] action` runs instead of the key's action while it's on (Elgato's Hotkey
+Switch); unset, a press runs the key's own action.
+
 Separately, any key running a plain command or script can set `busy_while_running =
 true` to look busy — with the command's last output line — for as long as it runs;
-the command keeps running if the daemon stops (it runs in its own systemd scope).
+the command keeps running if the daemon restarts (it runs in its own systemd scope),
+but the key stops showing it, and a program that writes progress may end when nothing
+reads it any more.
 
 ```toml
 [[key]]

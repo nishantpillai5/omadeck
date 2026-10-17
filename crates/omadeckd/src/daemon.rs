@@ -94,8 +94,7 @@ pub struct Runtime {
 
 /// What key `i` on `page` shows now: core's `key_status` (the ONE builder) with the two
 /// per-key things `Values` can't hold laid over it. A running job wins; a press toggle
-/// reads `flipped`. Task F's paint path calls it.
-#[allow(dead_code)]
+/// reads `flipped`.
 pub fn key_state(cfg: &Config, rt: &Runtime, page: Option<&str>, i: u8, pressed: bool) -> KeyStatus {
     let key = cfg.key(page, i);
     let mut st = probe::key_status(key, &rt.values, pressed);

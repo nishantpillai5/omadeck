@@ -11,7 +11,7 @@ All notable changes to omadeck are documented here. The format follows
   exit status polled in the background (exit 0 = on, 75 = busy with a progress line,
   else off), the mute a volume mute key already changes, or a flip on each press. A
   `slow = true` toggle shows busy at once and polls fast until the state moves; `[key.busy]
-  bar = true` draws a progress bar from the last `NN%`. Any key running a command or
+  bar = true` draws a progress bar from the first `NN%`. Any key running a command or
   script can set `busy_while_running = true` to look busy for as long as it runs (the
   command keeps running if the daemon stops). The configurator mirrors what the deck
   shows, edits each face in its own tab, and has toggle presets: mic mute, output
@@ -57,6 +57,16 @@ All notable changes to omadeck are documented here. The format follows
   panel's look.
 
 ### Fixed
+- The configurator no longer crashes when a toggle key loses its on face while on.
+- Renaming or deleting a page also updates a toggle's on action that opens it.
+- The Service… preset keeps the key where it is, and quotes its health URL.
+- A slow toggle whose state never changes leaves busy after 15 seconds.
+- The volume bar can no longer stay off the real level after a failed read or a replug.
+- After a replug the configurator still shows which keys are on.
+- Hyprland actions never hold up the deck.
+- A brightness set on the deck survives a restart after any configurator edit.
+- A busy bar needs a real percentage (`43%`); `1/4` no longer draws one.
+- Pressing a volume or brightness dial colours only its title.
 - The optimistic volume bar now corrects itself when the real value didn't change (turning
   while muted, the 0/100% clamp, a failed command).
 - A volume action no longer blocks the deck looking up the focused monitor (Omarchy 3), and

@@ -66,8 +66,10 @@ pub struct Level {
 /// `serde(default)` and skipped when default, so fields can be added (PR 9: `live`).
 #[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct KeyStatus {
+    /// Drawn with the press ring.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub pressed: bool,
+    /// Off, on or busy; drawn by `KeyConfig::face_for`.
     #[serde(default, skip_serializing_if = "crate::probe::Toggle::is_off")]
     pub state: crate::probe::Toggle,
 }
@@ -99,7 +101,7 @@ const B1_VALUE_PX: f32 = 24.0;
 const OUTPUT_GLYPH: &str = "f057e"; // 󰕾 speaker
 const INPUT_GLYPH: &str = "f036c"; // 󰎬 microphone
 const MUTE_GLYPH: &str = "f075f"; // 󰝟 muted
-const BRIGHTNESS_GLYPH: &str = "f00de"; // 󀟎 brightness
+const BRIGHTNESS_GLYPH: &str = "f00de"; // 󰃞 brightness
 
 /// The glyph a volume dial's `$B1` panel shows when it has no icon: the mute glyph when
 /// muted, else the dial's own glyph, else a speaker (output) or a microphone (input).
@@ -1622,8 +1624,6 @@ mod tests {
         let _ = std::fs::remove_dir_all(strip.parent().unwrap());
     }
 
-    /// The no-image panels must be pixel-identical to the fixtures captured before this
-    /// PR changed `render_strip_panel`'s signature and colours.
     /// The no-image panels must be pixel-identical to the goldens. They use the bundled
     /// font and the glyph "A", so they don't depend on the machine's fonts.
     #[test]

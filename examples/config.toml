@@ -88,7 +88,7 @@ command = "playerctl play-pause"
 # change = 1                   # next page; -1 is previous, folders are skipped
 
 # A toggle key: a second face ([key.on]) that follows real state. The state
-# command exits 0 when on, 75 while busy (its last output line is the progress,
+# command exits 0 when on, 75 while busy (its first output line is the progress,
 # "NN%" for the bar), anything else off. No state: a volume mute key follows its
 # mute, any other key flips on each press.
 [[key]]
@@ -113,21 +113,22 @@ glyph = "f036d"
 # [key.on]
 # label = "Night on"
 # state = "omarchy-toggle-nightlight --status | jq -e .enabled"
-# interval = 2                 # seconds between runs (1-60)
+# interval = 2                 # seconds between runs (at least 1; the configurator offers 1–60)
+# action = { type = "app", command = "…" }   # optional: run this instead while on (Elgato's Hotkey Switch)
 #
 # A slow toggle: a press shows busy at once and polls fast until the state moves.
 # [[key]]
 # index = 12
 # label = "Backup"
+# busy_while_running = true    # busy for as long as the key's own command runs
 # [key.action]
 # type = "script"
 # path = "scripts/backup.sh"
 # [key.on]
 # slow = true
 # state = "systemctl --user is-active -q backup.service"
-# busy_while_running = true    # busy for as long as the key's own command runs
 # [key.busy]
-# bar = true                   # draw a progress bar from the last "NN%" in the output
+# bar = true   # draw a progress bar from the first "NN%" in the output
 #
 # A slow toggle for a systemd user service (a model server), with a health check.
 # [[key]]
