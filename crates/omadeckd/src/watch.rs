@@ -1,14 +1,21 @@
-//! The watcher: one thread that reads system state off the deck loop and runs the volume
-//! changes the deck asks for, in order, each followed by a fresh read. It sends back only
-//! values that changed, or that the deck asked for again. Each read-back carries the change
-//! the watcher just applied (0 for a poll), so the deck can tell how much of what it sent
-//! is still in flight and keep the bar from snapping back to a stale read.
+//! The watcher: one thread that reads system state off the deck loop (volume levels,
+//! toggle state commands, and live keys' clocks, meters and command output) and runs the
+//! volume changes the deck asks for, in order, each followed by a fresh read. It sends back only values that
+//! changed, or that the deck asked for again. Each read-back carries the change the
+//! watcher just applied (0 for a poll), so the deck can tell how much of what it sent is
+//! still in flight and keep the bar from snapping back to a stale read.
 //!
 //! State commands never run on the watcher thread: a slow one would stall the volume reads.
 //! Each run happens on its own short-lived runner thread, which sends its result back as
 //! `WatchCmd::Done` on a clone of the watcher's own command sender. The watcher only keeps
 //! track of what is in flight, so one probe never has two runs. The thread therefore stays
-//! fully blocking (`recv()` / `recv_timeout(next_due - now)`), with no reap tick.
+//! fully blocking (`recv()` / `recv_timeout(next_due - now)`), with no reap tick. Live
+//! keys' commands run the same way.
+//!
+//! Clocks, CPU, memory and battery are read inline: a clock format and three small file
+//! reads. Volume changes and reads also run inline, so a clock read due while one runs
+//! waits for it: normally under 100 ms, at most ~2 s per call on a hung PipeWire
+//! (`COMMAND_TIMEOUT`). The minute still turns over, late by that much once.
 
 use std::collections::{HashMap, HashSet};
 use std::process::Command;
@@ -20,7 +27,7 @@ use std::time::{Duration, Instant};
 
 use omadeck_core::probe::{Probe, Toggle, Value, is_missing, toggle_from_exit};
 use omadeck_core::proc::Job;
-use omadeck_core::{AudioDevice, action, audio};
+use omadeck_core::{AudioDevice, action, audio, live, sysinfo};
 
 /// A message the deck loop sends the watcher.
 #[derive(Debug, Clone, PartialEq)]
@@ -69,6 +76,8 @@ const RUN_POLL: Duration = Duration::from_millis(20);
 const STATE_TIMEOUT: Duration = Duration::from_secs(5);
 #[cfg(test)]
 const STATE_TIMEOUT: Duration = Duration::from_millis(300);
+/// Upper bound for one live command run.
+const LIVE_COMMAND_TIMEOUT: Duration = Duration::from_secs(10);
 
 pub struct Watcher {
     pub cmd: mpsc::Sender<WatchCmd>,
@@ -101,6 +110,26 @@ fn change_volume(dev: AudioDevice, change: i32, mute: bool) {
     action::apply_volume(dev, change.clamp(-100, 100) as i8, mute);
 }
 
+/// Read a built-in live source. A clock and three small file reads: cheap enough for
+/// the watcher thread.
+fn read_live(p: &Probe, cpu: &mut sysinfo::CpuMeter) -> Option<Value> {
+    match p {
+        Probe::Clock { format } => Some(Value::Text(live::clock_text(format))),
+        Probe::Cpu => cpu.sample(&std::fs::read_to_string("/proc/stat").ok()?).map(Value::Percent),
+        Probe::Memory => sysinfo::parse_meminfo(&std::fs::read_to_string("/proc/meminfo").ok()?).map(Value::Percent),
+        Probe::Battery => sysinfo::battery().map(|(percent, charging)| Value::Battery { percent, charging }),
+        _ => None,
+    }
+}
+
+/// When `probe` should be read next, after a read at `now` (`wall_ms`: Unix ms).
+fn next_read(probe: &Probe, now: Instant, wall_ms: i64) -> Instant {
+    match probe {
+        Probe::Clock { format } => now + live::next_tick(wall_ms, live::needs_seconds(format)),
+        _ => now + probe.interval(),
+    }
+}
+
 /// The watcher's state, apart from the thread, so its logic is tested without threads.
 struct Poller {
     watched: Vec<Probe>,
@@ -121,9 +150,12 @@ struct Poller {
     fast_until: HashMap<Probe, (Toggle, Instant)>,
     /// Probes that failed and were warned about; cleared on a good read.
     failing: HashSet<Probe>,
+    /// The CPU meter's previous sample.
+    cpu: sysinfo::CpuMeter,
     /// The I/O, swapped out in tests.
     read_volume: fn(AudioDevice) -> Option<Value>,
     change_volume: fn(AudioDevice, i32, bool),
+    read_live: fn(&Probe, &mut sysinfo::CpuMeter) -> Option<Value>,
 }
 
 impl Default for Poller {
@@ -138,8 +170,10 @@ impl Default for Poller {
             next_run: 0,
             fast_until: HashMap::new(),
             failing: HashSet::new(),
+            cpu: sysinfo::CpuMeter::default(),
             read_volume,
             change_volume,
+            read_live,
         }
     }
 }
@@ -174,6 +208,10 @@ impl Poller {
                 self.failing.retain(|p| keep(p));
                 for p in &set_d {
                     self.next_due.entry(p.clone()).or_insert(now);
+                }
+                // No CPU key any more: the next first read primes again.
+                if !set_d.contains(&Probe::Cpu) {
+                    self.cpu = sysinfo::CpuMeter::default();
                 }
                 self.watched = set_d;
             }
@@ -217,6 +255,26 @@ impl Poller {
                     return;
                 }
                 self.in_flight.remove(&probe);
+                if matches!(probe, Probe::Output { .. }) {
+                    match result {
+                        RunResult::Exit { code, first_line } => {
+                            if is_missing(code) {
+                                self.warn_once(&probe, "live command not found or not executable");
+                            } else {
+                                self.failing.remove(&probe);
+                            }
+                            // Any exit status counts; `–` when it printed nothing.
+                            let text = first_line.unwrap_or_else(|| "–".into());
+                            self.record(probe, Value::Text(text), now, out, 0);
+                        }
+                        RunResult::TimedOut | RunResult::SpawnFailed(_) => {
+                            // Keep the last value; try again next interval.
+                            self.warn_once(&probe, "live command failed or timed out");
+                            self.next_due.insert(probe.clone(), now + probe.interval());
+                        }
+                    }
+                    return;
+                }
                 match result {
                     RunResult::Exit { code, .. } if is_missing(code) => {
                         self.warn_once(&probe, "state command not found or not executable");
@@ -275,7 +333,18 @@ impl Poller {
                         self.next_due.insert(p.clone(), now + p.interval());
                     }
                 },
-                Probe::Command { .. } => {
+                Probe::Clock { .. } | Probe::Cpu | Probe::Memory | Probe::Battery => {
+                    match (self.read_live)(&p, &mut self.cpu) {
+                        Some(v) => self.record(p, v, now, out, 0),
+                        // The CPU's first sample only primes; a missing file: send nothing.
+                        None => {
+                            self.next_due.insert(p.clone(), now + p.interval());
+                        }
+                    }
+                }
+                // Fed by the Hyprland listener, never watched.
+                Probe::Workspace => {}
+                Probe::Command { .. } | Probe::Output { .. } => {
                     if self.in_flight.len() >= MAX_IN_FLIGHT {
                         // Not due again until something finishes: a `Done` wakes the
                         // thread.
@@ -286,10 +355,6 @@ impl Poller {
                     self.next_run += 1;
                     self.in_flight.insert(p.clone(), (self.next_run, cancel.clone()));
                     start.push((p, self.next_run, cancel));
-                }
-                // Not read yet (Task D); nothing watches them before the daemon wiring.
-                _ => {
-                    self.next_due.insert(p.clone(), now + p.interval());
                 }
             }
         }
@@ -311,7 +376,8 @@ impl Poller {
             self.fast_until.remove(&p);
         }
         let fast = busy || self.fast_until.contains_key(&p);
-        self.next_due.insert(p.clone(), now + if fast { omadeck_core::probe::FAST_INTERVAL } else { p.interval() });
+        let next = if fast { now + omadeck_core::probe::FAST_INTERVAL } else { next_read(&p, now, live::wall_ms()) };
+        self.next_due.insert(p.clone(), next);
         let forced = self.forced.remove(&p) | expired;
         if forced || self.last.get(&p) != Some(&v) {
             self.last.insert(p.clone(), v.clone());
@@ -434,10 +500,14 @@ fn run(
         }
         // The commands `run_due` returned each get a runner thread.
         for (probe, run, cancel) in poller.run_due(Instant::now(), &mut out) {
-            let Probe::Command { command, .. } = &probe else { continue };
-            let (command, tx, p) = (command.clone(), runner_tx.clone(), probe.clone());
+            let (command, timeout) = match &probe {
+                Probe::Command { command, .. } => (command.clone(), STATE_TIMEOUT),
+                Probe::Output { command, .. } => (command.clone(), LIVE_COMMAND_TIMEOUT),
+                _ => continue,
+            };
+            let (tx, p) = (runner_tx.clone(), probe.clone());
             let spawned = thread::Builder::new().name("watch-run".into()).spawn(move || {
-                let result = run_state(&command, STATE_TIMEOUT, &cancel);
+                let result = run_state(&command, timeout, &cancel);
                 let _ = tx.send(WatchCmd::Done { probe: p, run, result }); // watcher gone: nothing to do
             });
             if let Err(e) = spawned {
@@ -925,5 +995,123 @@ mod tests {
         assert_eq!(coalesce(kept.clone()), kept);
         let kept = vec![v(Output, 5, false), WatchCmd::Stop, v(Output, 5, false)];
         assert_eq!(coalesce(kept.clone()), kept);
+    }
+
+    #[test]
+    fn clock_scheduled_on_boundary() {
+        let now = Instant::now();
+        // 2026-10-15T12:00:59.500Z
+        let wall: i64 = 1_792_065_659_500;
+        let p = Probe::Clock { format: "%H:%M".into() };
+        assert_eq!(next_read(&p, now, wall), now + Duration::from_millis(510));
+        let p = Probe::Clock { format: "%H:%M:%S".into() };
+        assert_eq!(next_read(&p, now, wall), now + Duration::from_millis(510));
+        assert_eq!(next_read(&Probe::Cpu, now, wall), now + Duration::from_secs(1));
+    }
+
+    #[test]
+    fn live_read_is_inline() {
+        let mut p = Poller { read_live: |_, _| Some(Value::Percent(42)), ..Poller::default() };
+        let mut out = Vec::new();
+        let t0 = Instant::now();
+        p.handle(WatchCmd::Watch(vec![Probe::Cpu]), t0, &mut out);
+        assert!(p.run_due(t0, &mut out).is_empty(), "nothing goes to a runner");
+        assert_eq!(out, vec![(Probe::Cpu, Some(Value::Percent(42)), 0)]);
+        assert_eq!(p.next_due(), Some(t0 + Duration::from_secs(1)));
+        // The same value again is not sent.
+        out.clear();
+        p.run_due(t0 + Duration::from_secs(1), &mut out);
+        assert!(out.is_empty());
+    }
+
+    #[test]
+    fn live_read_none_sends_nothing() {
+        let mut p = Poller { read_live: |_, _| None, ..Poller::default() };
+        let mut out = Vec::new();
+        let t0 = Instant::now();
+        p.handle(WatchCmd::Watch(vec![Probe::Battery]), t0, &mut out);
+        assert!(p.run_due(t0, &mut out).is_empty());
+        assert!(out.is_empty());
+        assert_eq!(p.next_due(), Some(t0 + Duration::from_secs(5)));
+    }
+
+    #[test]
+    fn cpu_meter_resets_when_unwatched() {
+        const STAT: &str = "cpu  100 0 100 700 100 0 0 0 0 0\n";
+        let mut p = Poller::default();
+        let mut out = Vec::new();
+        let t0 = Instant::now();
+        p.handle(WatchCmd::Watch(vec![Probe::Cpu]), t0, &mut out);
+        assert_eq!(p.cpu.sample(STAT), None, "primes");
+        assert_eq!(p.cpu.sample(STAT), Some(0));
+        // Still watched: the meter keeps its sample.
+        p.handle(WatchCmd::Watch(vec![Probe::Cpu, Probe::Memory]), t0, &mut out);
+        assert_eq!(p.cpu.sample(STAT), Some(0));
+        // Dropped: the next first read primes again.
+        p.handle(WatchCmd::Watch(vec![Probe::Memory]), t0, &mut out);
+        assert_eq!(p.cpu.sample(STAT), None);
+    }
+
+    fn output(c: &str) -> Probe {
+        Probe::Output { command: c.into(), interval_ms: 5000 }
+    }
+
+    #[test]
+    fn output_runs_on_a_runner() {
+        let mut p = Poller { read_live: |_, _| panic!("a command never runs inline"), ..Poller::default() };
+        let mut out = Vec::new();
+        let t0 = Instant::now();
+        let probe = output("date");
+        p.handle(WatchCmd::Watch(vec![probe.clone()]), t0, &mut out);
+        let started = p.run_due(t0, &mut out);
+        assert_eq!(started.len(), 1);
+        assert_eq!(started[0].0, probe);
+        assert!(p.run_due(t0 + Duration::from_secs(10), &mut out).is_empty(), "never two runs at once");
+        assert!(out.is_empty());
+    }
+
+    #[test]
+    fn output_done_records_text() {
+        let mut p = Poller::default();
+        let mut out = Vec::new();
+        let t0 = Instant::now();
+        let probe = output("date");
+        watched(&mut p, probe.clone(), t0, &mut out);
+        p.handle(
+            WatchCmd::Done {
+                probe: probe.clone(),
+                run: p.run_of(&probe),
+                result: RunResult::Exit { code: Some(1), first_line: Some("x".into()) },
+            },
+            t0,
+            &mut out,
+        );
+        assert_eq!(out, vec![(probe.clone(), Some(Value::Text("x".into())), 0)]);
+        assert_eq!(p.next_due(), Some(t0 + Duration::from_secs(5)));
+        // Nothing printed: a dash.
+        out.clear();
+        let t1 = t0 + Duration::from_secs(5);
+        assert_eq!(p.run_due(t1, &mut out).len(), 1);
+        p.handle(
+            WatchCmd::Done {
+                probe: probe.clone(),
+                run: p.run_of(&probe),
+                result: RunResult::Exit { code: Some(0), first_line: None },
+            },
+            t1,
+            &mut out,
+        );
+        assert_eq!(out, vec![(probe.clone(), Some(Value::Text("–".into())), 0)]);
+        // A timeout keeps the last value.
+        out.clear();
+        let t2 = t1 + Duration::from_secs(5);
+        assert_eq!(p.run_due(t2, &mut out).len(), 1);
+        p.handle(
+            WatchCmd::Done { probe: probe.clone(), run: p.run_of(&probe), result: RunResult::TimedOut },
+            t2,
+            &mut out,
+        );
+        assert!(out.is_empty());
+        assert_eq!(p.next_due(), Some(t2 + Duration::from_secs(5)));
     }
 }
