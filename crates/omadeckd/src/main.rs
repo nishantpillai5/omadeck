@@ -20,10 +20,11 @@ use anyhow::{Context, Result};
 // Only the trait's methods: `Watcher` here is the daemon's own (watch.rs).
 use notify::{RecursiveMode, Watcher as _};
 use omadeck_core::device;
+use omadeck_core::ipc::{self, Reply};
 use omadeck_core::paths::FileStamp;
 use omadeck_core::probe::{self, Values};
 use omadeck_core::state::State;
-use omadeck_core::{Config, DeckInfo, Renderer, action, paths};
+use omadeck_core::{Action, Config, DeckInfo, Direction, HOME, Renderer, action, paths};
 
 use daemon::Daemon;
 use hub::Hub;
@@ -57,53 +58,16 @@ fn main() {
             }
             return;
         }
-        Some("press") => {
-            let Some(i) = args.next().and_then(|v| v.parse::<u8>().ok()) else {
-                eprintln!("usage: omadeckd press KEY [PAGE]   (keys are numbered from 0)");
-                std::process::exit(2);
-            };
-            let page = args.next();
-            let cfg = load_config();
-            let Some(keys) = cfg.page(page.as_deref()) else {
-                eprintln!("no page named {}", page.unwrap_or_default());
-                std::process::exit(1);
-            };
-            let act = keys.get(i).map(|k| k.action.clone()).unwrap_or_default();
-            println!("key {i}: {}", act.summary());
-            if let Err(e) = action::run(&act) {
-                eprintln!("{e:#}");
-                std::process::exit(1);
-            }
-            // Give the detached child a moment to start before we exit.
-            std::thread::sleep(Duration::from_millis(300));
-            return;
-        }
-        Some("dial") => {
-            let (Some(n), Some(which)) = (args.next(), args.next()) else {
-                eprintln!("usage: omadeckd dial N left|right|press");
-                std::process::exit(2);
-            };
-            let Ok(i) = n.parse::<u8>() else {
-                eprintln!("usage: omadeckd dial N left|right|press");
-                std::process::exit(2);
-            };
-            let cfg = load_config();
-            let act = match which.as_str() {
-                "left" => cfg.dial(i).map(|d| d.turn_left.clone()).unwrap_or_default(),
-                "right" => cfg.dial(i).map(|d| d.turn_right.clone()).unwrap_or_default(),
-                "press" => cfg.dial(i).map(|d| d.press.clone()).unwrap_or_default(),
-                _ => {
-                    eprintln!("usage: omadeckd dial N left|right|press");
+        Some(verb @ ("page" | "brightness" | "reload" | "state" | "press" | "dial")) => {
+            let rest: Vec<String> = args.collect();
+            let cmd = match parse_ctl(verb, &rest) {
+                Ok(cmd) => cmd,
+                Err(usage) => {
+                    eprintln!("usage: omadeckd {usage}");
                     std::process::exit(2);
                 }
             };
-            println!("dial {i} {which}: {}", act.summary());
-            if let Err(e) = action::run(&act) {
-                eprintln!("{e:#}");
-                std::process::exit(1);
-            }
-            std::thread::sleep(Duration::from_millis(300));
-            return;
+            std::process::exit(ctl(cmd));
         }
         Some("snapshot") => {
             let out = args.next().unwrap_or_else(|| "omadeck.png".into());
@@ -120,7 +84,7 @@ fn main() {
         }
         Some(_) => {
             eprintln!(
-                "usage: omadeckd [run | list | press KEY [PAGE] | dial N left|right|press | snapshot FILE.png [PAGE] | --version]\n\nRuns the omadeck Stream Deck daemon."
+                "usage: omadeckd [run | list | page next|prev|home|NAME | brightness N|+N|-N | press KEY [PAGE] | dial N left|right|press [STEPS] | reload | state | snapshot FILE.png [PAGE] | --version]\n\nRuns the omadeck Stream Deck daemon; the other verbs drive the running one."
             );
             std::process::exit(2);
         }
@@ -258,6 +222,144 @@ fn run() -> Result<()> {
     Ok(())
 }
 
+const PAGE_USAGE: &str = "page next|prev|home|NAME";
+const BRIGHTNESS_USAGE: &str = "brightness N|+N|-N";
+const PRESS_USAGE: &str = "press KEY [PAGE]   (keys are numbered from 0)";
+const DIAL_USAGE: &str = "dial N left|right|press [STEPS]";
+const NOT_RUNNING: &str = "omadeckd is not running (systemctl --user start omadeckd)";
+
+/// A control verb's arguments as the command to send. `Err` is the usage line.
+fn parse_ctl(verb: &str, args: &[String]) -> Result<ipc::Command, &'static str> {
+    let args: Vec<&str> = args.iter().map(String::as_str).collect();
+    match verb {
+        "page" => {
+            let [page] = args[..] else { return Err(PAGE_USAGE) };
+            Ok(match page {
+                // Like a flick: folders are skipped.
+                "next" => ipc::Command::Run { action: Action::PageStep { change: 1 } },
+                "prev" | "previous" => ipc::Command::Run { action: Action::PageStep { change: -1 } },
+                p if p.eq_ignore_ascii_case(HOME) => ipc::Command::Page { page: None },
+                p => ipc::Command::Page { page: Some(p.to_string()) },
+            })
+        }
+        "brightness" => {
+            let [value] = args[..] else { return Err(BRIGHTNESS_USAGE) };
+            let action = if value.starts_with(['+', '-']) {
+                let change: i64 = value.parse().map_err(|_| BRIGHTNESS_USAGE)?;
+                Action::Brightness { change: change.clamp(-100, 100) as i8, set: None }
+            } else {
+                let set: u64 = value.parse().map_err(|_| BRIGHTNESS_USAGE)?;
+                Action::Brightness { change: 0, set: Some(set.min(100) as u8) }
+            };
+            Ok(ipc::Command::Run { action })
+        }
+        "press" => {
+            let (key, page) = match args[..] {
+                [key] => (key, None),
+                [key, page] => (key, Some(page.to_string())),
+                _ => return Err(PRESS_USAGE),
+            };
+            let index = key.parse().map_err(|_| PRESS_USAGE)?;
+            Ok(ipc::Command::Press { index, page })
+        }
+        "dial" => {
+            let (n, which, steps) = match args[..] {
+                [n, which] => (n, which, "1"),
+                [n, which, steps] => (n, which, steps),
+                _ => return Err(DIAL_USAGE),
+            };
+            let index = n.parse().map_err(|_| DIAL_USAGE)?;
+            let dir = match which {
+                "left" => Direction::Left,
+                "right" => Direction::Right,
+                "press" => Direction::Press,
+                _ => return Err(DIAL_USAGE),
+            };
+            let steps = steps.parse::<u8>().ok().filter(|s| *s > 0).ok_or(DIAL_USAGE)?;
+            Ok(ipc::Command::Dial { index, dir, steps })
+        }
+        "reload" if args.is_empty() => Ok(ipc::Command::Reload),
+        "reload" => Err("reload"),
+        "state" if args.is_empty() => Ok(ipc::Command::State),
+        _ => Err("state"),
+    }
+}
+
+/// Send `cmd`, print the answer, and fall back to running press/dial here. The exit code.
+fn ctl(cmd: ipc::Command) -> i32 {
+    match ipc::request(&cmd) {
+        Ok(Some(Reply::Ok { message })) => {
+            if !message.is_empty() {
+                println!("{message}");
+            }
+            0
+        }
+        Ok(Some(r @ Reply::State { .. })) => {
+            print!("{}", r.to_line());
+            0
+        }
+        Ok(Some(Reply::Error { message })) => {
+            eprintln!("{message}");
+            1
+        }
+        // No daemon, or no deck on it: press and dial run here, as they always did.
+        Ok(Some(Reply::NoDeck) | None) => match cmd {
+            ipc::Command::Press { index, page } => press_locally(index, page.as_deref()),
+            ipc::Command::Dial { index, dir, steps } => dial_locally(index, dir, steps),
+            _ => {
+                eprintln!("{NOT_RUNNING}");
+                1
+            }
+        },
+        // "daemon busy" shows here: press and dial don't fall back, the daemon may have run it.
+        Err(e) => {
+            eprintln!("{e:#}");
+            1
+        }
+    }
+}
+
+/// Press key `index` here, with no daemon: on Home, or on `page` ("home" in any case is
+/// Home).
+fn press_locally(index: u8, page: Option<&str>) -> i32 {
+    let page = page.filter(|p| !p.eq_ignore_ascii_case(HOME));
+    let cfg = load_config();
+    let Some(keys) = cfg.page(page) else {
+        eprintln!("no page named {}", page.unwrap_or_default());
+        return 1;
+    };
+    let act = keys.get(index).map(|k| k.action.clone()).unwrap_or_default();
+    println!("key {index}: {}", act.summary());
+    if let Err(e) = action::run(&act) {
+        eprintln!("{e:#}");
+        return 1;
+    }
+    // Give the detached child a moment to start before we exit.
+    std::thread::sleep(Duration::from_millis(300));
+    0
+}
+
+/// Turn or press dial `index` here, with no daemon.
+fn dial_locally(index: u8, dir: Direction, steps: u8) -> i32 {
+    let cfg = load_config();
+    let act = cfg.dial(index).map(|d| d.action(dir).clone()).unwrap_or_default();
+    let which = match dir {
+        Direction::Left => "left",
+        Direction::Right => "right",
+        Direction::Press => "press",
+    };
+    let steps = if dir == Direction::Press { 1 } else { steps };
+    let times = if steps > 1 { format!(" x{steps}") } else { String::new() };
+    println!("dial {index} {which}{times}: {}", act.summary());
+    // Hyprland steps > 1 run on run_steps' helper thread: the sleep below lets them go.
+    if let Err(e) = action::run_steps(&act, steps) {
+        eprintln!("{e:#}");
+        return 1;
+    }
+    std::thread::sleep(Duration::from_millis(300));
+    0
+}
+
 fn relevant(p: &Path) -> bool {
     let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
     if p.starts_with(paths::omarchy_current_dir()) {
@@ -335,5 +437,64 @@ fn draw_circle(img: &mut image::RgbaImage, cx: u32, cy: u32, r: u32, c: image::R
                 img.put_pixel(x, y, c);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use omadeck_core::{Action, Direction};
+
+    fn args(s: &str) -> Vec<String> {
+        s.split_whitespace().map(String::from).collect()
+    }
+
+    #[test]
+    fn parse_ctl_page() {
+        let run = |action| Ok(ipc::Command::Run { action });
+        assert_eq!(parse_ctl("page", &args("next")), run(Action::PageStep { change: 1 }));
+        assert_eq!(parse_ctl("page", &args("prev")), run(Action::PageStep { change: -1 }));
+        assert_eq!(parse_ctl("page", &args("previous")), run(Action::PageStep { change: -1 }));
+        assert_eq!(parse_ctl("page", &args("home")), Ok(ipc::Command::Page { page: None }));
+        assert_eq!(parse_ctl("page", &args("HOME")), Ok(ipc::Command::Page { page: None }));
+        assert_eq!(parse_ctl("page", &args("Media")), Ok(ipc::Command::Page { page: Some("Media".into()) }));
+        assert!(parse_ctl("page", &[]).is_err());
+        assert!(parse_ctl("page", &args("Media Apps")).is_err());
+    }
+
+    #[test]
+    fn parse_ctl_brightness() {
+        let run = |action| Ok(ipc::Command::Run { action });
+        assert_eq!(parse_ctl("brightness", &args("30")), run(Action::Brightness { change: 0, set: Some(30) }));
+        assert_eq!(parse_ctl("brightness", &args("+10")), run(Action::Brightness { change: 10, set: None }));
+        assert_eq!(parse_ctl("brightness", &args("-10")), run(Action::Brightness { change: -10, set: None }));
+        assert_eq!(parse_ctl("brightness", &args("-500")), run(Action::Brightness { change: -100, set: None }));
+        assert_eq!(parse_ctl("brightness", &args("250")), run(Action::Brightness { change: 0, set: Some(100) }));
+        assert!(parse_ctl("brightness", &args("abc")).is_err());
+        assert!(parse_ctl("brightness", &[]).is_err());
+    }
+
+    #[test]
+    fn parse_ctl_press_and_dial() {
+        assert_eq!(parse_ctl("press", &args("3")), Ok(ipc::Command::Press { index: 3, page: None }));
+        assert_eq!(
+            parse_ctl("press", &args("3 Media")),
+            Ok(ipc::Command::Press { index: 3, page: Some("Media".into()) })
+        );
+        assert!(parse_ctl("press", &args("x")).is_err());
+        assert_eq!(
+            parse_ctl("dial", &args("1 left")),
+            Ok(ipc::Command::Dial { index: 1, dir: Direction::Left, steps: 1 })
+        );
+        assert_eq!(
+            parse_ctl("dial", &args("1 right 4")),
+            Ok(ipc::Command::Dial { index: 1, dir: Direction::Right, steps: 4 })
+        );
+        assert_eq!(
+            parse_ctl("dial", &args("1 press")),
+            Ok(ipc::Command::Dial { index: 1, dir: Direction::Press, steps: 1 })
+        );
+        assert!(parse_ctl("dial", &args("1 up")).is_err());
+        assert!(parse_ctl("dial", &args("1 left 0")).is_err());
     }
 }
