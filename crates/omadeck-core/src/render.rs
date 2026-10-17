@@ -112,10 +112,17 @@ pub struct Renderer {
     pub theme: Theme,
     icons: HashMap<(PathBuf, u32), Option<RgbaImage>>,
     /// Fitted background images for the strip, at native size, with the file's mtime.
-    backdrops: HashMap<(PathBuf, u32, u32), Option<(std::time::SystemTime, RgbaImage)>>,
+    backdrops: HashMap<(PathBuf, u32, u32), Backdropped>,
     #[cfg(test)]
     pub decode_count: std::cell::Cell<u32>,
+    /// Every `load_cover` call, failed or not.
+    #[cfg(test)]
+    pub load_attempts: std::cell::Cell<u32>,
 }
+
+/// A cached background image: the file's mtime when it was loaded, and the fitted image
+/// (`None` when the load failed).
+type Backdropped = (Option<std::time::SystemTime>, Option<RgbaImage>);
 
 impl Renderer {
     pub fn new(style: &Style) -> Self {
@@ -127,6 +134,8 @@ impl Renderer {
             backdrops: HashMap::new(),
             #[cfg(test)]
             decode_count: std::cell::Cell::new(0),
+            #[cfg(test)]
+            load_attempts: std::cell::Cell::new(0),
         };
         r.update_style(style);
         r.theme = Theme::load_omarchy();
@@ -144,6 +153,7 @@ impl Renderer {
             icons: HashMap::new(),
             backdrops: HashMap::new(),
             decode_count: std::cell::Cell::new(0),
+            load_attempts: std::cell::Cell::new(0),
         }
     }
 
@@ -167,22 +177,23 @@ impl Renderer {
     /// (same mtime) are kept; the rest are dropped and re-decoded on next use.
     pub fn clear_cache(&mut self) {
         self.icons.clear();
-        self.backdrops.retain(|(path, _, _), v| {
-            let Some((mtime, _)) = v else { return true };
-            fs::metadata(path).ok().and_then(|m| m.modified().ok()).as_ref() == Some(mtime)
-        });
+        self.backdrops
+            .retain(|(path, _, _), (mtime, _)| fs::metadata(path).ok().and_then(|m| m.modified().ok()) == *mtime);
     }
 
     /// A fitted background image (strip or dial), decoded once per file. A missing or
-    /// unreadable file is cached as `None`, so it warns once and the layer is skipped.
+    /// unreadable file is cached as `None` with its mtime, so it warns once and the layer
+    /// is skipped until the file changes.
     fn backdrop_image(&mut self, path: &Path, w: u32, h: u32) -> Option<RgbaImage> {
         let k = (path.to_path_buf(), w, h);
         let mtime = fs::metadata(path).ok().and_then(|m| m.modified().ok());
-        if let Some(Some((mt, img))) = self.backdrops.get(&k).cloned()
-            && mtime == Some(mt)
+        if let Some((mt, img)) = self.backdrops.get(&k)
+            && *mt == mtime
         {
-            return Some(img);
+            return img.clone();
         }
+        #[cfg(test)]
+        self.load_attempts.set(self.load_attempts.get() + 1);
         let loaded = mtime.is_some().then(|| load_cover(path, w, h)).flatten();
         if loaded.is_none() {
             log::warn!("could not load background image {}", path.display());
@@ -191,7 +202,7 @@ impl Renderer {
         if loaded.is_some() {
             self.decode_count.set(self.decode_count.get() + 1);
         }
-        self.backdrops.insert(k, mtime.zip(loaded.clone()));
+        self.backdrops.insert(k, (mtime, loaded.clone()));
         loaded
     }
 
@@ -743,18 +754,22 @@ pub fn load_icon(path: &Path, box_px: u32) -> Option<RgbaImage> {
     Some(imageops::resize(&img, nw, nh, FilterType::Lanczos3))
 }
 
-/// Scale to cover `w × h` (the longer side to the longer side, `Lanczos3`), then
-/// centre-crop to exactly `w × h`. Exact-size input is returned unchanged.
+/// Cover `w × h`: centre-crop the source to the target's aspect ratio, then resize
+/// (`Lanczos3`) to exactly `w × h`. Exact-size input is returned unchanged. Cropping
+/// first keeps the work bounded by the source and the target, whatever the aspect.
 pub fn fit_cover(img: &RgbaImage, w: u32, h: u32) -> RgbaImage {
     if img.dimensions() == (w, h) {
         return img.clone();
     }
     let (iw, ih) = img.dimensions();
-    let scale = (w as f32 / iw as f32).max(h as f32 / ih as f32);
-    let nw = (iw as f32 * scale).ceil() as u32;
-    let nh = (ih as f32 * scale).ceil() as u32;
-    let big = imageops::resize(img, nw.max(1), nh.max(1), FilterType::Lanczos3);
-    imageops::crop_imm(&big, (big.width().saturating_sub(w)) / 2, (big.height().saturating_sub(h)) / 2, w, h).to_image()
+    if iw == 0 || ih == 0 || w == 0 || h == 0 {
+        return RgbaImage::new(w, h);
+    }
+    let s = (w as f32 / iw as f32).max(h as f32 / ih as f32);
+    let cw = ((w as f32 / s).round() as u32).clamp(1, iw);
+    let ch = ((h as f32 / s).round() as u32).clamp(1, ih);
+    let src = imageops::crop_imm(img, (iw - cw) / 2, (ih - ch) / 2, cw, ch).to_image();
+    if src.dimensions() == (w, h) { src } else { imageops::resize(&src, w, h, FilterType::Lanczos3) }
 }
 
 /// Load a raster or SVG image fitted to cover `w × h`. An animated GIF loads its first
@@ -765,14 +780,27 @@ pub fn load_cover(path: &Path, w: u32, h: u32) -> Option<RgbaImage> {
         .and_then(|e| e.to_str())
         .is_some_and(|e| e.eq_ignore_ascii_case("svg") || e.eq_ignore_ascii_case("svgz"));
     if is_svg {
-        return load_svg_raw(path).map(|img| fit_cover(&img, w, h));
+        return load_svg_cover(path, w, h);
     }
     image::open(path).ok().map(|img| fit_cover(&img.to_rgba8(), w, h))
 }
 
-/// Rasterise an SVG at its intrinsic size (no scaling), for `load_cover`.
-fn load_svg_raw(path: &Path) -> Option<RgbaImage> {
-    rasterize_svg(&svg_tree(path)?, 1.0)
+/// Rasterise an SVG straight at the cover scale into a `w × h` pixmap, centred, so it
+/// stays sharp (no raster resize) and a huge intrinsic size allocates nothing extra.
+fn load_svg_cover(path: &Path, w: u32, h: u32) -> Option<RgbaImage> {
+    use resvg::tiny_skia;
+    let tree = svg_tree(path)?;
+    let size = tree.size();
+    let (sw, sh) = (size.width(), size.height());
+    if w == 0 || h == 0 || sw <= 0.0 || sh <= 0.0 {
+        return None;
+    }
+    let s = (w as f32 / sw).max(h as f32 / sh);
+    let tx = -(sw * s - w as f32) / 2.0;
+    let ty = -(sh * s - h as f32) / 2.0;
+    let mut pixmap = tiny_skia::Pixmap::new(w, h)?;
+    resvg::render(&tree, tiny_skia::Transform::from_scale(s, s).post_translate(tx, ty), &mut pixmap.as_mut());
+    Some(pixmap_to_rgba(&pixmap))
 }
 
 /// Rasterise an SVG scaled so its longer side is `box_px` (fit inside, no crop).
@@ -795,12 +823,17 @@ fn rasterize_svg(tree: &resvg::usvg::Tree, scale: f32) -> Option<RgbaImage> {
     let h = (size.height() * scale).ceil() as u32;
     let mut pixmap = tiny_skia::Pixmap::new(w.max(1), h.max(1))?;
     resvg::render(tree, tiny_skia::Transform::from_scale(scale, scale), &mut pixmap.as_mut());
-    let mut out = RgbaImage::new(w.max(1), h.max(1));
+    Some(pixmap_to_rgba(&pixmap))
+}
+
+/// Copy a premultiplied tiny-skia pixmap into a straight-alpha `RgbaImage`.
+fn pixmap_to_rgba(pixmap: &resvg::tiny_skia::Pixmap) -> RgbaImage {
+    let mut out = RgbaImage::new(pixmap.width(), pixmap.height());
     for (dst, src) in out.pixels_mut().zip(pixmap.pixels()) {
         let c = src.demultiply();
         *dst = Rgba([c.red(), c.green(), c.blue(), c.alpha()]);
     }
-    Some(out)
+    out
 }
 
 /// Find a bold face for a fontconfig pattern (defaults to Omarchy's monospace font).
@@ -825,7 +858,8 @@ fn load_font(pattern: &str) -> Option<FontVec> {
 #[cfg(test)]
 mod tests {
     use super::{
-        B1_BAR, DialStatus, Level, Renderer, RgbaImage, X1_ICON, X1_TITLE, fit_cover, glyph_char, tap_to_dial,
+        B1_BAR, DialStatus, Level, Renderer, RgbaImage, X1_ICON, X1_TITLE, fit_cover, glyph_char, load_cover,
+        tap_to_dial,
     };
     use crate::config::{Action, AudioDevice, Config, DialConfig, KeyConfig, Style};
     use crate::theme::Rgb;
@@ -1123,6 +1157,58 @@ mod tests {
         assert!(r.backdrop_image(&path, 4, 2).is_some());
         assert_eq!(r.decode_count.get(), decodes, "an unchanged file is not re-decoded");
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn failed_decode_is_cached() {
+        let mut r = Renderer::new(&test_style());
+        let dir = std::env::temp_dir().join(format!("omadeck-cover-garbage-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("broken.png");
+        std::fs::write(&path, b"not a png").unwrap();
+        assert!(r.backdrop_image(&path, 800, 100).is_none());
+        assert!(r.backdrop_image(&path, 800, 100).is_none());
+        assert_eq!(r.load_attempts.get(), 1, "a broken file is tried once, not on every paint");
+        r.clear_cache();
+        assert!(r.backdrop_image(&path, 800, 100).is_none());
+        assert_eq!(r.load_attempts.get(), 1, "an unchanged broken file stays cached over a reload");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn fit_cover_scales_and_crops() {
+        // 100 × 400, red, with a green band at rows 194–206: the centre crop keeps it.
+        let mut img = RgbaImage::from_pixel(100, 400, Rgba([255, 0, 0, 255]));
+        for y in 194..=206 {
+            for px in img.rows_mut().nth(y).unwrap() {
+                *px = Rgba([0, 255, 0, 255]);
+            }
+        }
+        let out = fit_cover(&img, 800, 100);
+        assert_eq!(out.dimensions(), (800, 100));
+        assert_eq!(*out.get_pixel(400, 50), Rgba([0, 255, 0, 255]), "centre is the green band");
+        // Odd and exact aspects all come out exactly w × h.
+        for (w, h, tw, th) in [(3200, 200, 800, 100), (799, 99, 800, 100), (801, 101, 200, 100), (16, 1000, 800, 100)] {
+            let src = RgbaImage::from_pixel(w, h, Rgba([1, 2, 3, 255]));
+            assert_eq!(fit_cover(&src, tw, th).dimensions(), (tw, th), "from {w} × {h}");
+        }
+        assert_eq!(fit_cover(&RgbaImage::new(0, 0), 8, 4).dimensions(), (8, 4));
+    }
+
+    #[test]
+    fn svg_cover_stays_sharp() {
+        let dir = std::env::temp_dir().join(format!("omadeck-svg-sharp-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("half-half.svg");
+        std::fs::write(
+            &path,
+            "<svg xmlns='http://www.w3.org/2000/svg' width='16' height='2'><rect x='0' y='0' width='8' height='2' fill='red'/><rect x='8' y='0' width='8' height='2' fill='blue'/></svg>",
+        )
+        .unwrap();
+        let img = load_cover(&path, 800, 100).unwrap();
+        let blended = img.rows().nth(50).unwrap().filter(|p| p[0] > 10 && p[2] > 10).count();
+        assert!(blended <= 2, "the red/blue boundary is crisp, not a {blended}-px blend");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
