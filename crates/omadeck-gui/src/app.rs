@@ -1537,9 +1537,11 @@ impl App {
                     b.remove_css_class("pressed");
                 }
             }
-            Msg::Event(Event::ActionFailed { index, message }) => {
+            Msg::Event(Event::ActionFailed { index, page, message }) => {
+                let _ = page;
                 self.toast(&format!("Key {}: {message}", index + 1));
             }
+            Msg::Event(Event::KeyState { .. }) => {}
             Msg::Event(Event::DialDown { index }) => {
                 if let Some((b, _)) = self.dials.borrow().get(index as usize) {
                     b.add_css_class("pressed");

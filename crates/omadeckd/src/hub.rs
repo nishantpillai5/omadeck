@@ -9,6 +9,7 @@ use std::sync::mpsc::{self, SyncSender, TrySendError};
 use std::sync::{Arc, Mutex};
 
 use anyhow::{Context, Result};
+use omadeck_core::KeyStatus;
 use omadeck_core::ipc::{self, Command, Event};
 
 /// Lines queued per client. A client this far behind loses events, never the deck loop's
@@ -27,8 +28,8 @@ struct Inner {
     replay: Replay,
 }
 
-/// What a new client is told first, so it starts in sync: the latest of each kind of state
-/// event.
+/// What a new client is told first, so it starts in sync: the latest of each kind of
+/// state event.
 struct Replay {
     /// Last connect/disconnect event.
     status: Event,
@@ -38,6 +39,8 @@ struct Replay {
     brightness: Option<Event>,
     /// Last `DialStatus` per panel; cleared on disconnect.
     panels: BTreeMap<u8, Event>,
+    /// Last `KeyState` per (page, key); cleared on disconnect.
+    keys: BTreeMap<(Option<String>, u8), Event>,
 }
 
 impl Replay {
@@ -47,11 +50,19 @@ impl Replay {
             Event::Disconnected => {
                 self.status = ev.clone();
                 self.panels.clear();
+                self.keys.clear();
             }
             Event::PageChanged { .. } => self.page = ev.clone(),
             Event::Brightness { .. } => self.brightness = Some(ev.clone()),
             Event::DialStatus { index, .. } => {
                 self.panels.insert(*index, ev.clone());
+            }
+            Event::KeyState { page, index, status } => {
+                if *status == KeyStatus::default() {
+                    self.keys.remove(&(page.clone(), *index));
+                } else {
+                    self.keys.insert((page.clone(), *index), ev.clone());
+                }
             }
             _ => {}
         }
@@ -62,6 +73,7 @@ impl Replay {
         let mut out: Vec<Arc<str>> = vec![self.status.to_line().into(), self.page.to_line().into()];
         out.extend(self.brightness.iter().map(|e| e.to_line().into()));
         out.extend(self.panels.values().map(|e| e.to_line().into()));
+        out.extend(self.keys.values().map(|e| e.to_line().into()));
         out
     }
 }
@@ -77,6 +89,7 @@ impl Hub {
                 page: Event::PageChanged { page: None },
                 brightness: None,
                 panels: BTreeMap::new(),
+                keys: BTreeMap::new(),
             },
         }));
         let (tx, commands) = mpsc::channel();
