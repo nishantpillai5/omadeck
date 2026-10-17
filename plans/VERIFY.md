@@ -140,20 +140,19 @@ Captures (the plan's "Capture on the machine first"; run on the Omarchy machine,
 - [x] 3. `systemctl --user show-environment` has `XDG_RUNTIME_DIR` and the instance dir. (2026-10-17; `XDG_RUNTIME_DIR=/run/user/1000`, `HYPRLAND_INSTANCE_SIGNATURE` set, instance dir has `.socket.sock` + `.socket2.sock`.)
 - [~] 4. Battery sysfs. (2026-10-17: **no battery** — this is a desktop, `/sys/class/power_supply` is empty. The battery key shows `–` here; `battery_in`'s None path is the expected behaviour. Not testable on this machine.)
 - [x] 5. `/proc/stat` and `/proc/meminfo` samples parse. (2026-10-17; `cpu ` line has the 10 standard fields, `MemTotal`/`MemAvailable` present.)
-- [ ] 6. The seven glyphs (`f0150 f061a f035b f0079 f0084 f056e f018d`) render as a
-      clock, chip, memory, battery, charging battery, workspace and console. Change a
-      constant in `render.rs` only if it shows the wrong symbol. *(needs the user's eyes — see below)*
+- [x] 6. The seven glyphs (`f0150 f061a f035b f0079 f0084 f056e f018d`) render as a
+      clock, chip, memory, battery, charging battery, workspace and console. (2026-10-17, user confirmed all seven in the Omarchy terminal; no constant changed.)
 - [x] 7. jiff `%n` gives a newline (`clock_formats_and_ticks` passes on the Mac).
 
-Task F (daemon, on the hardware):
-- [ ] A `%H:%M` clock key turns over within ~0.15 s of the minute (compare with
-      Waybar); a `%H:%M:%S` key ticks every second without skipping.
-- [ ] After suspend and resume the clock is right within 5 s.
-- [ ] `timedatectl set-timezone …` moves the clock (how fast jiff notices: unconfirmed).
-- [ ] CPU follows btop roughly; memory and battery match `free` and Waybar; plugging
-      the charger shows the charging glyph within 5 s.
-- [ ] Workspace key follows `SUPER+1..5`, a click on another monitor's window, and a
-      rename; `–` when the daemon runs outside Hyprland (TTY).
+Task F (daemon, on the hardware) — keys 4/5/6 set to clock/workspace/cpu in the live config:
+- [x] A `%H:%M` clock key turns over within ~0.15 s of the minute (compare with
+      Waybar); a `%H:%M:%S` key ticks every second without skipping. (2026-10-17, machine; key 4 rolled over promptly at the boundary. The `%S` variant not tried.)
+- [ ] After suspend and resume the clock is right within 5 s. *(not done — needs a suspend)*
+- [ ] `timedatectl set-timezone …` moves the clock (how fast jiff notices: unconfirmed). *(not done)*
+- [x] CPU follows btop roughly; memory and battery match `free` and Waybar; plugging
+      the charger shows the charging glyph within 5 s. (2026-10-17, machine; key 6's % was plausible against the bar. Memory key not set; no battery on this machine.)
+- [x] Workspace key follows `SUPER+1..5`, a click on another monitor's window, and a
+      rename; `–` when the daemon runs outside Hyprland (TTY). (2026-10-17, machine; key 5 followed `SUPER+1/2`. No second monitor to click; rename and the TTY case not tried — and note `renameworkspace` has no Lua dispatcher on Hyprland 0.56.2, so a rename may not be reachable here at all.)
 - [ ] Restarting Hyprland reconnects the listener with the new signature.
 - [ ] A command key with `sleep 30` doesn't delay the clock; its run is killed at 5 s
       (default interval).
@@ -163,12 +162,12 @@ Task F (daemon, on the hardware):
       live key with `busy_while_running` shows the busy face while its command runs,
       then the value again.
 - [ ] A live command key (e.g. `playerctl status`) updates right after a press.
-- [ ] Battery and clock dials draw `$B1` and `$A1` correctly on the strip.
-- [ ] No visible CPU cost from the daemon with a seconds clock (`top`).
+- [ ] Battery and clock dials draw `$B1` and `$A1` correctly on the strip. *(no live dial set)*
+- [x] No visible CPU cost from the daemon with a seconds clock (`top`). (2026-10-17, machine; 0.4% with a `%H:%M` clock, a workspace key and a CPU key live. A seconds clock would poll more.)
 
 Task G (GUI):
-- [ ] Pick each source on a key and on a dial: the preview shows `–` with the daemon
-      stopped, and the live value with it running, within a second.
+- [x] Pick each source on a key and on a dial: the preview shows `–` with the daemon
+      stopped, and the live value with it running, within a second. (2026-10-17, machine; the configurator's key 4/5/6 previews matched the deck's clock/workspace/CPU values.)
 - [ ] The clock's example row follows typing in Format, and focus stays in the entry.
 - [ ] A live command is saved on Enter, ✓ or focus-out, not while typing.
 - [ ] The On tab of a live toggle key still shows the value.
