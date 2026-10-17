@@ -1,9 +1,11 @@
-//! "Choose an application" dialog listing installed desktop apps.
+//! "Choose an application" dialog listing installed desktop apps, and the app volume
+//! picker listing what's playing now.
 
 use std::rc::Rc;
 
 use adw::prelude::*;
-use gtk::gio;
+use gtk::{gio, glib};
+use omadeck_core::audio;
 
 pub fn find(id: &str) -> Option<gio::AppInfo> {
     gio::AppInfo::all().into_iter().find(|a| a.id().is_some_and(|i| i == id))
@@ -109,4 +111,130 @@ pub fn pick(parent: &impl IsA<gtk::Widget>, on_pick: impl Fn(gio::AppInfo) + 'st
 
     dialog.present(Some(parent));
     search.grab_focus();
+}
+
+/// The app an installed app is found by in the audio streams: its executable's name,
+/// or, for a launcher (Flatpak, a shell), its desktop id without `.desktop`.
+fn audio_key(info: &gio::AppInfo) -> String {
+    let exe = info.executable();
+    let base = exe.file_name().map(|f| f.to_string_lossy().into_owned()).unwrap_or_default();
+    if base.is_empty() || matches!(base.as_str(), "flatpak" | "env" | "sh" | "bash" | "gtk-launch" | "uwsm-app") {
+        let id = info.id().map(|s| s.to_string()).unwrap_or_default();
+        return id.strip_suffix(".desktop").unwrap_or(&id).to_string();
+    }
+    base
+}
+
+/// Choose an app for an app volume action. `on_pick` gets the app's key (what the
+/// action stores) and its display name. The apps playing now are read once, off the
+/// GTK thread, as the dialog opens; "Installed apps…" offers every app instead.
+pub fn pick_audio(parent: &impl IsA<gtk::Widget>, on_pick: impl Fn(String, String) + 'static) {
+    let on_pick: Rc<dyn Fn(String, String)> = Rc::new(on_pick);
+    let parent: gtk::Widget = parent.upcast_ref::<gtk::Widget>().clone();
+
+    let heading = gtk::Label::builder().label("Playing now").xalign(0.0).css_classes(["heading"]).build();
+    let playing = gtk::ListBox::builder()
+        .selection_mode(gtk::SelectionMode::None)
+        .css_classes(["boxed-list"])
+        .valign(gtk::Align::Start)
+        .build();
+    let status = adw::ActionRow::builder().title("Looking for apps playing audio…").activatable(false).build();
+    playing.append(&status);
+
+    let others = gtk::ListBox::builder()
+        .selection_mode(gtk::SelectionMode::None)
+        .css_classes(["boxed-list"])
+        .valign(gtk::Align::Start)
+        .build();
+    let installed = adw::ActionRow::builder()
+        .title("Installed apps…")
+        .subtitle("Choose any application, playing or not")
+        .activatable(true)
+        .build();
+    installed.add_suffix(&gtk::Image::from_icon_name("go-next-symbolic"));
+    others.append(&installed);
+
+    let content = gtk::Box::builder()
+        .orientation(gtk::Orientation::Vertical)
+        .spacing(12)
+        .margin_start(12)
+        .margin_end(12)
+        .margin_top(6)
+        .margin_bottom(12)
+        .build();
+    content.append(&heading);
+    content.append(&playing);
+    content.append(&others);
+    let scroller =
+        gtk::ScrolledWindow::builder().hscrollbar_policy(gtk::PolicyType::Never).vexpand(true).child(&content).build();
+    let view = adw::ToolbarView::new();
+    view.add_top_bar(&adw::HeaderBar::new());
+    view.set_content(Some(&scroller));
+    let dialog =
+        adw::Dialog::builder().title("Choose an app").content_width(420).content_height(480).child(&view).build();
+
+    {
+        let d = dialog.clone();
+        let cb = on_pick.clone();
+        let parent = parent.clone();
+        installed.connect_activated(move |_| {
+            d.close();
+            let cb = cb.clone();
+            pick(&parent, move |info: gio::AppInfo| {
+                cb(audio_key(&info), info.display_name().to_string());
+            });
+        });
+    }
+
+    // One read of the streams, never on the GTK thread and never repeated.
+    let d = dialog.clone();
+    let list = playing.clone();
+    glib::spawn_future_local(async move {
+        let res = gio::spawn_blocking(audio::streams).await;
+        let streams = match res {
+            Ok(Some(s)) => s,
+            Ok(None) | Err(_) => {
+                status.set_title("Couldn't read what's playing (is pactl installed?)");
+                return;
+            }
+        };
+        let mut seen: Vec<String> = Vec::new();
+        let mut apps: Vec<(String, String)> = Vec::new();
+        for s in &streams {
+            let Some(lv) = audio::app_level(&[s]) else { continue };
+            if lv.key.is_empty() || seen.contains(&lv.key) {
+                continue;
+            }
+            seen.push(lv.key.clone());
+            apps.push((lv.key, lv.name));
+        }
+        if apps.is_empty() {
+            status.set_title("Nothing is playing now");
+            return;
+        }
+        list.remove(&status);
+        for (key, name) in apps {
+            let row = adw::ActionRow::builder()
+                .title(name.as_str())
+                .subtitle(key.as_str())
+                .use_markup(false)
+                .activatable(true)
+                .build();
+            let icon = match find(&format!("{key}.desktop")).and_then(|a| a.icon()) {
+                Some(gicon) => gtk::Image::from_gicon(&gicon),
+                None => gtk::Image::from_icon_name("audio-x-generic"),
+            };
+            icon.set_pixel_size(32);
+            row.add_prefix(&icon);
+            let d = d.clone();
+            let cb = on_pick.clone();
+            row.connect_activated(move |_| {
+                d.close();
+                cb(key.clone(), name.clone());
+            });
+            list.append(&row);
+        }
+    });
+
+    dialog.present(Some(&parent));
 }
