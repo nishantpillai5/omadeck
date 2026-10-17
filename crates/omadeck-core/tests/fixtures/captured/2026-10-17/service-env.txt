@@ -1,0 +1,20 @@
+# systemctl --user show-environment (HYPRLAND, XDG_RUNTIME, OMARCHY_PATH, PATH)
+PATH=/usr/share/omarchy/bin:/home/noobaf/.local/share/mise/shims:/usr/local/sbin:/usr/local/bin:/usr/bin:/home/noobaf/.local/share/mise/shims:/home/noobaf/.local/bin:/usr/bin/site_perl:/usr/bin/vendor_perl:/usr/bin/core_perl
+XDG_RUNTIME_DIR=/run/user/1000
+HYPRLAND_CMD=$'Hyprland --watchdog-fd 4'
+HYPRLAND_INSTANCE_SIGNATURE=efb50993780079460b0cbed1363e2166a2de1d9f_1792270415_210888018
+OMARCHY_PATH=/usr/share/omarchy
+
+# systemctl --user show omadeckd -p Environment -p ActiveState
+ActiveState=inactive
+Environment=
+
+# this shell: HYPRLAND_INSTANCE_SIGNATURE=efb50993780079460b0cbed1363e2166a2de1d9f_1792270415_210888018 XDG_RUNTIME_DIR=/run/user/1000
+# ls -la $XDG_RUNTIME_DIR/hypr/
+total 0
+drwx------  3 noobaf noobaf  60 Oct 17 22:53 .
+drwx------ 18 noobaf noobaf 640 Oct 17 23:37 ..
+drwx------  2 noobaf noobaf 120 Oct 17 22:53 efb50993780079460b0cbed1363e2166a2de1d9f_1792270415_210888018
+
+# ls -l $XDG_RUNTIME_DIR/omadeck.sock
+ls: cannot access '/run/user/1000/omadeck.sock': No such file or directory

@@ -1,0 +1,18 @@
+# ls ~/.config/hypr/
+autostart.lua
+bindings.lua
+hyprland.lua
+hyprsunset.conf
+input.lua
+looknfeel.lua
+monitors.conf
+monitors.conf.bak
+monitors.json
+monitors.lua
+xdph.conf
+
+# head -30 ~/.config/hypr/bindings.conf
+head: cannot open '/home/noobaf/.config/hypr/bindings.conf' for reading: No such file or directory
+
+# Omarchy's media binds (command names): grep -rn 'media' ~/.local/share/omarchy/default/hypr/bindings/
+grep: /home/noobaf/.local/share/omarchy/default/hypr/bindings/: No such file or directory

@@ -1,0 +1,30 @@
+1792273225.501681 [DEBUG omadeck_core::render] label font: /usr/share/fonts/TTF/JetBrainsMonoNerdFont-Bold.ttf
+1792273225.501710 [INFO  omadeckd] theme: default
+1792273225.501721 [INFO  omadeckd] omadeckd 0.1.0 ready; config /tmp/tmp.1PngqD8lsU/config/omadeck/config.toml
+1792273225.510129 [INFO  omadeckd::deck] connected Stream Deck + (serial A00WA5081LZEYC, firmware 2.0.3.2)
+1792273234.948627 [INFO  omadeckd::daemon] strip tap at (149, 68)
+1792273234.948654 [INFO  omadeckd::daemon] strip tap on dial 0
+1792273235.163252 [INFO  omadeckd::daemon] strip tap at (151, 34)
+1792273235.163277 [INFO  omadeckd::daemon] strip tap on dial 0
+1792273235.356258 [INFO  omadeckd::daemon] strip tap at (185, 40)
+1792273235.356282 [INFO  omadeckd::daemon] strip tap on dial 0
+1792273235.549381 [INFO  omadeckd::daemon] strip tap at (214, 45)
+1792273235.549407 [INFO  omadeckd::daemon] strip tap on dial 1
+1792273235.774635 [INFO  omadeckd::daemon] strip tap at (261, 46)
+1792273235.774659 [INFO  omadeckd::daemon] strip tap on dial 1
+1792273235.978387 [INFO  omadeckd::daemon] strip tap at (324, 50)
+1792273235.978410 [INFO  omadeckd::daemon] strip tap on dial 1
+1792273236.203764 [INFO  omadeckd::daemon] strip tap at (374, 64)
+1792273236.203788 [INFO  omadeckd::daemon] strip tap on dial 1
+1792273236.429017 [INFO  omadeckd::daemon] strip tap at (467, 41)
+1792273236.429040 [INFO  omadeckd::daemon] strip tap on dial 2
+1792273236.633283 [INFO  omadeckd::daemon] strip tap at (507, 59)
+1792273236.633311 [INFO  omadeckd::daemon] strip tap on dial 2
+1792273236.836643 [INFO  omadeckd::daemon] strip tap at (501, 54)
+1792273236.836666 [INFO  omadeckd::daemon] strip tap on dial 2
+1792273237.684160 [INFO  omadeckd::daemon] strip tap at (222, 59)
+1792273237.684179 [INFO  omadeckd::daemon] strip tap on dial 1
+1792273241.650315 [INFO  omadeckd::daemon] strip long press at (119, 65)
+1792273246.156350 [INFO  omadeckd::daemon] strip long press at (123, 71)
+1792273255.798701 [INFO  omadeckd::daemon] strip long press at (83, 41)
+1792273258.240323 [INFO  omadeckd::daemon] shutting down
