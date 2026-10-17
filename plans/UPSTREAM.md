@@ -1,7 +1,7 @@
 # The upstream series (`up/*`, 2026-10-18)
 
 The branches to open upstream, one PR at a time, in this order. They replace the `pr/*`
-series as the PR candidates (`pr/*` stays on the fork for reference). Base:
+series (deleted from the fork on 2026-10-18). Base:
 `upstream/pages-and-folders` (`fb9052f`), upstream's own unmerged pages branch. PR 1's
 description has to say it builds on that branch, or wait for it to land on `master`.
 
@@ -19,7 +19,7 @@ description has to say it builds on that branch, or wait for it to land on `mast
 | 10 | `up/10-strip-long-press` | `2235154` | A second action per dial on a held strip panel | PR 16 | 2 | +187 −40 |
 
 Not for upstream: `up/captures` (`f1faaeb`) = `up/10` + the capture script and the dated
-machine captures (they hold private data). That's what `daily` should be next.
+machine captures (they hold private data). `daily` = `up/captures` since 2026-10-18.
 
 ## How it was built
 
@@ -50,7 +50,7 @@ machine captures (they hold private data). That's what `daily` should be next.
 ## Still to do before PR 1
 
 1. CI on each `up/*` tip (the GUI links there).
-2. On the machine: `daily` = `up/captures`, build, smoke-test (the code is the verified
+2. On the machine: reset to the new `daily`, build, smoke-test (the code is the verified
    code, so this is a quick pass, not VERIFY.md again).
 3. The GUI checks VERIFY.md still has open; they were skipped.
 4. Contact the author first (PLAN.md, "Order of work with upstream").
