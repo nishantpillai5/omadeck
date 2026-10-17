@@ -2,7 +2,7 @@
 
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::process::CommandExt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::OnceLock;
 use std::thread;
@@ -175,7 +175,7 @@ fn wpctl_rel(n: i8) -> String {
     format!("{}%{}", n.unsigned_abs(), if n >= 0 { '+' } else { '-' })
 }
 
-fn which(bin: &str) -> bool {
+pub(crate) fn which(bin: &str) -> bool {
     std::env::var_os("PATH").map(|p| std::env::split_paths(&p).any(|d| d.join(bin).is_file())).unwrap_or(false)
 }
 
@@ -206,6 +206,77 @@ fn detached<S: AsRef<std::ffi::OsStr>>(argv: &[S]) -> Command {
     };
     c.args(argv);
     c
+}
+
+/// Starts `action` as a job the daemon watches (a `busy_while_running` key). Only for
+/// `is_trackable()` kinds. Not through `uwsm-app`: it hands the command to systemd and
+/// returns at once, so there would be nothing to wait for. Instead the job gets its own
+/// scope (`systemd-run --scope` execs its command, so the child *is* the job), so
+/// stopping the daemon doesn't kill it; with no user bus it runs directly. SIGPIPE is
+/// ignored so the job survives the
+/// daemon (its stdout's reader) going away.
+pub fn run_tracked(action: &Action) -> Result<proc::Job> {
+    let (argv, dir): (Vec<String>, Option<PathBuf>) = match action {
+        Action::App { command } => {
+            let command = command.trim();
+            if command.is_empty() {
+                bail!("no application set");
+            }
+            let argv = if needs_shell(command) {
+                vec!["sh".into(), "-c".into(), command.into()]
+            } else {
+                shell_words::split(command).context("could not parse command")?
+            };
+            (argv, std::env::var_os("HOME").map(PathBuf::from))
+        }
+        Action::Script { path, terminal } => {
+            let p = paths::resolve(path.trim());
+            if !p.exists() {
+                bail!("script not found: {}", p.display());
+            }
+            let executable = p.metadata().map(|m| m.permissions().mode() & 0o111 != 0).unwrap_or(false);
+            let mut argv: Vec<String> = Vec::new();
+            if !executable {
+                argv.push("sh".into());
+            }
+            argv.push(p.to_string_lossy().into_owned());
+            if *terminal {
+                let term: &[&str] =
+                    if which("xdg-terminal-exec") { &["xdg-terminal-exec"] } else { &["alacritty", "-e"] };
+                argv.splice(0..0, term.iter().map(|s| s.to_string()));
+            }
+            (argv, p.parent().map(PathBuf::from))
+        }
+        _ => bail!("this action can't be watched while it runs"),
+    };
+    static HAS_SCOPE: OnceLock<bool> = OnceLock::new();
+    let argv = tracked_argv(&argv, *HAS_SCOPE.get_or_init(|| which("systemd-run") && user_bus()));
+    let mut c = Command::new(&argv[0]);
+    c.args(&argv[1..]);
+    if let Some(dir) = dir {
+        c.current_dir(dir);
+    }
+    let job = proc::Job::spawn(c).with_context(|| format!("failed to start {argv:?}"))?;
+    log::info!("tracked: {argv:?}");
+    Ok(job)
+}
+
+/// Whether the user bus is up: `systemd-run --user` fails without it (a CI runner or a
+/// hand-started shell has the binary but no bus), so a scope needs both.
+fn user_bus() -> bool {
+    std::env::var_os("XDG_RUNTIME_DIR").is_some_and(|dir| Path::new(&dir).join("bus").exists())
+}
+
+/// The argv `run_tracked` runs. Pure for tests. `scope`: systemd-run is on PATH and the
+/// user bus is up.
+pub fn tracked_argv(argv: &[String], scope: bool) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    if scope {
+        out.extend(["systemd-run", "--user", "--scope", "--collect", "--quiet", "--"].map(String::from));
+    }
+    out.extend(["sh", "-c", "trap '' PIPE; exec \"$@\"", "sh"].map(String::from));
+    out.extend(argv.iter().cloned());
+    out
 }
 
 /// Spawn in its own process group with no stdio, reaping it on a helper thread.
@@ -380,6 +451,7 @@ pub fn legacy_to_lua(dispatch: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::{Duration, Instant};
 
     #[test]
     fn folded_volume_clamps() {
@@ -503,5 +575,46 @@ mod tests {
         // A hand-edited `change = -128` must not panic.
         assert_eq!(wpctl_rel(i8::MIN), "128%-");
         assert_eq!(wpctl_rel(i8::MAX), "127%+");
+    }
+
+    #[test]
+    fn tracked_argv_uses_a_scope_never_uwsm() {
+        let argv = vec!["sleep".into(), "5".into()];
+        let a = tracked_argv(&argv, true);
+        assert_eq!(
+            a,
+            vec![
+                "systemd-run",
+                "--user",
+                "--scope",
+                "--collect",
+                "--quiet",
+                "--",
+                "sh",
+                "-c",
+                "trap '' PIPE; exec \"$@\"",
+                "sh",
+                "sleep",
+                "5",
+            ]
+        );
+        let b = tracked_argv(&argv, false);
+        assert_eq!(&b[..4], ["sh", "-c", "trap '' PIPE; exec \"$@\"", "sh"]);
+        assert!(!b.iter().any(|s| s == "uwsm-app"), "never through uwsm-app: it returns at once");
+    }
+
+    #[test]
+    fn run_tracked_streams_lines() {
+        let mut job = run_tracked(&Action::App { command: "for i in 1 2 3; do echo \"$i%\"; done".into() }).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let status = loop {
+            if let Some(s) = job.try_finish() {
+                break s;
+            }
+            assert!(Instant::now() < deadline, "job did not finish in time");
+            thread::sleep(Duration::from_millis(20));
+        };
+        assert!(status.success());
+        assert_eq!(job.lines().collect::<Vec<_>>(), vec!["1%", "2%", "3%"]);
     }
 }
