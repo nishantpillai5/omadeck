@@ -7,8 +7,8 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
-use crate::config::{AudioDevice, Config, DialConfig, KeyConfig, LevelSource};
-use crate::render::{DialStatus, KeyStatus, Level, PanelStatus};
+use crate::config::{AudioDevice, Config, DialConfig, KeyConfig, LevelSource, Live};
+use crate::render::{DialStatus, KeyStatus, Level, LiveShow, PanelStatus};
 
 /// A volume set from the keyboard or `pavucontrol` lands in well under this.
 const VOLUME_REFRESH: [Duration; 1] = [Duration::from_millis(150)];
@@ -24,8 +24,8 @@ pub const FAST_WINDOW: Duration = Duration::from_secs(15);
 /// How long a fast toggle's optimistic guess wins over a contradicting read.
 pub const SETTLE: Duration = Duration::from_secs(1);
 
-/// Something the daemon reads from the system. PR 9 adds clocks and meters, PR 10
-/// `AppVolume(..)`, PR 14 `Player`.
+/// Something the daemon reads from the system. PR 9 added clocks, meters and command
+/// output; PR 10 adds `AppVolume(..)`, PR 14 `Player`.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Probe {
     /// An audio device's level and mute.
@@ -34,6 +34,19 @@ pub enum Probe {
     /// the same command at two intervals is two probes, so each key polls at the rate it
     /// asked for. Keys with identical command and interval share one probe.
     Command { command: String, interval_ms: u32 },
+    /// Local time in this strftime format.
+    Clock { format: String },
+    /// CPU use, %.
+    Cpu,
+    /// Memory use, %.
+    Memory,
+    /// The system battery.
+    Battery,
+    /// The active Hyprland workspace. Fed by the Hyprland listener, never polled.
+    Workspace,
+    /// `sh -c command`'s first output line, every `interval_ms`. Both fields are the hash
+    /// key, as for `Command`.
+    Output { command: String, interval_ms: u32 },
 }
 
 impl Probe {
@@ -42,7 +55,16 @@ impl Probe {
     pub fn interval(&self) -> Duration {
         match self {
             Probe::Volume(_) => Duration::from_secs(1),
-            Probe::Command { interval_ms, .. } => Duration::from_millis((*interval_ms).max(1000) as u64),
+            Probe::Command { interval_ms, .. } | Probe::Output { interval_ms, .. } => {
+                Duration::from_millis((*interval_ms).max(1000) as u64)
+            }
+            // Only a fallback: the watcher schedules clocks on the minute or second.
+            Probe::Clock { .. } => crate::live::CLOCK_CAP,
+            Probe::Cpu => Duration::from_secs(1),
+            Probe::Memory => Duration::from_secs(2),
+            Probe::Battery => Duration::from_secs(5),
+            // Never used: the Hyprland listener feeds it.
+            Probe::Workspace => Duration::from_secs(1),
         }
     }
 
@@ -51,8 +73,15 @@ impl Probe {
     pub fn refresh_after(&self) -> &'static [Duration] {
         match self {
             Probe::Volume(_) => &VOLUME_REFRESH,
-            Probe::Command { .. } => &COMMAND_REFRESH,
+            Probe::Command { .. } | Probe::Output { .. } => &COMMAND_REFRESH,
+            Probe::Clock { .. } | Probe::Cpu | Probe::Memory | Probe::Battery | Probe::Workspace => &[],
         }
+    }
+
+    /// False for probes something else feeds (the Hyprland listener): `watched_probes`
+    /// leaves them out.
+    pub fn is_polled(&self) -> bool {
+        !matches!(self, Probe::Workspace)
     }
 }
 
@@ -73,8 +102,8 @@ impl Toggle {
     }
 }
 
-/// What a probe read. Later PRs add variants (PR 9 `Text`, …). It goes on the wire in
-/// later events, hence serde.
+/// What a probe read. Later PRs add variants. It goes on the wire in later events, hence
+/// serde.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Value {
@@ -82,6 +111,12 @@ pub enum Value {
     Level(Level),
     /// A toggle key's state. A `Toggle` on a dial shows no level.
     Toggle(Toggle),
+    /// A live text: the clock, the workspace, a command's line.
+    Text(String),
+    /// 0–100: CPU, memory.
+    Percent(u8),
+    /// The battery's charge, 0–100, and whether it is charging.
+    Battery { percent: u8, charging: bool },
 }
 
 /// Everything the panels show: the last value of each probe, and the panel brightness.
@@ -97,8 +132,20 @@ impl Values {
     pub fn level(&self, device: AudioDevice) -> Option<&Level> {
         match self.probes.get(&Probe::Volume(device))? {
             Value::Level(l) => Some(l),
-            Value::Toggle(_) => None,
+            _ => None,
         }
+    }
+}
+
+/// What the live key or panel for `live` shows now; `None` until a value arrives.
+pub fn live_show(live: &Live, values: &Values) -> Option<LiveShow> {
+    match values.probes.get(&live.probe())? {
+        Value::Text(s) => Some(LiveShow { text: s.clone(), bar: None, charging: false }),
+        Value::Percent(p) => Some(LiveShow { text: format!("{p}%"), bar: Some(*p as f32 / 100.0), charging: false }),
+        Value::Battery { percent, charging } => {
+            Some(LiveShow { text: format!("{percent}%"), bar: Some(*percent as f32 / 100.0), charging: *charging })
+        }
+        Value::Level(_) | Value::Toggle(_) => None,
     }
 }
 
@@ -115,7 +162,8 @@ pub fn dial_status(dial: Option<&DialConfig>, values: &Values, pressed: bool) ->
         LevelSource::Volume(dev) => values.level(dev).cloned(),
         LevelSource::Brightness => Some(brightness_level(values.brightness)),
     });
-    DialStatus { pressed, panel: PanelStatus { level } }
+    let live = dial.and_then(|d| d.live.as_ref()).and_then(|l| live_show(l, values));
+    DialStatus { pressed, panel: PanelStatus { level, live } }
 }
 
 /// The level a volume change will leave, guessed from the current one, so the bar moves
@@ -141,7 +189,7 @@ pub fn shows(dial: Option<&DialConfig>, probe: &Probe) -> bool {
 }
 
 /// The ONE builder of a key's status from the watcher's values, like `dial_status`. The
-/// daemon, the GUI and `snapshot` call it; PR 9 adds `live`. It covers what `Values`
+/// daemon, the GUI and `snapshot` call it; PR 9 added `live`. It covers what `Values`
 /// knows (a command's state, a mute); the two per-(page, key) things `Values` can't key
 /// (a press toggle's flip and a running job) are laid over it by the daemon's
 /// `key_state`.
@@ -154,7 +202,8 @@ pub fn key_status(key: Option<&KeyConfig>, values: &Values, pressed: bool) -> Ke
         },
         None => Toggle::Off,
     };
-    KeyStatus { pressed, state }
+    let live = key.and_then(|k| k.live.as_ref()).and_then(|l| live_show(l, values));
+    KeyStatus { pressed, state, live }
 }
 
 /// A state command's exit code: 0 on, 75 busy (with its first output line as the
@@ -482,5 +531,46 @@ change = 5
             thread::sleep(Duration::from_millis(10));
         };
         assert!(status.signal().is_some());
+    }
+
+    #[test]
+    fn live_show_forms() {
+        let mut values = Values::default();
+        assert_eq!(live_show(&Live::Cpu, &values), None, "nothing read yet");
+        values.probes.insert(Probe::Clock { format: "%H".into() }, Value::Text("12".into()));
+        values.probes.insert(Probe::Cpu, Value::Percent(42));
+        values.probes.insert(Probe::Battery, Value::Battery { percent: 80, charging: true });
+        assert_eq!(
+            live_show(&Live::Clock { format: "%H".into() }, &values),
+            Some(LiveShow { text: "12".into(), bar: None, charging: false })
+        );
+        assert_eq!(
+            live_show(&Live::Cpu, &values),
+            Some(LiveShow { text: "42%".into(), bar: Some(0.42), charging: false })
+        );
+        assert_eq!(
+            live_show(&Live::Battery, &values),
+            Some(LiveShow { text: "80%".into(), bar: Some(0.8), charging: true })
+        );
+    }
+
+    #[test]
+    fn workspace_is_not_polled() {
+        assert!(!Probe::Workspace.is_polled());
+        assert!(Probe::Cpu.is_polled() && Probe::Clock { format: "%H".into() }.is_polled());
+        assert!(Probe::Output { command: "x".into(), interval_ms: 1000 }.is_polled());
+        assert_eq!(Probe::Memory.interval(), Duration::from_secs(2));
+        assert_eq!(Probe::Battery.interval(), Duration::from_secs(5));
+        assert!(Probe::Cpu.refresh_after().is_empty());
+    }
+
+    #[test]
+    fn value_live_wire_names() {
+        assert_eq!(serde_json::to_string(&Value::Text("a".into())).unwrap(), r#"{"text":"a"}"#);
+        assert_eq!(serde_json::to_string(&Value::Percent(5)).unwrap(), r#"{"percent":5}"#);
+        assert_eq!(
+            serde_json::to_string(&Value::Battery { percent: 5, charging: false }).unwrap(),
+            r#"{"battery":{"percent":5,"charging":false}}"#
+        );
     }
 }

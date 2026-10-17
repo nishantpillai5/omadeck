@@ -197,6 +197,9 @@ pub struct KeyConfig {
     /// The look while busy (a state command's exit 75, or a running command).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub busy: Option<BusyFace>,
+    /// A value the key shows and keeps up to date (PR 9). Last: TOML writes tables last.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub live: Option<Live>,
 }
 
 /// The look and the source of a key's on state. Each unset look field falls back to the
@@ -268,6 +271,96 @@ pub struct BusyFace {
 fn two() -> u16 {
     2
 }
+
+/// A value a key or a dial's strip panel shows and keeps up to date.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "source", rename_all = "snake_case")]
+pub enum Live {
+    /// Local time and date, strftime format (jiff's strtime: %H %M %S %a %d %b %n …).
+    Clock {
+        #[serde(default = "default_clock_format", skip_serializing_if = "is_default_clock_format")]
+        format: String,
+    },
+    /// Average over all cores, %.
+    Cpu,
+    /// (MemTotal − MemAvailable) / MemTotal, %.
+    Memory,
+    /// System battery %, and whether it is charging.
+    Battery,
+    /// Hyprland's active workspace name.
+    Workspace,
+    /// The first line of a command's stdout (`sh -c`), re-run every `interval` seconds.
+    Command {
+        command: String,
+        #[serde(default = "default_live_interval", skip_serializing_if = "is_default_live_interval")]
+        interval: u16,
+    },
+}
+
+fn default_clock_format() -> String {
+    "%H:%M".into()
+}
+fn is_default_clock_format(f: &String) -> bool {
+    f == "%H:%M"
+}
+fn default_live_interval() -> u16 {
+    5
+}
+fn is_default_live_interval(n: &u16) -> bool {
+    *n == 5
+}
+
+impl Live {
+    /// For the configurator's "Shows" combo; index 0 is "no live value".
+    pub const KINDS: [&'static str; 7] =
+        ["Nothing", "Clock", "CPU", "Memory", "Battery", "Active workspace", "Command output"];
+
+    /// None → 0, Clock → 1 … Command → 6.
+    pub fn kind_index(live: Option<&Live>) -> usize {
+        match live {
+            None => 0,
+            Some(Live::Clock { .. }) => 1,
+            Some(Live::Cpu) => 2,
+            Some(Live::Memory) => 3,
+            Some(Live::Battery) => 4,
+            Some(Live::Workspace) => 5,
+            Some(Live::Command { .. }) => 6,
+        }
+    }
+
+    /// 0 → None; 1 → Clock { "%H:%M" }; 2 → Cpu; … 6 → Command { "", 5 }.
+    pub fn of_kind(i: usize) -> Option<Live> {
+        match i {
+            1 => Some(Live::Clock { format: default_clock_format() }),
+            2 => Some(Live::Cpu),
+            3 => Some(Live::Memory),
+            4 => Some(Live::Battery),
+            5 => Some(Live::Workspace),
+            6 => Some(Live::Command { command: String::new(), interval: default_live_interval() }),
+            _ => None,
+        }
+    }
+
+    /// Whether the strip panel draws `$B1` (with a bar) rather than `$A1`.
+    pub fn has_bar(&self) -> bool {
+        matches!(self, Live::Cpu | Live::Memory | Live::Battery)
+    }
+
+    /// The probe that feeds it. A command's interval is clamped to 1 s here, not on
+    /// load, so a hand-written `0` saves as written.
+    pub fn probe(&self) -> Probe {
+        match self {
+            Live::Clock { format } => Probe::Clock { format: format.clone() },
+            Live::Cpu => Probe::Cpu,
+            Live::Memory => Probe::Memory,
+            Live::Battery => Probe::Battery,
+            Live::Workspace => Probe::Workspace,
+            Live::Command { command, interval } => {
+                Probe::Output { command: command.clone(), interval_ms: (*interval).max(1) as u32 * 1000 }
+            }
+        }
+    }
+}
 fn is_two(v: &u16) -> bool {
     *v == 2
 }
@@ -286,6 +379,7 @@ impl KeyConfig {
             action: Action::None,
             on: None,
             busy: None,
+            live: None,
         }
     }
 
@@ -300,6 +394,7 @@ impl KeyConfig {
             && self.action == Action::None
             && self.on.is_none()
             && self.busy.is_none()
+            && self.live.is_none()
     }
 
     /// What the watcher polls for this key, if anything. A non-blank `on.state` wins;
@@ -903,6 +998,10 @@ pub struct DialConfig {
     /// Runs when the dial is pressed down.
     #[serde(default, skip_serializing_if = "Action::is_none")]
     pub press: Action,
+    /// A value the strip panel shows and keeps up to date (PR 9). Last: TOML writes
+    /// tables last.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub live: Option<Live>,
 }
 
 impl DialConfig {
@@ -919,6 +1018,7 @@ impl DialConfig {
             turn_left: Action::None,
             turn_right: Action::None,
             press: Action::None,
+            live: None,
         }
     }
 
@@ -934,6 +1034,7 @@ impl DialConfig {
             && self.turn_left.is_none()
             && self.turn_right.is_none()
             && self.press.is_none()
+            && self.live.is_none()
     }
 
     /// The audio device this dial shows a level for: the device of the first `Volume`
@@ -980,8 +1081,12 @@ impl DialConfig {
     }
 
     /// What this dial's strip panel shows: the first `Volume` action's device (which
-    /// wins), else `Brightness` when any of its actions is a brightness action.
+    /// wins), else `Brightness` when any of its actions is a brightness action. `None`
+    /// when `live` is set: an explicit live value wins.
     pub fn level_source(&self) -> Option<LevelSource> {
+        if self.live.is_some() {
+            return None;
+        }
         let actions = [&self.turn_right, &self.turn_left, &self.press];
         if let Some(dev) = actions.into_iter().find_map(|a| match a {
             Action::Volume { device, .. } => Some(*device),
@@ -1942,5 +2047,100 @@ slow = true
         assert!(!c.dials[0].turn_left.is_none());
         assert!(matches!(c.dials[1].turn_right, Action::Volume { .. }));
         assert!(matches!(c.dials[2].turn_right, Action::Brightness { .. }));
+    }
+
+    #[test]
+    fn live_key_round_trips() {
+        for live in [
+            Live::Clock { format: "%H:%M%n%a".into() },
+            Live::Cpu,
+            Live::Memory,
+            Live::Battery,
+            Live::Workspace,
+            Live::Command { command: "date +%s".into(), interval: 30 },
+        ] {
+            let mut c = Config::default();
+            c.keys.get_mut(3).live = Some(live.clone());
+            let s = toml::to_string_pretty(&c).unwrap();
+            assert!(s.contains("[key.live]"), "{s}");
+            assert_eq!(toml::from_str::<Config>(&s).unwrap().key(None, 3).unwrap().live, Some(live));
+        }
+    }
+
+    #[test]
+    fn live_after_on_and_busy_tables() {
+        let k = KeyConfig {
+            on: Some(OnFace::default()),
+            busy: Some(BusyFace::default()),
+            live: Some(Live::Cpu),
+            ..KeyConfig::new(0)
+        };
+        let s = toml::to_string_pretty(&Config { keys: Keys(vec![k]), ..Config::default() }).unwrap();
+        assert_eq!(Config::parse(&s).unwrap().key(None, 0).unwrap().live, Some(Live::Cpu));
+    }
+
+    #[test]
+    fn clock_default_format_not_written() {
+        let d = DialConfig { live: Some(Live::Clock { format: "%H:%M".into() }), ..DialConfig::new(0) };
+        let s = toml::to_string_pretty(&d).unwrap();
+        assert!(s.contains("source = \"clock\""), "{s}");
+        assert!(!s.contains("format"), "{s}");
+        let back: DialConfig = toml::from_str("index = 0\nlive = { source = \"clock\" }\n").unwrap();
+        assert_eq!(back.live, Some(Live::Clock { format: "%H:%M".into() }));
+    }
+
+    #[test]
+    fn command_interval_default_not_written() {
+        let k = KeyConfig { live: Some(Live::Command { command: "x".into(), interval: 5 }), ..KeyConfig::new(0) };
+        let s = toml::to_string_pretty(&k).unwrap();
+        assert!(!s.contains("interval"), "{s}");
+        let back: KeyConfig = toml::from_str("index = 0\nlive = { source = \"command\", command = \"x\" }\n").unwrap();
+        assert_eq!(back.live, Some(Live::Command { command: "x".into(), interval: 5 }));
+    }
+
+    #[test]
+    fn old_config_saves_byte_identical() {
+        let src = include_str!("../../../examples/config.toml");
+        let once = toml::to_string_pretty(&toml::from_str::<Config>(src).unwrap()).unwrap();
+        assert!(!once.contains("live"), "{once}");
+        let twice = toml::to_string_pretty(&toml::from_str::<Config>(&once).unwrap()).unwrap();
+        assert_eq!(once, twice);
+    }
+
+    #[test]
+    fn key_with_only_live_is_not_blank() {
+        assert!(!KeyConfig { live: Some(Live::Cpu), ..KeyConfig::new(0) }.is_blank());
+        assert!(!DialConfig { live: Some(Live::Cpu), ..DialConfig::new(0) }.is_blank());
+    }
+
+    #[test]
+    fn dial_live_wins_over_level_source() {
+        let mut d = DialConfig {
+            turn_right: Action::Volume { device: AudioDevice::Output, change: 5, mute: false },
+            ..DialConfig::new(0)
+        };
+        assert_eq!(d.level_source(), Some(LevelSource::Volume(AudioDevice::Output)));
+        d.live = Some(Live::Battery);
+        assert_eq!(d.level_source(), None);
+        assert_eq!(d.volume_device(), None);
+    }
+
+    #[test]
+    fn command_live_probe_clamps_interval() {
+        let live = Live::Command { command: "x".into(), interval: 0 };
+        assert_eq!(live.probe(), Probe::Output { command: "x".into(), interval_ms: 1000 });
+        let k = KeyConfig { live: Some(live.clone()), ..KeyConfig::new(0) };
+        let s = toml::to_string_pretty(&k).unwrap();
+        assert!(s.contains("interval = 0"), "{s}");
+        assert_eq!(toml::from_str::<KeyConfig>(&s).unwrap().live, Some(live));
+    }
+
+    #[test]
+    fn live_kinds_round_trip() {
+        for i in 0..Live::KINDS.len() {
+            assert_eq!(Live::kind_index(Live::of_kind(i).as_ref()), i);
+        }
+        assert!(Live::Battery.has_bar() && Live::Cpu.has_bar() && Live::Memory.has_bar());
+        assert!(!Live::Workspace.has_bar() && !Live::of_kind(1).unwrap().has_bar());
     }
 }
