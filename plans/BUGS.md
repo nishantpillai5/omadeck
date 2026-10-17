@@ -981,7 +981,7 @@ the code; *(plausible)* needs the machine to confirm. All 32 are fixed on `fix/r
 
 #### 73. Unplugging the deck while music plays spins the daemon at 100% CPU
 
-- **Status:** fixed in `816caac` (test in abad8d7) on `fix/review-3`, not yet verified on the machine ([VERIFY.md](VERIFY.md)). **Found:** 2026-10-17, review 3 (daemon loop) *(read, re-checked)*.
+- **Status:** fixed in `816caac` (test in abad8d7) on `fix/review-3`, verified on the machine 2026-10-17 ([VERIFY.md](VERIFY.md)). **Found:** 2026-10-17, review 3 (daemon loop) *(read, re-checked)*.
 - **Branch:** `feat/media-dial` (`75694de`).
 - **Where:** `Daemon::detach`, `Daemon::flush`, `Daemon::next_deadline`; `run()` in
   `main.rs`, the no-deck branch.
@@ -998,7 +998,7 @@ the code; *(plausible)* needs the machine to confirm. All 32 are fixed on `fix/r
 
 #### 74. Each `omadeckd` ctl call leaks a thread and a socket until the next event
 
-- **Status:** fixed in `887d9ac` on `fix/review-3`, not yet verified on the machine ([VERIFY.md](VERIFY.md)). **Found:** 2026-10-17, review 3 (daemon watcher/hub) *(test)*.
+- **Status:** fixed in `887d9ac` on `fix/review-3`, verified on the machine 2026-10-17 ([VERIFY.md](VERIFY.md)). **Found:** 2026-10-17, review 3 (daemon watcher/hub) *(test)*.
 - **Branch:** `feat/ctl` (`32390eb`). The writer and reader structure is older, but before
   ctl every client was a long-lived configurator.
 - **Where:** `hub.rs` `Hub::start` (accept loop), `spawn_writer`, `read_requests`,
@@ -1015,7 +1015,7 @@ the code; *(plausible)* needs the machine to confirm. All 32 are fixed on `fix/r
 
 #### 75. A seek key does nothing unless something else watches the player
 
-- **Status:** fixed in `324c99d` on `fix/review-3`, not yet verified on the machine ([VERIFY.md](VERIFY.md)). **Found:** 2026-10-17, review 3 (core probes) *(test)*.
+- **Status:** fixed in `324c99d` on `fix/review-3`, verified on the machine 2026-10-17 ([VERIFY.md](VERIFY.md)). **Found:** 2026-10-17, review 3 (core probes) *(test)*.
 - **Branch:** `feat/media-dial` (`839d72d`, `75694de`).
 - **Where:** `probe::watched_probes`, `probe::media_target`; the daemon's `Action::Media`
   arm (`seek != 0 && target.is_none()` → "nothing known to seek").
@@ -1028,7 +1028,7 @@ the code; *(plausible)* needs the machine to confirm. All 32 are fixed on `fix/r
 
 #### 76. Media keys can target a stale player read on another page
 
-- **Status:** fixed in `324c99d` on `fix/review-3`, not yet verified on the machine ([VERIFY.md](VERIFY.md)). **Found:** 2026-10-17, review 3 (core probes) *(read)*.
+- **Status:** fixed in `324c99d` on `fix/review-3`, verified on the machine 2026-10-17 ([VERIFY.md](VERIFY.md)). **Found:** 2026-10-17, review 3 (core probes) *(read)*.
 - **Branch:** `feat/media-dial` (`839d72d`, `75694de`).
 - **Where:** `probe::media_target`; `Daemon::dispatch` (`Action::Media`). Values of
   unwatched probes are kept on purpose (faces).
@@ -1133,7 +1133,7 @@ the code; *(plausible)* needs the machine to confirm. All 32 are fixed on `fix/r
 
 #### 86. A long ▶ (`Command::Run`) is refused by the 4096-byte line cap
 
-- **Status:** fixed in `29b90a4` on `fix/review-3`, not yet verified on the machine ([VERIFY.md](VERIFY.md)). **Found:** 2026-10-17, review 3 (core) *(read)*.
+- **Status:** fixed in `29b90a4` on `fix/review-3`, verified on the machine 2026-10-17 ([VERIFY.md](VERIFY.md)). **Found:** 2026-10-17, review 3 (core) *(read)*.
 - **Branch:** `feat/ctl` (`dbe1ae3`).
 - **Where:** `ipc::MAX_LINE`, `hub::read_requests`.
 - **What goes wrong:** a multi with a few dozen steps or a long command goes past 4 KiB and
@@ -1185,7 +1185,7 @@ the code; *(plausible)* needs the machine to confirm. All 32 are fixed on `fix/r
 
 #### 93. Outside the daemon, a multi's app volume step can land after the next step
 
-- **Status:** fixed in `6bc2be3` on `fix/review-3`, not yet verified on the machine ([VERIFY.md](VERIFY.md)). **Found:** 2026-10-17, review 3 (core) *(read)*.
+- **Status:** fixed in `6bc2be3` on `fix/review-3`, verified on the machine 2026-10-17 ([VERIFY.md](VERIFY.md)). **Found:** 2026-10-17, review 3 (core) *(read)*.
 - **Branch:** `feat/multi-actions` (`5fb32bf`).
 - **Where:** `action::run_multi_blocking` (an `AppVolume` step goes through `run`, which
   spawns a thread). Its doc says volume steps wait.
@@ -1193,7 +1193,7 @@ the code; *(plausible)* needs the machine to confirm. All 32 are fixed on `fix/r
 
 #### 94. A media dial's panel and its actions can follow different players
 
-- **Status:** fixed in `324c99d` on `fix/review-3`, not yet verified on the machine ([VERIFY.md](VERIFY.md)). **Found:** 2026-10-17, review 3 (core probes) *(read)*.
+- **Status:** fixed in `324c99d` on `fix/review-3`, verified on the machine 2026-10-17 ([VERIFY.md](VERIFY.md)). **Found:** 2026-10-17, review 3 (core probes) *(read)*.
 - **Branch:** `feat/media-dial` (`839d72d`); the strip long press (PR 16) adds `Source::LongTap` to the dial sources that fall back.
 - **Where:** `DialConfig::media_player` (the panel) vs `Daemon::dispatch` (each action's
   own `player`).
@@ -1219,7 +1219,7 @@ the code; *(plausible)* needs the machine to confirm. All 32 are fixed on `fix/r
 
 #### 97. A clock with `%n` on a dial draws the newline as a glyph
 
-- **Status:** fixed in `9c57e9a` on `fix/review-3`, not yet verified on the machine ([VERIFY.md](VERIFY.md)). **Found:** 2026-10-17, review 3 (core render) *(plausible)*.
+- **Status:** fixed in `9c57e9a` on `fix/review-3`, verified on the machine 2026-10-17 ([VERIFY.md](VERIFY.md)). **Found:** 2026-10-17, review 3 (core render) *(plausible)*.
 - **Branch:** `feat/live-keys` (`056fd8a`).
 - **Where:** `Renderer::render_strip_panel`, the live arm (only `render_body` handles `\n`).
 - **Fix:** replace `\n` with a space there (or draw the first line).

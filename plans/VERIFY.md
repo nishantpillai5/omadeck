@@ -700,70 +700,84 @@ On top of `feat/strip-long-press` (`746e326`). `daily` is now `pr/16-strip-long-
 review 3 bug, adds `scripts/capture-fixtures.sh` (`33a7678`) and a socket-free test
 `Daemon` (`abad8d7`). The fix commits are listed in BUGS.md.
 
-Build:
-- [ ] `cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test`
-      clean. Counts here: core 273 + 10 capture tests, omadeckd 111 + 3 capture tests,
-      plus the 3 hub socket tests (EPERM on the Mac). GUI: its new unit tests
-      (`seek_spin_steps_over_zero`, `uwsm_lines_give_the_program_after_the_dashes`) have
-      only been type-checked.
-- [ ] CI run on `fix/review-3` is `success` (it couldn't be started from the Mac: `gh`
-      there is logged in to the work account).
+Build (2026-10-17, machine):
+- [x] `cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test`
+      clean. core 273 + 10 capture tests, gui 9 (its new unit tests now run, not just
+      type-checked), omadeckd 115 (= 111 + 3 capture + 1: the plan's "114" was an
+      arithmetic slip; all pass).
+- [x] CI run 39071631295 on `fix/review-3` is `success` (as is 39071257078 on
+      `feat/strip-long-press`).
 
-**First on the machine: the captures.**
-- [ ] `scripts/capture-fixtures.sh`. It is read-only and asks before each step (start two
-      players, focus Walker, hold the strip, …); skip any step. It saves into
-      `crates/*/tests/fixtures/captured/<date>/`. It stops the service for the strip step and
-      starts it again. Check the files for anything private (window titles, paths), commit
-      them, and run `cargo test`: the capture tests then check the parsers against real
-      output instead of skipping. The README in each `captured/` folder says which test
-      reads which file.
-- [ ] The strip capture answers PR 16's open question: `captured_strip` fails if a hold
-      logs a tap before the long press.
-- [ ] Not captured (each changes state), so do them by hand as the script lists at the
-      end: `wpctl set-volume`/`set-mute`, `omarchy-shell media …`, how fast a player
-      reports a new status, seeking past the end, `hyprctl reload`/`renameworkspace`.
+**First on the machine: the captures** (2026-10-17):
+- [x] `scripts/capture-fixtures.sh` run; fixtures committed as `b3c109a` (cherry-picked
+      to `pr/16-strip-long-press` as `4dbf55e`); all capture tests green.
+- [x] The strip capture answers PR 16's open question: a hold logs **only**
+      `strip long press at` (1.62 s after Enter: finger down plus the firmware's
+      threshold); a drifting hold is a long press, not a swipe. `captured_strip` passes.
+      Note: the script's strip step ran the **stale `target/release/omadeckd`** (it
+      prefers release over debug), so the holds lack the newer `on dial N` line — the
+      firmware events the capture exists to record are unaffected. `strip-tap.log` was
+      re-captured with the current debug build (one tap).
+- [x] The state-changing captures were done by hand earlier in the session (app volume,
+      media dial, ctl sections); the rest (seeking past the end, `hyprctl reload` during
+      a socket2 recording) were skipped with the user.
+- Capture-session notes (left as-is at the user's request, private repo):
+  - `hyprctl-clients.json` contains a Discord tab title.
+  - Deleted so the tests pass on the rest: `playerctl-none.*` (a podcast tab was still
+    open — the "no players" case was already verified by hand in the media-dial section),
+    `activewindow-empty.json` + `j-` (the script's own instruction — "come back here and
+    press Enter" — leaves the empty workspace before the 3 s capture), the chromium
+    `activewindow`/`proc-tree`/`pstree` (the browser was not focused when captured), and
+    the four `firefox-two-tabs` files (a duplicate of chromium; no Firefox installed).
+  - Skipped by the user: the socket2 transcript, `playerctl-two.txt`,
+    `playerctl-stream.txt`, the battery and all Spotify/Flatpak cases.
 
-Fixes to check on the deck:
-- [ ] 73: play music, unplug the deck: `top` shows omadeckd idle, not at 100%.
-- [ ] 74: `for i in $(seq 200); do omadeckd state >/dev/null; done`, then
-      `ls /proc/$(pidof omadeckd)/fd | wc -l` is back near where it started.
-- [ ] 75: a seek key on a page with no media dial seeks.
-- [ ] 76: on a Media page play something in Chromium, go Home, close it, start Spotify:
-      a Home Next key skips in Spotify, and Omarchy's pop-up shows.
-- [ ] 94: a dial whose turns have `player = "spotify"` and whose press has none: the
-      press pauses Spotify.
-- [ ] 82, 95: a stalled MPRIS player doesn't make the dial or keys flicker; with
-      several players, one without metadata doesn't make it show "Nothing playing".
-- [ ] 79: hold Back in a folder while the configurator deletes that folder; releasing
-      runs nothing, and no key stays drawn pressed.
-- [ ] 80: a terminal retitling quickly (`while :; do printf '\e]2;%s\a' $RANDOM; sleep
-      0.05; done`) with an app link: its page appears after 200 ms.
-- [ ] 81: after a Hyprland crash (not a clean restart), workspace keys update again.
-- [ ] 86: `omadeckd ctl` (or ▶) on a multi of 40 steps works.
-- [ ] 96: a Flatpak app (Spotify) shows its icon on an app volume dial.
-- [ ] 97: a dial clock with `%n` reads as one line.
-- [ ] 93: a multi with an app volume step that finds no app reports a failed step (new
-      behaviour).
+Fixes to check on the deck (2026-10-17, machine; dev daemon with `RUST_LOG=debug`,
+      `playerctl`/`omarchy-shell` behind a logging shim where the argv had to be seen):
+- [x] 73: music playing (mpv stream), unplug: `lost Stream Deck +`, `top` shows omadeckd
+      at **0.0% CPU**. Replug: `connected`.
+- [x] 74: 200× `omadeckd state`: the fd count is 9 before and after.
+- [x] 75: a seek key (`seek = 10`) seeks with no media-dial watch for `Player(None)`:
+      untargeted `playerctl position 10+`, the position moves. (Brave's MPRIS caps one
+      seek at 5 s — running the command directly moves the same 5 s; that's the player,
+      not omadeck.)
+- [x] 76: two players live (Brave + mpv), a Next key with no `player` on a page whose
+      watched probe is `Player("brave")` (the dial's pin): it runs `omarchy-shell media
+      next` — **no** stale `--player=` target (a target would have gone through the
+      playerctl shim, which logged nothing).
+- [x] 94: a dial whose turns have `player = "brave"` and whose press has none: the press
+      runs `playerctl --player=brave.instance3602 play-pause` (the dial's
+      `media_player()` fallback).
+- [ ] 82, 95: a stalled MPRIS player; a player without metadata. *(skipped — hard to
+      simulate; the fix's tests pass)*
+- [ ] 79: hold Back while the configurator deletes the folder. *(user skipped — GUI
+      choreography)*
+- [ ] 80: the retitling terminal. **Blocked: Hyprland's socket2 broadcast died
+      mid-session** — connections are accepted but no client (the daemon's, a fresh
+      python's, socat's) receives any event, while it worked during the app-pages
+      session; no errors in Hyprland's log. A Hyprland-side problem (0.56.2); needs a
+      Hyprland restart to retry.
+- [ ] 81: a Hyprland crash. *(skipped — would kill the session)*
+- [x] 86: a 40-step multi runs to the end via `omadeckd press` (`key 5: 40 actions`),
+      and a 5475-byte `Run` line (300 steps, past the old 4096 cap) is accepted and runs
+      to step 300.
+- [ ] 96: a Flatpak app's icon. *(skipped — no Flatpak apps installed)*
+- [x] 97: a dial clock with `%n` in its format draws as one line (user, on the deck).
+- [x] 93: a multi whose app-volume step finds no app logs
+      `no app with audio for Named("nosuchapp")` and the multi continues.
 
-Fixes to check in the configurator:
-- [ ] 77, 101: a dial with a clock and a Media long press, Presets › Volume dial: the panel
-      shows the volume, and the long press is gone.
-- [ ] 98: New folder from a key on "Music": the switcher shows "Music › …" at once.
-- [ ] 99: break config.toml with the Follow apps dialog open: adding an app shows a toast
-      on the dialog, and nothing changes.
-- [ ] 100: an app whose `Exec` is `uwsm app -- foo` is matched in "Playing now".
-- [ ] 102: a busy-while-running key with a Busy label: switching "Two faces" off keeps it.
-- [ ] 103: the media Seconds spin goes from 1 to -1 with the minus button, and back.
-- [ ] 104: type into a key's spin, then change page from the deck: the other page's key
-      is untouched. A key's action rows now do nothing while config.toml is broken, and
-      toast if the key's page was deleted (new behaviour).
+Fixes to check in the configurator — 2026-10-17, **user skipped all seven**
+      (77/101, 98, 99, 100, 102, 103, 104); the GUI compiles and its unit tests run.
 
-Decisions taken while fixing (check they're right):
-- One rule for media targets, in `probe::media_target`'s doc: the action's player, on a
-  dial falling back to the dial's; the instance a *watched* probe shows; else
-  untargeted. A media step inside a multi doesn't fall back to a dial's player.
-- Dial presets now clear the long press too (a preset defines the whole dial). This
-  changes PR 16's "a long press is something you add".
-- The Play/Pause preset keeps `needs: None` (the press works without playerctl); the
-  README says its on face needs playerctl.
-- A Hyprland instance that refuses connections is logged at debug level only.
+Decisions taken while fixing (checked in the code, 2026-10-17):
+- [x] One rule for media targets, in `probe::media_target`'s doc: the action's player, on
+  a dial falling back to the dial's; the instance a *watched* probe shows; else
+  untargeted. A media step inside a multi doesn't fall back to a dial's player (its
+  `Source` is not a dial's, so `dial` is `None`).
+- [x] Dial presets now clear the long press too (a preset defines the whole dial) —
+  `editor.rs`, both the Volume and the Brightness preset set `d.long_press =
+  Action::None`.
+- [x] The Play/Pause preset keeps `needs: None` (the press works without playerctl); the
+  comment and the README say its on face needs playerctl (BUGS.md 89).
+- [x] A Hyprland instance that refuses connections is logged at debug level only
+  (`connect_first`, `log::debug!`).
