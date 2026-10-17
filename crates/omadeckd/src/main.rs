@@ -8,8 +8,6 @@ mod hypr;
 mod hypr_worker;
 mod nav;
 mod saver;
-// Used from task 4 (the daemon runs multis).
-#[allow(dead_code)]
 mod sequence;
 mod watch;
 
@@ -185,6 +183,7 @@ fn run() -> Result<()> {
             }
         }
         daemon.handle_commands();
+        daemon.run_due_steps(Instant::now());
         daemon.apply_values();
         daemon.apply_hypr();
         daemon.poll_jobs();
@@ -329,13 +328,31 @@ fn press_locally(index: u8, page: Option<&str>) -> i32 {
     };
     let act = keys.get(index).map(|k| k.action.clone()).unwrap_or_default();
     println!("key {index}: {}", act.summary());
-    if let Err(e) = action::run(&act) {
-        eprintln!("{e:#}");
+    let ok = match &act {
+        Action::Multi { steps } if !act.is_deck_owned() => run_multi_here(steps),
+        _ => action::run(&act).map_err(|e| eprintln!("{e:#}")).is_ok(),
+    };
+    if !ok {
         return 1;
     }
     // Give the detached child a moment to start before we exit.
     std::thread::sleep(Duration::from_millis(300));
     0
+}
+
+/// Run a multi's steps here, in order, on this thread (so its delays aren't cut short by
+/// the exit). Each failed step is printed; true when none failed. A deck-owned multi
+/// never gets here: `action::run` refuses it with its own message.
+fn run_multi_here(steps: &[Action]) -> bool {
+    let failed = action::run_multi_blocking(steps);
+    for (n, e) in &failed {
+        eprintln!("step {}: {e:#}", n + 1);
+    }
+    if !failed.is_empty() {
+        // The steps that did run may have spawned children: let them start.
+        std::thread::sleep(Duration::from_millis(300));
+    }
+    failed.is_empty()
 }
 
 /// Turn or press dial `index` here, with no daemon.
@@ -351,8 +368,12 @@ fn dial_locally(index: u8, dir: Direction, steps: u8) -> i32 {
     let times = if steps > 1 { format!(" x{steps}") } else { String::new() };
     println!("dial {index} {which}{times}: {}", act.summary());
     // Hyprland steps > 1 run on run_steps' helper thread: the sleep below lets them go.
-    if let Err(e) = action::run_steps(&act, steps) {
-        eprintln!("{e:#}");
+    // A multi runs once per turn event, whatever `steps`.
+    let ok = match &act {
+        Action::Multi { steps } if !act.is_deck_owned() => run_multi_here(steps),
+        _ => action::run_steps(&act, steps).map_err(|e| eprintln!("{e:#}")).is_ok(),
+    };
+    if !ok {
         return 1;
     }
     std::thread::sleep(Duration::from_millis(300));
