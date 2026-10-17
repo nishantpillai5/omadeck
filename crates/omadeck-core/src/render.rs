@@ -598,6 +598,7 @@ impl Renderer {
                 }
                 LevelSource::Brightness => self.brightness_icon(&face, glyph_color),
                 LevelSource::App => unreachable!("drawn above"),
+                LevelSource::Player => None,
             };
             let colors = self.b1_colors(&face, style, tones, st.pressed, false);
             self.draw_b1(&mut img, &face, colors, want_label, icon, st.panel.level.as_ref(), true);
