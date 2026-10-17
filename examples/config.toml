@@ -64,6 +64,9 @@ page = "Media"               # the name of a [[page]] below
 [[page]]
 name = "Media"
 # folder = true                # skipped by flicks and page_step
+# Show this page while Spotify or YouTube Music is focused; leaving goes back. Classes are
+# case-insensitive and * matches anything; `hyprctl activewindow` shows a window's class.
+# apps = ["spotify", "chrome-music.youtube.com*"]
 
 [[page.key]]
 index = 0
