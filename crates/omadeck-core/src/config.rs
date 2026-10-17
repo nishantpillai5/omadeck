@@ -2639,7 +2639,7 @@ slow = true
             blocks.push(&rest[start..end]);
             idx = end;
         }
-        assert_eq!(blocks.len(), 6, "six dial examples");
+        assert_eq!(blocks.len(), 8, "eight dial examples");
         let uncommented = blocks
             .iter()
             .map(|b| b.lines().map(|l| l.strip_prefix("# ").unwrap_or(l)).collect::<Vec<_>>().join("\n"))
@@ -2647,7 +2647,7 @@ slow = true
             .join("\n");
         let c: Config = toml::from_str(&format!("{before}{uncommented}"))
             .expect("the commented dial blocks, uncommented, are valid config");
-        assert_eq!(c.dials.len(), 6);
+        assert_eq!(c.dials.len(), 8);
         assert!(!c.dials[0].turn_left.is_none());
         assert!(matches!(c.dials[1].turn_right, Action::Volume { .. }));
         assert!(matches!(c.dials[2].turn_right, Action::Brightness { .. }));
@@ -2655,6 +2655,13 @@ slow = true
         assert!(matches!(c.dials[4].turn_right, Action::AppVolume { focused: false, .. }));
         assert!(matches!(c.dials[5].turn_right, Action::AppVolume { focused: true, .. }));
         assert_eq!(c.dials[4].app_query(), Some(AppQuery::Named("spotify".into())));
+        assert!(matches!(c.dials[6].press, Action::Media { .. }));
+        assert_eq!(c.dials[6].level_source(), Some(LevelSource::Player));
+        assert!(matches!(c.dials[7].press, Action::Media { .. }));
+        assert_eq!(
+            (c.dials[7].level_source(), c.dials[7].media_player()),
+            (Some(LevelSource::Player), Some("spotify"))
+        );
     }
 
     #[test]
