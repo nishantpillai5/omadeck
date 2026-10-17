@@ -1,0 +1,95 @@
+activewindow>>brave-browser,Ünïcode tïtle — 例え | Part 1 | Clips - Video - Brave
+activewindowv2>>55fc9d6222a0
+activewindow>>kitty,shell
+activewindowv2>>55fc9d652d80
+activelayout>>keyboard,English (US)
+activelayout>>keyboard,English (US)
+createworkspace>>2
+createworkspacev2>>2,2
+activewindow>>,
+activewindowv2>>
+workspace>>2
+workspacev2>>2,2
+activewindow>>kitty,shell
+activewindowv2>>55fc9d652d80
+workspace>>1
+workspacev2>>1,1
+destroyworkspace>>2
+destroyworkspacev2>>2,2
+createworkspace>>2
+createworkspacev2>>2,2
+activewindow>>,
+activewindowv2>>
+workspace>>2
+workspacev2>>2,2
+activewindow>>kitty,shell
+activewindowv2>>55fc9d652d80
+workspace>>1
+workspacev2>>1,1
+destroyworkspace>>2
+destroyworkspacev2>>2,2
+activewindow>>brave-browser,Ünïcode tïtle — 例え | Part 1 | Clips - Video - Brave
+activewindowv2>>55fc9d6222a0
+activewindow>>kitty,shell
+activewindowv2>>55fc9d652d80
+activelayout>>keyboard,English (US)
+activelayout>>keyboard,English (US)
+activewindow>>brave-browser,Ünïcode tïtle — 例え | Part 1 | Clips - Video - Brave
+activewindowv2>>55fc9d6222a0
+windowtitle>>55fc9d6222a0
+windowtitlev2>>55fc9d6222a0,A Video, With a Comma - YouTube - Brave
+activewindow>>brave-browser,A Video, With a Comma - YouTube - Brave
+activewindowv2>>55fc9d6222a0
+windowtitle>>55fc9d6222a0
+windowtitlev2>>55fc9d6222a0,Ünïcode tïtle — 例え | Part 1 | Clips - Video - Brave
+activewindow>>brave-browser,Ünïcode tïtle — 例え | Part 1 | Clips - Video - Brave
+activewindowv2>>55fc9d6222a0
+windowtitle>>55fc9d6222a0
+windowtitlev2>>55fc9d6222a0,Talk Show Episode 12 [Subtitles] | Host One | Host Two - YouTube - Brave
+activewindow>>brave-browser,Talk Show Episode 12 [Subtitles] | Host One | Host Two - YouTube - Brave
+activewindowv2>>55fc9d6222a0
+windowtitle>>55fc9d6222a0
+windowtitlev2>>55fc9d6222a0,Ünïcode tïtle — 例え | Part 1 | Clips - Video - Brave
+activewindow>>brave-browser,Ünïcode tïtle — 例え | Part 1 | Clips - Video - Brave
+activewindowv2>>55fc9d6222a0
+windowtitle>>55fc9d6222a0
+windowtitlev2>>55fc9d6222a0,A Video, With a Comma - YouTube - Brave
+activewindow>>brave-browser,A Video, With a Comma - YouTube - Brave
+activewindowv2>>55fc9d6222a0
+windowtitle>>55fc9d6222a0
+windowtitlev2>>55fc9d6222a0,Ünïcode tïtle — 例え | Part 1 | Clips - Video - Brave
+activewindow>>brave-browser,Ünïcode tïtle — 例え | Part 1 | Clips - Video - Brave
+activewindowv2>>55fc9d6222a0
+createworkspace>>3
+createworkspacev2>>3,3
+activewindow>>,
+activewindowv2>>
+workspace>>3
+workspacev2>>3,3
+windowtitle>>55fc9d953e20
+windowtitlev2>>55fc9d953e20,kitty
+openwindow>>55fc9d953e20,3,kitty,kitty
+activewindow>>kitty,kitty
+activewindowv2>>55fc9d953e20
+activelayout>>keyboard,English (US)
+activelayout>>keyboard,English (US)
+windowtitle>>55fc9d953e20
+windowtitlev2>>55fc9d953e20,bash
+activewindow>>kitty,bash
+activewindowv2>>55fc9d953e20
+windowtitle>>55fc9d953e20
+windowtitlev2>>55fc9d953e20,user@host:~
+activewindow>>kitty,user@host:~
+activewindowv2>>55fc9d953e20
+windowtitle>>55fc9d953e20
+windowtitlev2>>55fc9d953e20,~
+activewindow>>kitty,~
+activewindowv2>>55fc9d953e20
+activewindow>>brave-browser,Ünïcode tïtle — 例え | Part 1 | Clips - Video - Brave
+activewindowv2>>55fc9d6222a0
+workspace>>1
+workspacev2>>1,1
+activewindow>>kitty,shell
+activewindowv2>>55fc9d652d80
+activelayout>>keyboard,English (US)
+activelayout>>keyboard,English (US)
