@@ -1554,6 +1554,9 @@ fn action_rows(app: &Rc<App>, group: &adw::PreferencesGroup, slot: &ActionSlot) 
 
         Action::Back => {}
 
+        // The media rows come in PR 14's last task.
+        Action::Media { .. } => {}
+
         Action::Delay { ms } => {
             let spin = adw::SpinRow::with_range(0.0, 600_000.0, 100.0);
             spin.set_title("Wait (ms)");
