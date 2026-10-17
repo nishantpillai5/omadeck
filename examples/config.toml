@@ -154,6 +154,39 @@ glyph = "f036d"
 # label = "VPN on"
 # state = "nmcli -t -f TYPE connection show --active | grep -q vpn"
 
+# A multi action: its steps run in order, top to bottom; a delay step waits (in
+# milliseconds) before the next. Steps don't wait for each other otherwise, so give an
+# app time to open before moving its window. Pressing the key again while it runs does
+# nothing. (Key 5 is taken above: give it a free index.)
+# [[key]]
+# index = 5
+# label = "Meeting"
+# glyph = "f0f4a"
+#
+# [key.action]
+# type = "multi"
+#
+# [[key.action.steps]]
+# type = "volume"
+# device = "input"
+# mute = true
+#
+# [[key.action.steps]]
+# type = "app"
+# command = "zoom.desktop"
+#
+# [[key.action.steps]]
+# type = "delay"
+# ms = 2000
+#
+# [[key.action.steps]]
+# type = "hyprland"
+# dispatch = "movetoworkspace 5"
+#
+# [[key.action.steps]]
+# type = "page"
+# page = "Meeting"
+
 # Live keys: a [key.live] table makes the key show a value the daemon keeps up to
 # date: the time ("clock", strftime `format`, default "%H:%M"), "cpu", "memory",
 # "battery", the active Hyprland "workspace", or a "command"'s first output line,
