@@ -33,6 +33,7 @@ pub fn run(action: &Action) -> Result<()> {
         Action::AppVolume { change, mute, .. } => run_app_volume(action, i32::from(*change), *mute),
         // A delay on its own waits for nothing.
         Action::Delay { .. } => Ok(()),
+        Action::Media { .. } => bail!("media commands come in Task 3"),
         // The daemon never gets here with a multi: it times the steps on its loop.
         Action::Multi { steps } => {
             let steps = steps.clone();

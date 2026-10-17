@@ -1237,7 +1237,7 @@ fn config_probes(cfg: &Config, n_dials: usize) -> Vec<Probe> {
                     add(Probe::AppVolume(q));
                 }
             }
-            Some(LevelSource::Brightness) | None => {}
+            Some(LevelSource::Brightness | LevelSource::Player) | None => {}
         }
         if let Some(l) = dial.and_then(|d| d.live.as_ref()) {
             add(l.probe());
