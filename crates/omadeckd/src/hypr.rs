@@ -43,7 +43,6 @@ const MAX_BACKOFF: Duration = Duration::from_secs(30);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(1);
 
 /// Starts the `hypr-events` thread. `None` outside Hyprland (no thread).
-#[allow(dead_code)] // wired into the daemon in the next commit
 pub fn start() -> Option<mpsc::Receiver<HyprEvent>> {
     let Some(runtime) = std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from) else {
         log::debug!("no XDG_RUNTIME_DIR: not listening to Hyprland");

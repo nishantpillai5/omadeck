@@ -217,6 +217,7 @@ fn run() -> Result<()> {
         }
         daemon.handle_commands();
         daemon.apply_values();
+        daemon.apply_hypr();
         daemon.poll_jobs();
         daemon.poll_hypr();
 
