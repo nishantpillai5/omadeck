@@ -60,6 +60,17 @@ pub struct Level {
     pub muted: bool,
 }
 
+/// What a key looks like right now, beside its config. Mirrors `DialStatus`; built only by
+/// `probe::key_status`. Serializable for `Event::KeyState`; every field is `serde(default)`
+/// and skipped when default, so fields can be added.
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct KeyStatus {
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub pressed: bool,
+    #[serde(default, skip_serializing_if = "crate::probe::Toggle::is_off")]
+    pub state: crate::probe::Toggle,
+}
+
 /// One dial panel of the Stream Deck + touch strip, in native 200×100 units.
 ///
 /// The rectangles are Elgato's built-in panel layouts, `$X1` "Icon" and `$B1` "Indicator":

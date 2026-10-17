@@ -147,6 +147,7 @@ impl Poller {
             }
             let read = match &p {
                 Probe::Volume(dev) => (self.read_volume)(*dev),
+                Probe::Command { .. } => None,
             };
             match read {
                 // A poll confirms nothing: the deck's in-flight total is untouched.

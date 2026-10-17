@@ -12,28 +12,63 @@ use crate::render::{DialStatus, Level, PanelStatus};
 
 /// A volume set from the keyboard or `pavucontrol` lands in well under this.
 const VOLUME_REFRESH: [Duration; 1] = [Duration::from_millis(150)];
+/// A state command's answer: at 300 ms the optimistic guess is confirmed or corrected;
+/// at 1.2 s a fast toggle that really failed shows its true state (outside the 1 s
+/// `SETTLE` window).
+const COMMAND_REFRESH: [Duration; 2] = [Duration::from_millis(300), Duration::from_millis(1200)];
+
+/// While a toggle is busy, or a slow press is waiting for its state to move.
+pub const FAST_INTERVAL: Duration = Duration::from_millis(500);
+/// How long a slow press keeps polling fast before the normal interval resumes.
+pub const FAST_WINDOW: Duration = Duration::from_secs(15);
+/// How long a fast toggle's optimistic guess wins over a contradicting read.
+pub const SETTLE: Duration = Duration::from_secs(1);
 
 /// Something the daemon reads from the system.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Probe {
     /// An audio device's level and mute.
     Volume(AudioDevice),
+    /// `sh -c command` every `interval_ms`. Both fields are the hash key **on purpose**:
+    /// the same command at two intervals is two probes, so each key polls at the rate it
+    /// asked for. Keys with identical command and interval share one probe.
+    Command { command: String, interval_ms: u32 },
 }
 
 impl Probe {
-    /// How often it's re-read while watched.
+    /// How often it's re-read while watched. Volume: 1 s; a command: its own, never
+    /// under 1 s.
     pub fn interval(&self) -> Duration {
         match self {
             Probe::Volume(_) => Duration::from_secs(1),
+            Probe::Command { interval_ms, .. } => Duration::from_millis((*interval_ms).max(1000) as u64),
         }
     }
 
-    /// When to re-read after a change made elsewhere. A volume change made by the deck is
-    /// read back at once instead.
+    /// When to re-read after a change made elsewhere (`WatchCmd::Refresh`). A volume
+    /// change made by the deck is read back at once instead.
     pub fn refresh_after(&self) -> &'static [Duration] {
         match self {
             Probe::Volume(_) => &VOLUME_REFRESH,
+            Probe::Command { .. } => &COMMAND_REFRESH,
         }
+    }
+}
+
+/// What a toggle key shows. On the wire: `"off"`, `"on"`, `{"busy":"Loading 43%"}`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Toggle {
+    #[default]
+    Off,
+    On,
+    /// The text is the state command's progress line, or a running command's latest line.
+    Busy(String),
+}
+
+impl Toggle {
+    pub fn is_off(&self) -> bool {
+        matches!(self, Toggle::Off)
     }
 }
 
@@ -42,6 +77,8 @@ impl Probe {
 pub enum Value {
     /// A volume device's level, as the panel draws it (`audio::Level::to_panel`).
     Level(Level),
+    /// A toggle key's state. A `Toggle` on a dial shows no level.
+    Toggle(Toggle),
 }
 
 /// Everything the panels show: the last value of each probe, and the panel brightness.
@@ -57,6 +94,7 @@ impl Values {
     pub fn level(&self, device: AudioDevice) -> Option<&Level> {
         match self.probes.get(&Probe::Volume(device))? {
             Value::Level(l) => Some(l),
+            Value::Toggle(_) => None,
         }
     }
 }
@@ -99,6 +137,51 @@ pub fn shows(dial: Option<&DialConfig>, probe: &Probe) -> bool {
     }
 }
 
+/// A state command's exit code: 0 on, 75 busy (with its first output line as the
+/// progress), anything else (or killed by a signal) off.
+pub fn toggle_from_exit(code: Option<i32>, first_line: Option<String>) -> Toggle {
+    match code {
+        Some(0) => Toggle::On,
+        Some(75) => Toggle::Busy(first_line.unwrap_or_default()),
+        _ => Toggle::Off,
+    }
+}
+
+/// 126/127: not executable / not found. Off, but worth one warning (likely a typo).
+pub fn is_missing(code: Option<i32>) -> bool {
+    matches!(code, Some(126) | Some(127))
+}
+
+/// The last `NN%` in a busy text, clamped to 100 (`"shard 2/4 43%"` → 43,
+/// `"43.5 %"` → 43, `"120%"` → 100, none → `None`).
+pub fn progress(text: &str) -> Option<u8> {
+    let mut last = None;
+    for part in text.split('%') {
+        let t = part.trim_end();
+        let b = t.as_bytes();
+        let end = b.len();
+        let mut start = end;
+        let mut dot = false;
+        while start > 0 {
+            match b[start - 1] {
+                b'0'..=b'9' => start -= 1,
+                b'.' if !dot => {
+                    dot = true;
+                    start -= 1;
+                }
+                _ => break,
+            }
+        }
+        if start < end
+            && b[start..].iter().any(u8::is_ascii_digit)
+            && let Ok(n) = t[start..].parse::<f32>()
+        {
+            last = Some(n.clamp(0.0, 100.0) as u8);
+        }
+    }
+    last
+}
+
 /// Everything the watcher should read while `page` is shown on a deck with `n_dials` dials,
 /// each once: today the dials' volume levels, in dial order.
 pub fn watched_probes(cfg: &Config, _page: Option<&str>, n_dials: usize) -> Vec<Probe> {
@@ -118,6 +201,10 @@ pub fn watched_probes(cfg: &Config, _page: Option<&str>, n_dials: usize) -> Vec<
 mod tests {
     use super::*;
     use crate::Action;
+    use crate::render::KeyStatus;
+    use std::os::unix::process::ExitStatusExt;
+    use std::thread;
+    use std::time::Instant;
 
     fn volume_dial(index: u8, device: AudioDevice) -> DialConfig {
         DialConfig { turn_right: Action::Volume { device, change: 5, mute: false }, ..DialConfig::new(index) }
@@ -189,5 +276,105 @@ mod tests {
         assert!(!shows(Some(&out), &Probe::Volume(AudioDevice::Input)));
         assert!(!shows(Some(&brightness_dial(1)), &Probe::Volume(AudioDevice::Output)));
         assert!(!shows(None, &Probe::Volume(AudioDevice::Output)));
+    }
+
+    #[test]
+    fn command_probe_uses_its_own_interval_never_under_one_second() {
+        let p = Probe::Command { command: "true".into(), interval_ms: 2000 };
+        assert_eq!(p.interval(), Duration::from_millis(2000));
+        assert_eq!(Probe::Command { command: "true".into(), interval_ms: 0 }.interval(), Duration::from_secs(1));
+        assert_eq!(p.refresh_after(), &[Duration::from_millis(300), Duration::from_millis(1200)]);
+        // The same command at two intervals is two probes.
+        let q = Probe::Command { command: "true".into(), interval_ms: 5000 };
+        assert_ne!(p, q);
+    }
+
+    #[test]
+    fn exit_codes_map_to_toggles() {
+        assert_eq!(toggle_from_exit(Some(0), None), Toggle::On);
+        assert_eq!(toggle_from_exit(Some(75), Some("Loading 43%".into())), Toggle::Busy("Loading 43%".into()));
+        assert_eq!(toggle_from_exit(Some(75), None), Toggle::Busy(String::new()));
+        assert_eq!(toggle_from_exit(Some(1), None), Toggle::Off);
+        assert_eq!(toggle_from_exit(None, None), Toggle::Off, "killed by a signal");
+        assert!(is_missing(Some(126)) && is_missing(Some(127)));
+        assert!(!is_missing(Some(0)) && !is_missing(Some(1)) && !is_missing(None));
+    }
+
+    #[test]
+    fn progress_parses_last_percentage() {
+        assert_eq!(progress("Loading 43%"), Some(43));
+        assert_eq!(progress("shard 2/4 43%"), Some(43));
+        assert_eq!(progress("43.5 %"), Some(43));
+        assert_eq!(progress("120%"), Some(100));
+        assert_eq!(progress("10% then 20%"), Some(20));
+        assert_eq!(progress("50 % done"), Some(50));
+        assert_eq!(progress("no number here"), None);
+        assert_eq!(progress(""), None);
+    }
+
+    #[test]
+    fn key_status_wire_shape() {
+        assert_eq!(serde_json::to_string(&KeyStatus::default()).unwrap(), "{}");
+        let on = KeyStatus { state: Toggle::On, ..KeyStatus::default() };
+        assert_eq!(serde_json::to_string(&on).unwrap(), "{\"state\":\"on\"}");
+        let busy = KeyStatus { state: Toggle::Busy("x".into()), ..KeyStatus::default() };
+        assert_eq!(serde_json::to_string(&busy).unwrap(), "{\"state\":{\"busy\":\"x\"}}");
+        let pressed = KeyStatus { pressed: true, ..KeyStatus::default() };
+        assert_eq!(serde_json::to_string(&pressed).unwrap(), "{\"pressed\":true}");
+        let back: KeyStatus = serde_json::from_str("{}").unwrap();
+        assert_eq!(back, KeyStatus::default());
+    }
+
+    #[test]
+    fn job_reports_exit_and_lines() {
+        let mut c = std::process::Command::new("sh");
+        c.args(["-c", "echo a; exit 75"]);
+        let mut job = crate::proc::Job::spawn(c).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let status = loop {
+            if let Some(s) = job.try_finish() {
+                break s;
+            }
+            assert!(Instant::now() < deadline, "timed out");
+            thread::sleep(Duration::from_millis(10));
+        };
+        assert_eq!(status.code(), Some(75));
+        assert_eq!(job.lines().collect::<Vec<_>>(), vec!["a"]);
+    }
+
+    #[test]
+    fn job_with_background_child_still_finishes() {
+        // A background grandchild holds the pipe open; the GRACE must end the wait.
+        let mut c = std::process::Command::new("sh");
+        c.args(["-c", "sleep 5 & echo x"]);
+        let mut job = crate::proc::Job::spawn(c).unwrap();
+        // Well under the `sleep 5`, with a margin for a loaded machine.
+        let deadline = Instant::now() + crate::proc::GRACE + Duration::from_secs(3);
+        let status = loop {
+            if let Some(s) = job.try_finish() {
+                break s;
+            }
+            assert!(Instant::now() < deadline, "timed out");
+            thread::sleep(Duration::from_millis(20));
+        };
+        assert!(status.success());
+    }
+
+    #[test]
+    fn kill_group_kills_a_pipeline() {
+        let mut c = std::process::Command::new("sh");
+        c.args(["-c", "sleep 30 | cat"]);
+        let mut job = crate::proc::Job::spawn(c).unwrap();
+        thread::sleep(Duration::from_millis(100)); // let the pipeline start
+        job.kill_group();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let status = loop {
+            if let Some(s) = job.try_finish() {
+                break s;
+            }
+            assert!(Instant::now() < deadline, "timed out");
+            thread::sleep(Duration::from_millis(10));
+        };
+        assert!(status.signal().is_some());
     }
 }
