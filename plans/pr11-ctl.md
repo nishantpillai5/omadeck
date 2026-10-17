@@ -6,6 +6,13 @@ the GUI → daemon half is already there (`ipc::Command`, tagged `"command"`, re
 `ipc-client` thread per client into `Hub::commands()`). This PR adds variants, a reply to
 each new one, and the CLI verbs. There is no second socket and no second `Command` enum.
 
+**Status (2026-10-17): built, not verified.** Built on the Mac and pushed to the fork as
+`feat/ctl`: dbe1ae3 … 68df866 (6 commits, tasks 1–6). Core and daemon tests, clippy and fmt pass; the GUI type-checks
+(not linked or run; GUI clippy warns, BUGS.md 78), and nothing was run on the deck or with the captures below. Where the code
+differs from this plan, the code wins: the deviations, the defaults taken in place of
+captures, and every check still to do are in its `feat/ctl` section of [VERIFY.md](VERIFY.md). The review
+of what was built is [review-2026-10-17c.md](review-2026-10-17c.md).
+
 **Outcome:** `omadeckd page next`, `omadeckd page Media`, `omadeckd brightness 30`,
 `omadeckd brightness +10`, `omadeckd reload` and `omadeckd state` drive the running
 daemon. `omadeckd press 3` and `omadeckd dial 1 left` go through the daemon when it runs,

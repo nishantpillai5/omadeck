@@ -3,6 +3,13 @@
 Part of [PLAN.md](PLAN.md). Base: `feat/folders` (PR 13), the last branch in the chain
 `fix/review-2` → PR 9 → … → PR 13. Nothing here uses PR 13's code.
 
+**Status (2026-10-17): built, not verified.** Built on the Mac and pushed to the fork as
+`feat/media-dial`: 25ef012 … 072d31c (7 commits, tasks 1–7). Core and daemon tests, clippy and fmt pass; the GUI type-checks
+(not linked or run; GUI clippy warns, BUGS.md 78), and nothing was run on the deck or with the captures below. Where the code
+differs from this plan, the code wins: the deviations, the defaults taken in place of
+captures, and every check still to do are in its `feat/media-dial` section of [VERIFY.md](VERIFY.md). The review
+of what was built is [review-2026-10-17c.md](review-2026-10-17c.md).
+
 **Outcome:** a `media` action for keys and dials: play/pause, next, previous, stop, and
 seek ± N seconds. A **media dial** (turn = scrub, press = play/pause) shows the playing
 track on its strip panel: title, artist, album art when it's a local file, elapsed / total

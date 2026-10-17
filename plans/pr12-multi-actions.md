@@ -6,6 +6,13 @@ watcher and `ActionSlot`, fix/review-2's action walker (R2), Hyprland worker (R6
 exhaustive `action_at`/`set_action_at` (R9), and PR 11's `try_input`, `Source::Ctl`,
 `Command::Run`, `route` and the offline `press_locally`/`dial_locally`. No IPC change.
 
+**Status (2026-10-17): built, not verified.** Built on the Mac and pushed to the fork as
+`feat/multi-actions`: 4ff79ca … db97dfa (6 commits, tasks 1–6). Core and daemon tests, clippy and fmt pass; the GUI type-checks
+(not linked or run; GUI clippy warns, BUGS.md 78), and nothing was run on the deck or with the captures below. Where the code
+differs from this plan, the code wins: the deviations, the defaults taken in place of
+captures, and every check still to do are in its `feat/multi-actions` section of [VERIFY.md](VERIFY.md). The review
+of what was built is [review-2026-10-17c.md](review-2026-10-17c.md).
+
 **Outcome:** a new `multi` action holds an ordered list of steps. A step is any ordinary
 action (app, script, sound, website, Hyprland, volume, app volume, page, brightness) or a
 `delay` that waits some milliseconds. It works on keys, dial presses, strip taps, dial

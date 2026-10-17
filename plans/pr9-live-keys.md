@@ -7,6 +7,13 @@ watcher** (core `probe.rs`, daemon `watch.rs`) and PR 8's key status, and it own
 **Hyprland event listener** (`omadeckd/src/hypr.rs`), which PR 10 (focused app volume)
 and PR 15 (pages follow the focused app) reuse.
 
+**Status (2026-10-17): built, not verified.** Built on the Mac and pushed to the fork as
+`feat/live-keys`: 837c11e … ab0df79 (8 commits, tasks A–H). Core and daemon tests, clippy and fmt pass; the GUI type-checks
+(not linked or run; GUI clippy warns, BUGS.md 78), and nothing was run on the deck or with the captures below. Where the code
+differs from this plan, the code wins: the deviations, the defaults taken in place of
+captures, and every check still to do are in its `feat/live-keys` section of [VERIFY.md](VERIFY.md). The review
+of what was built is [review-2026-10-17c.md](review-2026-10-17c.md).
+
 **Rewritten 2026-10-17 (second time)** against the code as merged on `feat/toggle-keys`
 (`55d0d62`) plus what `fix/review-2` delivers (R1–R9 in "What this PR builds on"). Every
 name below is copied from the code. Before Task A, run the `grep`s in "Check before

@@ -6,6 +6,13 @@ and `feat/toggle-keys` (PR 8, `55d0d62`). Uses groundwork's **state watcher** (c
 (`omadeckd/src/hypr.rs`) for focus. Owns the **audio streams** building block
 (`audio.rs`; no later plan uses it), and adds `Backdrop::tone_in`, which PR 14 uses.
 
+**Status (2026-10-17): built, not verified.** Built on the Mac and pushed to the fork as
+`feat/app-volume`: 39e2937 … f044473 (9 commits, tasks A–I). Core and daemon tests, clippy and fmt pass; the GUI type-checks
+(not linked or run; GUI clippy warns, BUGS.md 78), and nothing was run on the deck or with the captures below. Where the code
+differs from this plan, the code wins: the deviations, the defaults taken in place of
+captures, and every check still to do are in its `feat/app-volume` section of [VERIFY.md](VERIFY.md). The review
+of what was built is [review-2026-10-17c.md](review-2026-10-17c.md).
+
 **Rewritten 2026-10-17 (second time)** against the code as merged on `feat/toggle-keys`
 (`55d0d62`), the round-2 decisions R1–R9 that `fix/review-2` delivers, and PR 9's plan.
 Every name in "What this PR builds on" is copied from the code. Before Task A, `grep -n`

@@ -964,3 +964,318 @@ base `feat/toggle-keys`), task in brackets, except 65 (PR 13, as decided).
   action does.
 - **Fix:** the on slot makes the folder page without touching the key
   (`App::add_page(&name, true)` with the key's label as the base). [task 8]
+
+## Review 3 (2026-10-17, 55d0d62..13597e8)
+
+A third review, of what was built on the Mac: `fix/review-2` and PRs 9–16, up to
+`feat/strip-long-press` (`13597e8`). Six parts: core (config, actions, IPC, docs), core
+(probes, audio, player, render), daemon (loop and input), daemon (watcher, hub,
+Hyprland), GUI (app, pages, apps), GUI (editor). The summary is in
+[review-2026-10-17c.md](review-2026-10-17c.md). Each entry names the branch that brought
+the bug in; fix it there (or in a `fix/review-3` on top, as decided when fixing).
+*(test)* means a test in a scratch copy showed it; *(read)* means it was traced through
+the code; *(plausible)* needs the machine to confirm. None is fixed yet.
+
+### Review 3: high
+
+#### 73. Unplugging the deck while music plays spins the daemon at 100% CPU
+
+- **Status:** open. **Found:** 2026-10-17, review 3 (daemon loop) *(read, re-checked)*.
+- **Branch:** `feat/media-dial` (`75694de`).
+- **Where:** `Daemon::detach`, `Daemon::flush`, `Daemon::next_deadline`; `run()` in
+  `main.rs`, the no-deck branch.
+- **What goes wrong:** while a media panel plays, every `flush` sets `media_due` up to 1 s
+  ahead. Only `pass()` clears it, and `pass()` runs only with a deck. `detach` clears
+  `repaint_at` but not `media_due`, and with no deck `flush` returns before updating it.
+  So `next_deadline()` keeps returning a past instant, `wait_for` gives zero, and the
+  no-deck loop never sleeps until a deck is back. Undocking a laptop with music playing
+  is enough.
+- **Fix:** `self.media_due = None;` in `detach` (or ignore `media_due` in `next_deadline`
+  when there is no deck).
+
+### Review 3: medium
+
+#### 74. Each `omadeckd` ctl call leaks a thread and a socket until the next event
+
+- **Status:** open. **Found:** 2026-10-17, review 3 (daemon watcher/hub) *(test)*.
+- **Branch:** `feat/ctl` (`32390eb`). The writer and reader structure is older, but before
+  ctl every client was a long-lived configurator.
+- **Where:** `hub.rs` `Hub::start` (accept loop), `spawn_writer`, `read_requests`,
+  `Hub::publish`.
+- **What goes wrong:** when a ctl client exits, its reader returns, but the writer thread
+  waits on its queue (the hub still holds the sender) and keeps the fd. Only the next
+  `publish` makes it write, fail and exit. An idle daemon publishes almost nothing, so a
+  status-bar script polling `omadeckd state` every second leaks one thread and one fd a
+  second. At the 1024 fd limit, `accept` fails with EMFILE and
+  `listener.incoming().flatten()` spins at 100% CPU; hidapi and every child process fail
+  too.
+- **Fix:** the reader queues an empty sentinel on every return path, and the writer stops
+  on it. Replace `incoming().flatten()` with a loop that sleeps briefly on `Err`.
+
+#### 75. A seek key does nothing unless something else watches the player
+
+- **Status:** open. **Found:** 2026-10-17, review 3 (core probes) *(test)*.
+- **Branch:** `feat/media-dial` (`839d72d`, `75694de`).
+- **Where:** `probe::watched_probes`, `probe::media_target`; the daemon's `Action::Media`
+  arm (`seek != 0 && target.is_none()` → "nothing known to seek").
+- **What goes wrong:** a key `media` with `seek = 10` on a page with no media dial and no
+  play/pause toggle: nothing watches `Player(None)`, so there's no target and the daemon
+  drops the seek with only an info log. Without the daemon the same key seeks (untargeted
+  `playerctl position 10+`), which is what the plan's `media_argv` table says.
+- **Fix:** drop the seek only when the probe is watched and read "nothing playing";
+  otherwise send it untargeted.
+
+#### 76. Media keys can target a stale player read on another page
+
+- **Status:** open. **Found:** 2026-10-17, review 3 (core probes) *(read)*.
+- **Branch:** `feat/media-dial` (`839d72d`, `75694de`).
+- **Where:** `probe::media_target`; `Daemon::dispatch` (`Action::Media`). Values of
+  unwatched probes are kept on purpose (faces).
+- **What goes wrong:** a Media page's play/pause key read `chromium.instance4821`. You go
+  Home, close the tab and start Spotify. A Home key's Next runs `playerctl
+  --player=chromium.instance4821 next`: it fails or skips the wrong player, and skips
+  Omarchy's pop-up.
+- **Fix:** target from a player value only while its probe is watched; otherwise use the
+  action's own `player` (untargeted when blank).
+
+#### 77. The Volume and Brightness dial presets keep the dial's live value
+
+- **Status:** open. **Found:** 2026-10-17, review 3 (GUI editor) *(read)*.
+- **Branch:** `feat/app-volume` (`7ba769e`, the Presets menu); `live` on dials is PR 9's.
+- **Where:** `editor.rs` `dial_presets_button`, the `volume` and `brightness` actions.
+- **What goes wrong:** a dial showing a clock gets Presets › Volume dial: the actions
+  change, but `level_source` lets the explicit `live` win, so the panel still shows the
+  clock. The other three presets clear `live`.
+- **Fix:** `d.live = None;` in both closures.
+
+#### 78. `cargo clippy --all-targets -- -D warnings` fails for the GUI
+
+- **Status:** open. **Found:** 2026-10-17, review 3 (GUI) *(test: GUI type-checked with a
+  stub pkg-config)*.
+- **Branch:** `feat/live-keys` (`969ab3a`: two `type_complexity` warnings on the `LiveEdit`
+  closures in `editor.rs`); `feat/strip-long-press` (`large_enum_variant` on `app.rs`
+  `Msg`, first seen at its tip).
+- **What goes wrong:** every plan's check step, and CI, run clippy with `-D warnings`: CI is
+  red from `feat/live-keys` on.
+- **Fix:** a `type LiveEdit = Rc<dyn Fn(&Rc<App>, Box<dyn FnOnce(&mut Option<Live>)>)>;`
+  alias (the fix the review checked); `Msg::Event(Box<Event>)` or an `#[allow]` with a
+  reason on `Msg`.
+
+### Review 3: low
+
+#### 79. A reload that moves the page while Back is held runs the wrong key on release
+
+- **Status:** open. **Found:** 2026-10-17, review 3 (daemon loop) *(read)*.
+- **Branch:** `feat/folders` (`a09db77`, `back_held`); `feat/app-pages` (`54ea4fb`) added a
+  trigger (`follow_focus` in `reload`).
+- **Where:** `Daemon::reload` (moves `nav` without `show_page`); the `ButtonUp` arm.
+- **What goes wrong:** hold Back in folder F while a configurator save deletes F (or adds
+  an app link): the reload moves the deck, and the release runs whatever key `i` is on the
+  new page. The new page's key `i` also stays drawn pressed.
+- **Fix:** in `reload`, clear `back_held` always and `key_pressed` when the page moved.
+
+#### 80. A window title change restarts the app-page settle and re-reads `pactl`
+
+- **Status:** open. **Found:** 2026-10-17, review 3 (both daemon parts) *(read)*.
+- **Branch:** `feat/app-pages` (`54ea4fb`, the settle); `feat/app-volume` (`554812b`, the
+  `Focus` send).
+- **Where:** `Daemon::apply_hypr`, the `ActiveWindow` arm; `hypr.rs` turns every
+  `windowtitlev2` of the focused window into `ActiveWindow`.
+- **What goes wrong:** a terminal or build tool that retitles faster than every 200 ms
+  never settles, so its linked page never shows; each retitle also runs `pactl` when a
+  focused-app dial is watched.
+- **Fix:** send `Focus` and restart the settle only when the window's address, class or
+  pid changed; always store `rt.window`.
+
+#### 81. The Hyprland listener can stay stuck on a crashed instance's directory
+
+- **Status:** open. **Found:** 2026-10-17, review 3 (daemon watcher/hub) *(plausible)*.
+- **Branch:** `feat/live-keys` (`635a384`).
+- **Where:** `hypr.rs` `find_instance`, `run`.
+- **What goes wrong:** if Hyprland crashes and leaves its old `.socket2.sock`, the env
+  signature's dir wins every time, `connect` is refused, and the newest-dir fallback is
+  never tried: workspace keys freeze and app pages stop following.
+- **Fix:** try `connect` on each candidate (env dir first, then newest first).
+
+#### 82. A slow `playerctl` read blanks the media dial and play/pause keys
+
+- **Status:** open. **Found:** 2026-10-17, review 3 (daemon watcher/hub) *(read)*.
+- **Branch:** `feat/media-dial` (`57c828e`).
+- **Where:** `player::read` (timeout → `Ok(None)`), `watch.rs` `Poller::run_due`.
+- **What goes wrong:** a timeout reads as "nothing playing", so the panel goes idle and
+  the key off, then back: flicker.
+- **Fix:** tell a timeout from "no players" and keep the last value, as volume reads do.
+
+#### 83. A cover that won't decode is decoded again every second
+
+- **Status:** open. **Found:** 2026-10-17, review 3 (daemon watcher/hub) *(test)*.
+- **Branch:** `feat/media-dial` (`57c828e`).
+- **Where:** `watch.rs` `with_art` (its comment says it doesn't retry).
+- **Fix:** remember the failed path on the poller and skip it.
+
+#### 84. On Omarchy 3, every media command runs `hyprctl monitors` even when unused
+
+- **Status:** open. **Found:** 2026-10-17, review 3 (daemon watcher/hub) *(read)*.
+- **Branch:** `feat/media-dial` (`57c828e`).
+- **Where:** `watch.rs` `Poller::handle` (`WatchCmd::Media`); `player::media_argv`.
+- **Fix:** look the monitor up only for an untargeted non-seek, non-stop command.
+
+#### 85. Two player probes run two `playerctl -a` reads a second
+
+- **Status:** open. **Found:** 2026-10-17, review 3 (daemon watcher/hub) *(read)*.
+- **Branch:** `feat/media-dial` (`57c828e`).
+- **Where:** `watch.rs` `Poller::run_due` (`Probe::Player`).
+- **Fix:** one read per pass, then `player::pick` per watched probe (as app volume does).
+
+#### 86. A long ▶ (`Command::Run`) is refused by the 4096-byte line cap
+
+- **Status:** open. **Found:** 2026-10-17, review 3 (core) *(read)*.
+- **Branch:** `feat/ctl` (`dbe1ae3`).
+- **Where:** `ipc::MAX_LINE`, `hub::read_requests`.
+- **What goes wrong:** a multi with a few dozen steps or a long command goes past 4 KiB and
+  gets "command too long". A cut inside a UTF-8 character gets no reply at all ("daemon
+  busy").
+- **Fix:** raise the cap (64 KiB) and decode after `read_until(b'\n')`.
+
+#### 87. A clock with `%-S` or fractional seconds updates only every few seconds
+
+- **Status:** open. **Found:** 2026-10-17, review 3 (core) *(test)*.
+- **Branch:** `feat/live-keys` (`837c11e`).
+- **Where:** `live::needs_seconds`.
+- **Fix:** skip jiff's flags and width (`-_0^#`, digits, `.`, `:`) after `%`, and add `f`
+  and `N`.
+
+#### 88. `parse_command` calls a known command with a bad field "unknown"
+
+- **Status:** open. **Found:** 2026-10-17, review 3 (core) *(test)*.
+- **Branch:** `feat/ctl` (`dbe1ae3`).
+- **Fix:** keep serde's message for a known name (`bad “press” command: …`).
+
+#### 89. The Play/Pause preset needs `playerctl` for its on face but says it needs nothing
+
+- **Status:** open. **Found:** 2026-10-17, review 3 (core) *(read)*.
+- **Branch:** `feat/media-dial` (`072d31c`).
+- **Where:** `presets::PRESETS` (`needs: None`); README features list.
+- **Fix:** `needs: Some("playerctl")`, or say so in the README.
+
+#### 90. A preset applied in place keeps the key's live value and busy settings
+
+- **Status:** open. **Found:** 2026-10-17, review 3 (core) *(read)*.
+- **Branch:** `fix/review-2` (`b1cdf93`, presets apply in place); `live` is PR 9's.
+- **What goes wrong:** Mic mute on a CPU key keeps showing CPU; a leftover
+  `busy_while_running` or `[key.busy]` stays.
+- **Fix:** the shared preset helper also sets `live = None`, `busy = None`,
+  `busy_while_running = false`; extend `presets_keep_the_key_and_replace_its_icon`.
+
+#### 91. `ipc::commands` is dead code that drops bad lines silently
+
+- **Status:** open. **Found:** 2026-10-17, review 3 (core) *(read)*.
+- **Branch:** `feat/ctl` (`dbe1ae3`). **Fix:** delete it.
+
+#### 92. Docs: "Eleven action types", no `media` row, `BusyFace::bar` says "last"
+
+- **Status:** open. **Found:** 2026-10-17, review 3 (core) *(read)*.
+- **Branch:** `feat/media-dial` (`072d31c`, README); `fix/review-2` (`b1cdf93`, the
+  `BusyFace::bar` doc comment).
+- **Fix:** "Twelve action types", a `media` row in the action table, "the first `NN%`".
+
+#### 93. Outside the daemon, a multi's app volume step can land after the next step
+
+- **Status:** open. **Found:** 2026-10-17, review 3 (core) *(read)*.
+- **Branch:** `feat/multi-actions` (`5fb32bf`).
+- **Where:** `action::run_multi_blocking` (an `AppVolume` step goes through `run`, which
+  spawns a thread). Its doc says volume steps wait.
+- **Fix:** split out `apply_app_volume` and call it inline from the multi runner.
+
+#### 94. A media dial's panel and its actions can follow different players
+
+- **Status:** open. **Found:** 2026-10-17, review 3 (core probes) *(read)*.
+- **Branch:** `feat/media-dial` (`839d72d`).
+- **Where:** `DialConfig::media_player` (the panel) vs `Daemon::dispatch` (each action's
+  own `player`).
+- **What goes wrong:** turns on `player = "spotify"`, press with no player: the panel shows
+  Spotify, the press pauses whatever Omarchy picks.
+- **Fix:** a dial's blank `player` uses the dial's `media_player()`.
+
+#### 95. `player::read` drops good lines when `playerctl -a` exits non-zero
+
+- **Status:** open. **Found:** 2026-10-17, review 3 (core probes) *(plausible)*.
+- **Branch:** `feat/media-dial` (`839d72d`).
+- **What goes wrong:** one player without metadata can make the whole call exit 1:
+  "Nothing playing" while Spotify plays.
+- **Fix:** always parse stdout; use the status only when nothing parsed.
+
+#### 96. Flatpak app icons are never found (the app id is lowercased first)
+
+- **Status:** open. **Found:** 2026-10-17, review 3 (core probes) *(plausible: the Mac's
+  filesystem ignores case)*.
+- **Branch:** `feat/app-volume` (`34c6918`).
+- **Where:** `audio::parse_pactl_streams`, `audio::app_level`.
+- **Fix:** keep the original-case id for icon lookups; match on the lowercased one.
+
+#### 97. A clock with `%n` on a dial draws the newline as a glyph
+
+- **Status:** open. **Found:** 2026-10-17, review 3 (core render) *(plausible)*.
+- **Branch:** `feat/live-keys` (`056fd8a`).
+- **Where:** `Renderer::render_strip_panel`, the live arm (only `render_body` handles `\n`).
+- **Fix:** replace `\n` with a space there (or draw the first line).
+
+#### 98. The page switcher's folder paths go stale
+
+- **Status:** open. **Found:** 2026-10-17, review 3 (GUI app) *(read)*.
+- **Branch:** `feat/folders` (`b05fb0e`).
+- **Where:** `app.rs` `sync_page_list`; `editor.rs` `new_folder`, the `on_new_page`
+  closures (`add_page` syncs before the key points at the page).
+- **What goes wrong:** a new folder from key 3 on "Music" shows as "Key 3", not
+  "Music › Key 3", until something else syncs.
+- **Fix:** sync after a key edit that adds or removes an `Action::Page`.
+
+#### 99. The Follow apps dialog edits while config.toml is broken, and toasts behind itself
+
+- **Status:** open. **Found:** 2026-10-17, review 3 (GUI app) *(read)*.
+- **Branch:** `feat/app-pages` (`88f5a7e`).
+- **Where:** `app.rs` `App::edit_page_apps`; `pages.rs` `AppRows`.
+- **Fix:** return early when `locked`; toast on the dialog.
+
+#### 100. Picking a `uwsm app --` launched app stores "uwsm"
+
+- **Status:** open. **Found:** 2026-10-17, review 3 (GUI app) *(plausible)*.
+- **Branch:** `feat/app-volume` (`7ba769e`).
+- **Where:** `apps.rs` `audio_key` (only `uwsm-app` is in the launcher list).
+- **Fix:** add `"uwsm"`.
+
+#### 101. Dial presets keep a long press that then decides the panel
+
+- **Status:** open. **Found:** 2026-10-17, review 3 (GUI editor) *(read)*.
+- **Branch:** `feat/strip-long-press` (`13597e8`).
+- **Where:** `editor.rs` `dial_presets_button`; `DialConfig::level_source` walks the long
+  press too.
+- **What goes wrong:** a dial with long press = Media gets the Volume preset: the panel
+  shows the player, not the volume.
+- **Fix:** each preset resets the long press (or at least one that carries a level).
+
+#### 102. Switching "Two faces" off erases a busy-while-running key's Busy look
+
+- **Status:** open. **Found:** 2026-10-17, review 3 (GUI editor) *(read)*.
+- **Branch:** `fix/review-2` (`8b33817` gave such keys a Busy tab; the `k.busy = None` is
+  older).
+- **Where:** `editor.rs` `build_key`, the `two` handler.
+- **Fix:** `k.on = None; if !k.busy_while_running { k.busy = None; }`.
+
+#### 103. The media Seconds spin can't cross zero
+
+- **Status:** open. **Found:** 2026-10-17, review 3 (GUI editor) *(read)*.
+- **Branch:** `feat/media-dial` (`072d31c`).
+- **Where:** `editor.rs` `media_rows`, the seek spin (`0` resets to the slot's default).
+- **Fix:** on 0, skip to ±1 in the direction of travel (remember the last value).
+
+#### 104. A key's own action rows edit through the current page
+
+- **Status:** open. **Found:** 2026-10-17, review 3 (GUI editor) *(plausible; older than
+  `55d0d62`, but the new App volume, Media and Volume spins use it)*.
+- **Where:** `editor.rs` `build_key`, `slot.get`/`slot.set` and `on_slot`'s
+  (`a.key(i)`/`a.edit(i, …)`).
+- **What goes wrong:** a spin's focus-out commit after the deck changed page writes key `i`
+  of the new page.
+- **Fix:** build the key slots on `ActionTarget::Key(app.key_ref(i))` through
+  `action_at`/`set_action_at`, as the dial and step slots are.

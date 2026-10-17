@@ -5,6 +5,13 @@ listener** from PR 9 and `Nav::nearest` from PR 13. Works without PR 11 (ctl); a
 change is just another manual move. Nothing from PRs 10, 12 and 14 is used (PR 10's
 `WatchCmd::Focus` send stays where it is).
 
+**Status (2026-10-17): built, not verified.** Built on the Mac and pushed to the fork as
+`feat/app-pages`: 0460fbe … 88f5a7e (3 commits, tasks 1–3). Core and daemon tests, clippy and fmt pass; the GUI type-checks
+(not linked or run; GUI clippy warns, BUGS.md 78), and nothing was run on the deck or with the captures below. Where the code
+differs from this plan, the code wins: the deviations, the defaults taken in place of
+captures, and every check still to do are in its `feat/app-pages` section of [VERIFY.md](VERIFY.md). The review
+of what was built is [review-2026-10-17c.md](review-2026-10-17c.md).
+
 **Outcome:** a page can follow apps. While a linked app is focused, the deck shows that
 page. When focus moves to an app that isn't linked, the deck goes back to where it was,
 open folder included. This is Elgato's **Smart Profiles**, with omadeck's pages in place

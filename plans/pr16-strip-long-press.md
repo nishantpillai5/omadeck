@@ -6,6 +6,13 @@ needs fix/review-2's action walker (R2), `Daemon::report_failure` (R6) and exhau
 12's `run_of`. It touches the
 dial-slot lists PRs 9, 10 and 14 added to, but uses none of their features.
 
+**Status (2026-10-17): built, not verified.** Built on the Mac and pushed to the fork as
+`feat/strip-long-press`: 942a058 … 13597e8 (2 commits, tasks 1–2). Core and daemon tests, clippy and fmt pass; the GUI type-checks
+(not linked or run; GUI clippy warns, BUGS.md 78), and nothing was run on the deck or with the captures below. Where the code
+differs from this plan, the code wins: the deviations, the defaults taken in place of
+captures, and every check still to do are in its `feat/strip-long-press` section of [VERIFY.md](VERIFY.md). The review
+of what was built is [review-2026-10-17c.md](review-2026-10-17c.md).
+
 **Outcome:** each dial can have a `long_press` action that runs when you press and hold
 its panel on the touch strip (Elgato's "long touch"). A dial with no `long_press` does on
 a hold what it does on a tap: it runs the dial's `press`. Today a hold does nothing on the

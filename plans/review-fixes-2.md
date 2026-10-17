@@ -7,6 +7,13 @@ and the small API changes R1–R9 that PRs 9–16 build on. No new features. The
 summarised in [review-2026-10-17b.md](review-2026-10-17b.md). PR 9 is based on this
 branch.
 
+**Status (2026-10-17): built, not verified.** Built on the Mac and pushed to the fork as
+`fix/review-2`: b1cdf93 … f309370 (3 commits: tasks 1–6 in one, 7–8 in one, then 9). Core and daemon tests, clippy and fmt pass; the GUI type-checks
+(not linked or run; GUI clippy warns, BUGS.md 78), and nothing was run on the deck or with the captures below. Where the code
+differs from this plan, the code wins: the deviations, the defaults taken in place of
+captures, and every check still to do are in its `fix/review-2` section of [VERIFY.md](VERIFY.md). The review
+of what was built is [review-2026-10-17c.md](review-2026-10-17c.md).
+
 **Written 2026-10-17 against `55d0d62`.** Every type and signature below is copied from
 that tree. The core and daemon code in tasks 1–6 was built and tested in a scratch copy:
 `cargo test -p omadeck-core` → 141 passed, `cargo test -p omadeckd` → 41 passed plus the

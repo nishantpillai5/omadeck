@@ -11,12 +11,18 @@ with no deck and no gtk4. On the Mac:
   `playerctl` output, …), nothing was invented: tests use hand-written input in the
   documented format, and each section lists the capture and the default that was
   assumed. Do the captures first; swap them into the tests where the section says.
-- **The GUI was never compiled.** Expect some compile errors. Fix them first, on the
-  lowest branch that has them, then rebase the branches above it.
+- **The GUI was type-checked, not built.** With a stub `pkg-config` (see
+  [review-2026-10-17c.md](review-2026-10-17c.md)), `cargo clippy -p omadeck-gui
+  --all-targets` checks it against the real gtk4/libadwaita crates without linking. Every
+  branch tip has 0 errors. Clippy warnings make `-D warnings` fail from `feat/live-keys` on
+  (BUGS.md 78). Linking, the GUI tests and every click still need the machine.
 - Nothing was run on the hardware, and nothing in the GUI was clicked.
 
 Final test counts on `feat/strip-long-press`: core 265, omadeckd 101 (98 here + 3
 socket tests). Each section gives its own branch's counts.
+
+Review 3 (BUGS.md 73–104) found bugs on these branches. Each section lists its own; fix
+73, 74 and 78 before the machine pass (see the review's "What next").
 
 Work through each branch in order. Tick an item when it passes. When one fails, add the
 bug to BUGS.md and leave a link to it here.
@@ -32,6 +38,8 @@ Then CI on the fork:
 `gh run list --workflow ci.yml -R nishantpillai5/omadeck --limit 1`.
 
 ## `fix/review-2` (review-fixes-2.md)
+
+Review 3 bugs brought in here (BUGS.md): 90, 92 (doc comment), 102, 104 (older).
 
 Commits: `b1cdf93` (tasks 1–6), `8b33817` (tasks 7–8, GUI, not compiled), `f309370`
 (task 9).
@@ -103,6 +111,8 @@ Not done on the Mac, deliberately:
   removes the allow.
 
 ## `feat/live-keys` (pr9-live-keys.md)
+
+Review 3 bugs brought in here (BUGS.md): 78 (clippy), 81, 87, 97.
 
 Commits: `837c11e` (task A), `cdbaba1` (B), `056fd8a` (C), `faa2562` (D), `635a384` (E),
 `91167cd` (F), `969ab3a` (G, GUI, not compiled), `ab0df79` (H).
@@ -179,6 +189,8 @@ Assumptions and changes from the plan:
   under the icon).
 
 ## `feat/app-volume` (pr10-app-volume.md)
+
+Review 3 bugs brought in here (BUGS.md): 77, 80 (pactl re-read), 96, 100.
 
 Commits: `39e2937` (task A), `34c6918` (B), `66dae21` (C), `528ab06` (D), `cb49c14` (E),
 `b872a7f` (F), `554812b` (G), `7ba769e` (H, GUI, not compiled), `f044473` (I).
@@ -268,6 +280,8 @@ Assumptions and changes from the plan:
 
 ## `feat/ctl` (pr11-ctl.md)
 
+Review 3 bugs brought in here (BUGS.md): 74, 86, 88, 91.
+
 Commits: `dbe1ae3` (task 1), `32390eb` (2), `a617ec6` (3), `b35a507` (4), `b70ad8a` (5),
 `68df866` (6, GUI and docs, GUI not compiled).
 
@@ -349,6 +363,8 @@ Assumptions and changes from the plan:
   "Event feed" became "Event feed and control".
 
 ## `feat/multi-actions` (pr12-multi-actions.md)
+
+Review 3 bugs brought in here (BUGS.md): 93.
 
 Commits: `4ff79ca` (task 1), `5fb32bf` (2), `14d5212` (3), `2ea3b81` (4), `8e0581f` (5, GUI
 not compiled), `db97dfa` (6, GUI and docs, GUI not compiled).
@@ -438,6 +454,8 @@ Assumptions and changes from the plan:
 
 ## `feat/folders` (pr13-folders.md)
 
+Review 3 bugs brought in here (BUGS.md): 79, 98.
+
 Commits: `9978f6a` (task 1), `a09db77` (task 2), `b05fb0e` (task 3, GUI and docs, GUI not
 compiled).
 
@@ -495,6 +513,8 @@ Assumptions and changes from the plan:
 - The longer hint under the deck is one string over 120 columns (rustfmt leaves it).
 
 ## `feat/media-dial` (pr14-media-dial.md)
+
+Review 3 bugs brought in here (BUGS.md): 73, 75, 76, 82, 83, 84, 85, 89, 92 (README), 94, 95, 103.
 
 Commits: `25ef012` (task 1), `b60e523` (2), `839d72d` (3), `dc80b7f` (4), `57c828e` (5),
 `75694de` (6), `072d31c` (7, GUI and docs, GUI not compiled). Tasks 1 and 3 also touch the
@@ -596,6 +616,8 @@ Assumptions and changes from the plan:
 
 ## `feat/app-pages` (pr15-app-pages.md)
 
+Review 3 bugs brought in here (BUGS.md): 79 (new trigger), 80, 99.
+
 Commits: `0460fbe` (task 1), `54ea4fb` (task 2), `88f5a7e` (task 3, GUI and docs, GUI not
 compiled; also adds `follow::desktop_class` to core).
 
@@ -680,6 +702,8 @@ Assumptions and changes from the plan:
   ignored).
 
 ## `feat/strip-long-press` (pr16-strip-long-press.md)
+
+Review 3 bugs brought in here (BUGS.md): 78 (`Msg`), 101.
 
 Commits: `942a058` (task 1, core and daemon), `13597e8` (task 2, GUI and docs, GUI not
 compiled).

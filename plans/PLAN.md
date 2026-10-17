@@ -36,8 +36,11 @@ built on the Mac in one go and pushed to the fork, each on the one before:
 `fix/review-2` → `feat/live-keys` → `feat/app-volume` → `feat/ctl` →
 `feat/multi-actions` → `feat/folders` → `feat/media-dial` → `feat/app-pages` →
 `feat/strip-long-press`. Core and daemon tests, clippy and fmt pass on each (except the
-hub socket tests, which the sandbox can't bind). **The GUI was never compiled**, and
-nothing was run on the deck. Next: work through [VERIFY.md](VERIFY.md) on the Omarchy
+hub socket tests, which the sandbox can't bind). The GUI type-checks on every branch (a
+stub `pkg-config`, see [review-2026-10-17c.md](review-2026-10-17c.md)) but was never
+linked or run, and nothing was run on the deck. **Review 3**
+([review-2026-10-17c.md](review-2026-10-17c.md), BUGS.md 73–104): one high (73), four
+medium (74–77) and CI red from clippy (78); fix 73, 74 and 78 before the machine pass. Next: work through [VERIFY.md](VERIFY.md) on the Omarchy
 machine, branch by branch from the bottom. Fix compile errors and bugs on the lowest
 branch that has them, then rebase the ones above. After that, rebuild `daily`.
 
@@ -275,6 +278,10 @@ Useful pages (check they're still current when you use them):
       upstream's branches, and check its open PRs, so we don't build what the author is
       already building.
 - [ ] `git config rerere.enabled true`, which helps when rebuilding `daily`.
+- [x] GUI type-check on the Mac (2026-10-17): a stub `pkg-config` that reports version
+      99.0 lets `cargo clippy -p omadeck-gui --all-targets` check the GUI without gtk4
+      installed (it can't link or run). The script is in
+      [review-2026-10-17c.md](review-2026-10-17c.md).
 - [ ] On the Omarchy machine: `sudo pacman -S --needed gtk4 libadwaita systemd-libs`, then
       `cargo build`. Before running a dev build: `systemctl --user stop omadeckd`.
 

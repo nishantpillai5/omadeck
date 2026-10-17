@@ -2,6 +2,13 @@
 
 Part of [PLAN.md](PLAN.md). Base: `feat/multi-actions` (PR 12).
 
+**Status (2026-10-17): built, not verified.** Built on the Mac and pushed to the fork as
+`feat/folders`: 9978f6a … b05fb0e (3 commits, tasks 1–3). Core and daemon tests, clippy and fmt pass; the GUI type-checks
+(not linked or run; GUI clippy warns, BUGS.md 78), and nothing was run on the deck or with the captures below. Where the code
+differs from this plan, the code wins: the deviations, the defaults taken in place of
+captures, and every check still to do are in its `feat/folders` section of [VERIFY.md](VERIFY.md). The review
+of what was built is [review-2026-10-17c.md](review-2026-10-17c.md).
+
 **Rescoped (2026-10-17).** The old plan built folders from scratch: a `folder` string on
 `KeyConfig`, `key_at`, `Location`, `Action::Folder`, a fixed Back tile. Upstream's
 `pages-and-folders` (`d4e458f`, `fb9052f`) already does most of it, so all of that is
