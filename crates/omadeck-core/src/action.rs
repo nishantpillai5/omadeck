@@ -27,6 +27,26 @@ pub fn run(action: &Action) -> Result<()> {
 /// Run `action` `steps` times, once per detent for dial turns. The daemon caps `steps`
 /// at 8 per event, so a hard spin can't fork dozens of processes at once.
 pub fn run_steps(action: &Action, steps: u8) -> Result<()> {
+    // `hyprctl dispatch` waits for Hyprland's answer, so a fast spin must not run several
+    // on the caller's thread (the deck loop): more than one step runs in order on a helper
+    // thread, and a failure there is logged. One step stays inline so its error is shown.
+    if let Action::Hyprland { dispatch } = action
+        && steps > 1
+    {
+        if dispatch.trim().is_empty() {
+            bail!("no dispatcher set");
+        }
+        let dispatch = dispatch.clone();
+        thread::spawn(move || {
+            for _ in 0..steps {
+                if let Err(e) = hypr_dispatch(&dispatch) {
+                    log::warn!("hyprctl dispatch {dispatch}: {e:#}");
+                    break;
+                }
+            }
+        });
+        return Ok(());
+    }
     for _ in 0..steps {
         run(action)?;
     }
@@ -235,6 +255,14 @@ pub fn legacy_to_lua(dispatch: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hypr_steps_check_before_the_thread() {
+        // More than one step would spawn the helper thread; an empty dispatcher must be
+        // rejected first, on the caller's thread, like the inline one-step case.
+        let err = run_steps(&Action::Hyprland { dispatch: "  ".into() }, 3).unwrap_err();
+        assert!(err.to_string().contains("no dispatcher"));
+    }
 
     #[test]
     fn hypr_translation() {

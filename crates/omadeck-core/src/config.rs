@@ -393,20 +393,24 @@ impl Config {
             .unwrap()
     }
 
-    fn all_keys_mut(&mut self) -> impl Iterator<Item = &mut KeyConfig> {
-        self.keys.0.iter_mut().chain(self.pages.iter_mut().flat_map(|p| p.keys.0.iter_mut()))
+    /// Every action in the config: each key's, on every page, and each dial's three.
+    fn all_actions(&self) -> impl Iterator<Item = &Action> {
+        let keys = self.keys.iter().chain(self.pages.iter().flat_map(|p| p.keys.iter())).map(|k| &k.action);
+        keys.chain(self.dials.iter().flat_map(|d| [&d.turn_left, &d.turn_right, &d.press]))
     }
 
-    /// How many keys open the page `name`.
+    fn all_actions_mut(&mut self) -> impl Iterator<Item = &mut Action> {
+        let keys = self.keys.0.iter_mut().chain(self.pages.iter_mut().flat_map(|p| p.keys.0.iter_mut()));
+        keys.map(|k| &mut k.action)
+            .chain(self.dials.iter_mut().flat_map(|d| [&mut d.turn_left, &mut d.turn_right, &mut d.press]))
+    }
+
+    /// How many actions (keys, and dial turns and presses) open the page `name`.
     pub fn links_to(&self, name: &str) -> usize {
-        self.keys
-            .iter()
-            .chain(self.pages.iter().flat_map(|p| p.keys.iter()))
-            .filter(|k| matches!(&k.action, Action::Page { page } if page == name))
-            .count()
+        self.all_actions().filter(|a| matches!(a, Action::Page { page } if page == name)).count()
     }
 
-    /// Rename a page and every key that opens it.
+    /// Rename a page and every action (key or dial) that opens it.
     pub fn rename_page(&mut self, old: &str, new: &str) {
         let new = new.trim();
         for p in &mut self.pages {
@@ -414,8 +418,8 @@ impl Config {
                 p.name = new.to_string();
             }
         }
-        for k in self.all_keys_mut() {
-            if let Action::Page { page } = &mut k.action
+        for a in self.all_actions_mut() {
+            if let Action::Page { page } = a
                 && page == old
             {
                 *page = new.to_string();
@@ -423,12 +427,13 @@ impl Config {
         }
     }
 
-    /// Delete a page. Keys that opened it keep their look but no longer do anything.
+    /// Delete a page. Keys and dials that opened it keep their look but no longer do
+    /// anything.
     pub fn remove_page(&mut self, name: &str) {
         self.pages.retain(|p| p.name != name);
-        for k in self.all_keys_mut() {
-            if matches!(&k.action, Action::Page { page } if page == name) {
-                k.action = Action::None;
+        for a in self.all_actions_mut() {
+            if matches!(a, Action::Page { page } if page == name) {
+                *a = Action::None;
             }
         }
     }
@@ -510,6 +515,21 @@ mod tests {
         c.remove_page("Music");
         assert!(c.pages.is_empty());
         assert_eq!(c.key(None, 0).unwrap().action, Action::None);
+    }
+
+    #[test]
+    fn page_links_include_dials() {
+        let mut c = Config::default();
+        c.pages.push(Page { name: "Media".into(), keys: Keys::default() });
+        c.dials.push(DialConfig { press: Action::Page { page: "Media".into() }, ..DialConfig::new(0) });
+        c.dials.push(DialConfig { turn_left: Action::Page { page: "Media".into() }, ..DialConfig::new(1) });
+        assert_eq!(c.links_to("Media"), 2);
+        c.rename_page("Media", "Music");
+        assert_eq!(c.dial(0).unwrap().press, Action::Page { page: "Music".into() });
+        assert_eq!(c.dial(1).unwrap().turn_left, Action::Page { page: "Music".into() });
+        c.remove_page("Music");
+        assert_eq!(c.dial(0).unwrap().press, Action::None);
+        assert_eq!(c.links_to("Music"), 0);
     }
 
     #[test]
