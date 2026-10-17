@@ -74,6 +74,7 @@ impl Toggle {
 
 /// What a probe read. It goes on the wire in later events, hence serde.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Value {
     /// A volume device's level, as the panel draws it (`audio::Level::to_panel`).
     Level(Level),
@@ -168,40 +169,46 @@ pub fn is_missing(code: Option<i32>) -> bool {
     matches!(code, Some(126) | Some(127))
 }
 
-/// The last `NN%` in a busy text, clamped to 100 (`"shard 2/4 43%"` → 43,
-/// `"43.5 %"` → 43, `"120%"` → 100, none → `None`).
+/// The first explicit `NN%` in a busy text, clamped to 100 (`"shard 2/4 43%"` → 43,
+/// `"43.5 %"` → 43, `"120%"` → 100). Only a number a `%` follows counts, so `"1/4"`,
+/// `"3 of 7"` or `"v2"` give no bar.
 pub fn progress(text: &str) -> Option<u8> {
-    let mut last = None;
-    for part in text.split('%') {
-        let t = part.trim_end();
-        let b = t.as_bytes();
-        let end = b.len();
-        let mut start = end;
-        let mut dot = false;
-        while start > 0 {
-            match b[start - 1] {
-                b'0'..=b'9' => start -= 1,
-                b'.' if !dot => {
-                    dot = true;
-                    start -= 1;
-                }
-                _ => break,
-            }
-        }
-        if start < end
-            && b[start..].iter().any(u8::is_ascii_digit)
-            && let Ok(n) = t[start..].parse::<f32>()
-        {
-            last = Some(n.clamp(0.0, 100.0) as u8);
-        }
-    }
-    last
+    let parts: Vec<&str> = text.split('%').collect();
+    // Every part but the last is followed by a `%`.
+    parts[..parts.len() - 1].iter().find_map(|part| number_at_end(part))
 }
 
-/// Everything the watcher should read while `page` is shown on a deck with `n_dials` dials,
-/// each once: the dials' volume levels in dial order, then the current page's key probes (a
-/// toggle's state command, or the mute it follows).
-pub fn watched_probes(cfg: &Config, page: Option<&str>, n_dials: usize) -> Vec<Probe> {
+/// The number (digits, at most one `.`) a text ends with, ignoring trailing spaces,
+/// clamped to 0–100.
+fn number_at_end(part: &str) -> Option<u8> {
+    let t = part.trim_end();
+    let b = t.as_bytes();
+    let end = b.len();
+    let mut start = end;
+    let mut dot = false;
+    while start > 0 {
+        match b[start - 1] {
+            b'0'..=b'9' => start -= 1,
+            b'.' if !dot => {
+                dot = true;
+                start -= 1;
+            }
+            _ => break,
+        }
+    }
+    if start < end && b[start..].iter().any(u8::is_ascii_digit) {
+        t[start..].parse::<f32>().ok().map(|n| n.clamp(0.0, 100.0) as u8)
+    } else {
+        None
+    }
+}
+
+/// Everything the watcher should read while `page` is shown on a deck with `n_dials` dials
+/// and `n_keys` keys, each once: the dials' volume levels in dial order, then the probes of
+/// the page's keys the deck has (a toggle's state command, or the mute it follows). A key
+/// past `n_keys` (a config made for a bigger deck) is not polled. No deck: both are 0, so
+/// nothing is.
+pub fn watched_probes(cfg: &Config, page: Option<&str>, n_dials: usize, n_keys: u8) -> Vec<Probe> {
     let mut out = Vec::new();
     for i in 0..n_dials {
         if let Some(LevelSource::Volume(dev)) = cfg.dial(i as u8).and_then(DialConfig::level_source) {
@@ -212,7 +219,7 @@ pub fn watched_probes(cfg: &Config, page: Option<&str>, n_dials: usize) -> Vec<P
         }
     }
     if let Some(ks) = cfg.page(page) {
-        for k in ks.iter() {
+        for k in ks.iter().filter(|k| k.index < n_keys) {
             if let Some(p) = k.state_probe()
                 && !out.contains(&p)
             {
@@ -303,10 +310,23 @@ change = 5
         let cmd = |c: &str| Probe::Command { command: c.into(), interval_ms: 2000 };
         // The mute key's probe (the output's) is the dial's: deduped. The two "true" keys
         // share one probe.
-        assert_eq!(watched_probes(&cfg, None, 4), vec![Probe::Volume(AudioDevice::Output), cmd("true")]);
+        assert_eq!(watched_probes(&cfg, None, 4, 32), vec![Probe::Volume(AudioDevice::Output), cmd("true")]);
         // The other page watches its own keys, not the home page's.
-        assert_eq!(watched_probes(&cfg, Some("Other"), 4), vec![Probe::Volume(AudioDevice::Output), cmd("false")]);
-        assert_eq!(watched_probes(&cfg, Some("Other"), 0), vec![cmd("false")], "no dials, no dial probes");
+        assert_eq!(watched_probes(&cfg, Some("Other"), 4, 32), vec![Probe::Volume(AudioDevice::Output), cmd("false")]);
+        assert_eq!(watched_probes(&cfg, Some("Other"), 0, 32), vec![cmd("false")], "no dials, no dial probes");
+    }
+
+    #[test]
+    fn watched_probes_skip_keys_the_deck_lacks() {
+        // A key 10 made on an XL, on a Plus (8 keys): its command is not polled.
+        let cfg = Config::parse(
+            "[[key]]\nindex = 1\n[key.on]\nstate = \"a\"\n\n[[key]]\nindex = 10\n[key.on]\nstate = \"b\"\n",
+        )
+        .unwrap();
+        let cmd = |c: &str| Probe::Command { command: c.into(), interval_ms: 2000 };
+        assert_eq!(watched_probes(&cfg, None, 4, 8), vec![cmd("a")]);
+        assert_eq!(watched_probes(&cfg, None, 4, 32), vec![cmd("a"), cmd("b")]);
+        assert_eq!(watched_probes(&cfg, None, 0, 0), vec![], "no deck: nothing");
     }
 
     #[test]
@@ -321,12 +341,12 @@ change = 5
             ..Config::default()
         };
         let both = vec![Probe::Volume(AudioDevice::Input), Probe::Volume(AudioDevice::Output)];
-        assert_eq!(watched_probes(&cfg, None, 4), both);
+        assert_eq!(watched_probes(&cfg, None, 4, 32), both);
         // Dials aren't per page.
-        assert_eq!(watched_probes(&cfg, Some("Media"), 4), both);
+        assert_eq!(watched_probes(&cfg, Some("Media"), 4, 32), both);
         // Only the dials the deck has; a deck without dials watches nothing.
-        assert_eq!(watched_probes(&cfg, None, 2), vec![Probe::Volume(AudioDevice::Input)]);
-        assert_eq!(watched_probes(&cfg, None, 0), vec![]);
+        assert_eq!(watched_probes(&cfg, None, 2, 32), vec![Probe::Volume(AudioDevice::Input)]);
+        assert_eq!(watched_probes(&cfg, None, 0, 32), vec![]);
     }
 
     #[test]
@@ -372,15 +392,28 @@ change = 5
     }
 
     #[test]
-    fn progress_parses_last_percentage() {
+    fn progress_takes_the_first_explicit_percentage() {
         assert_eq!(progress("Loading 43%"), Some(43));
         assert_eq!(progress("shard 2/4 43%"), Some(43));
         assert_eq!(progress("43.5 %"), Some(43));
         assert_eq!(progress("120%"), Some(100));
-        assert_eq!(progress("10% then 20%"), Some(20));
+        assert_eq!(progress("10% then 20%"), Some(10));
         assert_eq!(progress("50 % done"), Some(50));
+        assert_eq!(progress("Loading 43% step 5"), Some(43));
+        // Numbers no `%` follows are not progress.
+        assert_eq!(progress("1/4"), None);
+        assert_eq!(progress("Downloading 3 of 7"), None);
+        assert_eq!(progress("v2"), None);
         assert_eq!(progress("no number here"), None);
+        assert_eq!(progress("%"), None);
         assert_eq!(progress(""), None);
+    }
+
+    #[test]
+    fn value_wire_names_are_snake_case() {
+        assert_eq!(serde_json::to_string(&Value::Toggle(Toggle::On)).unwrap(), r#"{"toggle":"on"}"#);
+        let level = Value::Level(Level { value: 0.5, text: "50%".into(), muted: false });
+        assert_eq!(serde_json::to_string(&level).unwrap(), r#"{"level":{"value":0.5,"text":"50%","muted":false}}"#);
     }
 
     #[test]
