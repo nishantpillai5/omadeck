@@ -1225,7 +1225,7 @@ impl Daemon {
             Action::Media { command, seek, player } => {
                 // The targeting rule is `probe::media_target`'s doc.
                 let dial = match src {
-                    Source::Turn(i) | Source::Press(i) | Source::Tap(i) => self.cfg.dial(i),
+                    Source::Turn(i) | Source::Press(i) | Source::Tap(i) | Source::LongTap(i) => self.cfg.dial(i),
                     _ => None,
                 };
                 let wanted = probe::media_wanted(player.as_deref(), dial).map(str::to_string);
