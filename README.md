@@ -128,9 +128,9 @@ Click any key to change it, or clear it with the trash button. The ▶ button te
 
 ### Pages and folders
 
-The switcher above the deck picks the page you're editing; **+** adds a page, and the folder, pencil and trash buttons mark it as a folder, rename or delete it. To make a folder, set a key to **Open page** and click **New page**: you get a page with a Back key already in place, and the key gets a folder symbol. Open it with **›** to fill it. The folder button marks a page as a folder: flicks and Next/previous page skip it. A page made with **New page** from an Open page action is a folder already.
+The switcher above the deck picks the page you're editing; **+** adds a page, and the folder, pencil and trash buttons mark it as a folder, rename or delete it. To make a folder, set a key to **Open page** and click **New page**: you get a page with a Back key already in place, and the key gets a folder symbol. Open it with **›** to fill it. The folder button marks a page as a folder: flicks and Next/previous page skip it. A page made with **New page** from an Open page action is a folder already. Double-click a folder key to open it, or a Back key to go up to the page that opens this one. The switcher shows a folder with its path, such as `Music › Media › Spotify`.
 
-On the deck, **Go back** returns to the page you came from, or Home. Renaming a page updates every key that opens it.
+On the deck, **Go back** returns to the page you came from, or Home, when you let go of the key; hold a Back key for half a second to go straight Home, as in the Elgato app. Next/previous page and flicks inside a folder, however deep, step from the page the folders hang off. Renaming a page updates every key that opens it.
 
 ### Command line
 
