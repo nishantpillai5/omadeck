@@ -1468,6 +1468,9 @@ fn action_rows(app: &Rc<App>, group: &adw::PreferencesGroup, slot: &ActionSlot) 
 
         Action::Back => {}
 
+        // Task 6 fills these in.
+        Action::Multi { .. } | Action::Delay { .. } => {}
+
         Action::AppVolume { app: app_name, focused, change, mute } => {
             group
                 .add(&hint_row("Changes one app's volume. On a dial, the strip shows the app's icon, name and level."));
