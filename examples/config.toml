@@ -74,10 +74,22 @@ type = "back"                # the previous page, or Home
 
 [[page.key]]
 index = 1
-label = "Play/Pause"
+label = "Play"
+glyph = "f040a"              # play
 [page.key.action]
-type = "app"
-command = "playerctl play-pause"
+type = "media"               # play/pause, through Omarchy's media keys when it has them
+[page.key.on]
+label = "Pause"              # an on face follows the player: shown while it plays
+glyph = "f03e4"              # pause: what a press will do
+
+[[page.key]]
+index = 2
+label = "Next"
+glyph = "f04ad"
+[page.key.action]
+type = "media"
+command = "next"             # or "previous", "stop"
+# player = "spotify"         # optional: only this player (default: the one playing)
 
 # [[key]]
 # index = 6
@@ -308,3 +320,35 @@ glyph = "f036d"
 # type = "app_volume"
 # focused = true
 # mute = true
+#
+# A media dial (in place of the battery dial above): turn to scrub 5 s per detent,
+# press to play or pause. The panel shows the track, artist, cover (local files only)
+# and a bar that moves while it plays. Seeking and the panel need `playerctl`.
+# [[dial]]
+# index = 2
+# label = "Media"
+# [dial.turn_left]
+# type = "media"
+# seek = -5                  # seconds per detent
+# [dial.turn_right]
+# type = "media"
+# seek = 5
+# [dial.press]
+# type = "media"             # play/pause
+#
+# A media dial that turns the player's own volume (Elgato's Spotify dial): the panel
+# still shows the track, as a media action wins the panel.
+# [[dial]]
+# index = 2
+# label = "Spotify"
+# [dial.turn_left]
+# type = "app_volume"
+# app = "spotify"
+# change = -5
+# [dial.turn_right]
+# type = "app_volume"
+# app = "spotify"
+# change = 5
+# [dial.press]
+# type = "media"
+# player = "spotify"

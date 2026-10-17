@@ -3,13 +3,16 @@
 use std::cell::{Cell, RefCell};
 use std::process::Command;
 use std::rc::{Rc, Weak};
+use std::sync::Arc;
 use std::time::Duration;
 
 use adw::prelude::*;
 use gtk::{gdk, gio, glib};
 use omadeck_core::ipc::{self, Command as DaemonCommand, Event};
 use omadeck_core::paths::FileStamp;
+use omadeck_core::player;
 use omadeck_core::probe::{self, Values};
+use omadeck_core::render::{self, RgbaImage};
 use omadeck_core::{
     Action, Config, DeckInfo, DialConfig, DialStatus, Direction, FaceTab, HOME, KeyConfig, KeyStatus, Keys,
     PanelStatus, Renderer, device, paths, tap_to_dial,
@@ -455,6 +458,7 @@ impl App {
         app.update_title();
         app.listen();
         app.watch_config();
+        app.tick_media();
         app.show_lock();
         app.window.present();
         app
@@ -781,9 +785,17 @@ impl App {
         // config's, volume as a dash. Only the daemon reads the system.
         let values = Values { brightness: self.live_brightness.get().unwrap_or(cfg.brightness), ..Values::default() };
         let mirrored = self.panel_status.borrow();
+        // A playing track's position is anchored at the daemon's read: advance it to now.
+        let now_ms = player::now_ms();
         let status: Vec<DialStatus> = (0..n)
             .map(|i| match mirrored.get(&i) {
-                Some(panel) => DialStatus { pressed: false, panel: panel.clone() },
+                Some(panel) => {
+                    let mut panel = panel.clone();
+                    if let Some(m) = &mut panel.media {
+                        *m = m.at(now_ms);
+                    }
+                    DialStatus { pressed: false, panel }
+                }
                 None => probe::dial_status(cfg.dial(i), &values, false),
             })
             .collect();
@@ -1086,6 +1098,21 @@ impl App {
             }
             Err(e) => self.toast(&format!("Couldn't save: {e:#}")),
         }
+    }
+
+    /// Redraw the strip once a second while a mirrored media panel is playing, so its
+    /// time and bar move as on the deck. Runs no process: the GUI only mirrors.
+    fn tick_media(self: &Rc<Self>) {
+        let weak = Rc::downgrade(self);
+        glib::timeout_add_local(Duration::from_secs(1), move || {
+            let Some(app) = weak.upgrade() else { return glib::ControlFlow::Break };
+            let playing = app.panel_status.borrow().values().any(|p| p.media.as_ref().is_some_and(|m| m.playing));
+            // The borrow ended above: `refresh_strip` borrows `panel_status` again.
+            if playing {
+                app.refresh_strip();
+            }
+            glib::ControlFlow::Continue
+        });
     }
 
     // --- external edits -------------------------------------------------------------------
@@ -1621,7 +1648,22 @@ impl App {
                 self.sync_slider(value);
                 self.refresh_strip();
             }
-            Msg::Event(Event::DialStatus { index, status }) => {
+            Msg::Event(Event::DialStatus { index, mut status }) => {
+                // The cover never rides the socket: decode it here once per track, keeping
+                // the stored image while the path stays the same.
+                if let Some(m) = &mut status.media
+                    && let Some(path) = m.art.clone()
+                {
+                    // Cloned out, so no borrow is held while decoding (BUGS.md 4).
+                    let old: Option<Arc<RgbaImage>> = self
+                        .panel_status
+                        .borrow()
+                        .get(&index)
+                        .and_then(|p| p.media.as_ref())
+                        .filter(|o| o.art.as_ref() == Some(&path))
+                        .and_then(|o| o.art_img.clone());
+                    m.art_img = old.or_else(|| render::load_icon(&path, 48).map(Arc::new));
+                }
                 self.panel_status.borrow_mut().insert(index, status);
                 self.refresh_strip();
             }

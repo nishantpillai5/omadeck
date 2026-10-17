@@ -527,4 +527,19 @@ mod tests {
         assert!(needs_playerctl(Omarchy4, Stop, 0, false));
         assert!(needs_playerctl(Omarchy3, PlayPause, 0, true));
     }
+
+    #[test]
+    fn media_show_advances_from_as_of() {
+        let m = MediaShow {
+            playing: true,
+            position_ms: 10_000,
+            as_of_ms: 1_000,
+            length_ms: Some(12_000),
+            ..Default::default()
+        };
+        assert_eq!(m.at(3_000).position_ms, 12_000, "two seconds later, clamped to the length");
+        assert_eq!(m.at(3_000).as_of_ms, 3_000);
+        let paused = MediaShow { playing: false, ..m.clone() };
+        assert_eq!(paused.at(9_000).position_ms, 10_000);
+    }
 }

@@ -40,8 +40,9 @@ Written in Rust: a tiny background daemon drives the hardware, and a GTK4/libadw
   - **Volume:** change the output or input (microphone) volume, or toggle mute. It goes through Omarchy's own volume commands when they're installed, so the same on-screen pop-up shows as your volume keys — otherwise it falls back to `wpctl`.
   - **Brightness:** change the panel brightness by ±%, or set it to an exact value. The value is remembered across restarts (in the state file, not your config), as in the Elgato app.
   - **App volume:** a dial or key for one app's volume (Spotify, a browser…), or for whichever app is focused. The strip shows the app's icon, name and level. A focused-app dial keeps controlling the last focused app that played audio when you move to a silent window.
+  - **Media:** play/pause, next, previous and seek from keys or a dial; the strip shows the track, artist, cover and a moving progress bar. Play/pause, next and previous go through Omarchy's own media commands when they're there, so its pop-up shows as for your media keys. Seeking and the strip need `playerctl` (`sudo pacman -S playerctl`).
   - **Multi action:** several of the above from one key or dial, in order, with **delays** between them, like the Elgato app's Multi Action. The configurator edits the steps as a list.
-- **Toggle keys.** A second face (`[key.on]`) that follows real state: a shell command's exit status polled in the background (night light, stay awake, a service, …), the mute a volume mute key already changes, or a flip on each press. A command can report **busy** (exit 75) with a progress line — and a percentage for a bar — for things that take a while. Any key running a command or script can show the busy face for as long as it runs (`busy_while_running`). The configurator mirrors what the deck shows, and has toggle presets (mic mute, output mute, night light, stay awake, do-not-disturb, bluetooth, and a service… dialog).
+- **Toggle keys.** A second face (`[key.on]`) that follows real state: a shell command's exit status polled in the background (night light, stay awake, a service, …), the mute a volume mute key already changes, or a flip on each press. A command can report **busy** (exit 75) with a progress line — and a percentage for a bar — for things that take a while. Any key running a command or script can show the busy face for as long as it runs (`busy_while_running`). The configurator mirrors what the deck shows, and has toggle presets (mic mute, output mute, night light, stay awake, do-not-disturb, bluetooth, play/pause, and a service… dialog). A play/pause key's on face follows the player.
 - **Live keys.** A key, or a dial's panel on the touch strip, can show a value the daemon keeps up to date (`[key.live]`, `[dial.live]`): the time and date (any [strftime format](https://docs.rs/jiff/latest/jiff/fmt/strtime/), e.g. `%H:%M%n%a %d`), CPU, memory or battery %, the active Hyprland workspace, or the first line of a command's output, re-run every few seconds (`source = "command"`, `command = "curl -s 'wttr.in/?format=%t'"`, `interval = 900`). The key still runs its action on press. On the strip, levels draw a bar (Elgato's `$B1` layout) and text doesn't (`$A1`).
 - **Icons your way**
   - PNG, JPEG, SVG, WebP or GIF images.
@@ -276,6 +277,20 @@ turn_right = { type = "app_volume", app = "spotify", change = 5 }
 press = { type = "app_volume", app = "spotify", mute = true }
 ```
 
+A media dial: turn to scrub (seconds per detent), press to play or pause. Its panel
+shows the track, artist, the cover (local files only) and a bar that moves while it
+plays. Add `player = "spotify"` to stick to one player; `command = "next"` or
+`"previous"` on a turn skips tracks instead:
+
+```toml
+[[dial]]
+index = 3
+label = "Media"
+turn_left = { type = "media", seek = -5 }
+turn_right = { type = "media", seek = 5 }
+press = { type = "media" }
+```
+
 ### Toggle keys
 
 A key with a `[key.on]` table has a second face. Which face shows comes from the
@@ -381,7 +396,7 @@ Ideas, roughly in order. Want one sooner? Open an issue or a PR; see [CONTRIBUTI
 
 - [x] **Toggle keys** with on/off faces (mute, night light, …) that reflect real state
 - [x] **Multi-actions**: run several actions from one key, with optional delays
-- [x] **Stream Deck +**: value layouts on the strip — volume and brightness — and page switching on swipe
+- [x] **Stream Deck +**: value layouts on the strip — volume, brightness and media — and page switching on swipe
 - [x] **Stream Deck +**: background images on the touch strip — one across the strip, one per dial
 - [ ] **OBS** scene and recording keys via obs-websocket
 - [x] **Live keys** that show a clock, CPU usage or the active workspace
