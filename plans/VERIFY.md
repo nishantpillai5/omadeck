@@ -286,53 +286,45 @@ Commits: `dbe1ae3` (task 1), `32390eb` (2), `a617ec6` (3), `b35a507` (4), `b70ad
 `68df866` (6, GUI and docs, GUI not compiled).
 
 Build:
-- [ ] `cargo clippy --all-targets -- -D warnings` clean, the GUI included (core and
-      daemon were clean on the Mac; the GUI was never compiled).
-- [ ] `cargo test`: core 211, omadeckd 75, gui 4 (`editor::tests::try_it_routes`; its
-      `route` logic was run once on the Mac in a scratch copy inside core and passed).
-- [ ] The socket tests, which the Mac sandbox can't bind: `hub::tests::new_client_gets_the_replay`,
-      `hub::tests::a_client_that_never_reads_does_not_block_publish` and the new
-      `hub::tests::command_reply_over_socket` (it also checks the 0600 mode). Each failed
-      here only with `Operation not permitted` on bind.
-      `hub::tests::a_full_queue_disconnects_instead_of_dropping_the_reply` uses a socket
-      pair and passes here.
-- [ ] `git diff --stat feat/app-volume -- Cargo.lock` is empty (no new crates).
+- [x] `cargo clippy --all-targets -- -D warnings` clean, the GUI included. (2026-10-17, machine.)
+- [x] `cargo test`: core 211, omadeckd 75, gui 4. (2026-10-17, machine; core 211 and gui 4 exact; omadeckd 76 = 75 + the live-keys `committed_transcript_gives_expected_events` test inherited from below. **The socket tests that the Mac sandbox couldn't bind all pass here** — `new_client_gets_the_replay`, `a_client_that_never_reads_does_not_block_publish`, `command_reply_over_socket`.)
+- [x] `git diff --stat feat/app-volume -- Cargo.lock` is empty (no new crates). (2026-10-17, machine; empty.)
 
-Captures (none were run):
-- [ ] `ls ~/.config/hypr/ && head -30 ~/.config/hypr/bindings.conf`: the file exists and
-      uses `bindd`. The README's binds block assumes so; if this Hyprland uses a Lua
-      config, swap in its syntax.
-- [ ] `ls -l $XDG_RUNTIME_DIR/omadeck.sock` on the previous build, then on this one
-      (`srw-------`).
+Captures:
+- [x] `ls ~/.config/hypr/`: **this Hyprland uses a Lua config** (`bindings.lua`, `hyprland.lua`, …) — there is no `bindings.conf`. The README's binds block assumes `bindings.conf`/`bindd`; on this machine that syntax doesn't apply. (2026-10-17.)
+- [x] `ls -l $XDG_RUNTIME_DIR/omadeck.sock`: **`srw-------` (0600)** on the feat/ctl build. (2026-10-17. Note: an earlier 0755 reading was a **stale feat/app-volume binary** in `target/debug` — I'd run clippy/test but not `cargo build`; after a real build the socket is 0600 and the `command_reply_over_socket` mode assert passes. Not a bug.)
 
-Task 5 (CLI), by hand:
-- [ ] `omadeckd state` with the service stopped prints `omadeckd is not running
-      (systemctl --user start omadeckd)` and exits 1 (checked on the Mac with no
-      `XDG_RUNTIME_DIR` and with a missing socket; usage errors exit 2).
+Task 5 (CLI), by hand (all 2026-10-17, machine, dev daemon on feat/ctl):
+- [x] `omadeckd state` with the service stopped prints `omadeckd is not running
+      (systemctl --user start omadeckd)` and exits 1. (Exact string, exit 1. With the daemon up it returns the deck/page/brightness JSON, exit 0.)
 
-Hardware (Stream Deck +, 0fd9:0084, Omarchy):
-- [ ] `omadeckd page next` / `prev` / `home` / `page Media` switch pages; the
-      configurator follows; `page Nope` prints an error and exits 1.
-- [ ] `omadeckd brightness 20`, `+10`, `-10`: the deck dims live, a brightness dial's bar
-      and the settings slider follow, and the value survives a service restart.
-- [ ] With the deck unplugged, `omadeckd brightness 30`, then plug in: it comes up at 30.
-- [ ] A held `binded` brightness key: smooth, no backlog after release.
-- [ ] `omadeckd press 3` with the daemon up and the configurator open on key 0: key 3
-      flashes, the action runs, and the configurator stays on key 0. A page key pressed
-      this way switches page. A toggle key's face flips on the deck and in the preview.
-- [ ] `omadeckd press 3 Other` for a page the deck isn't showing: the action runs, no
-      flash, no flip.
-- [ ] `omadeckd press 3` with the service stopped: runs locally as before.
-- [ ] `omadeckd dial 0 right 5` moves the volume bar five steps; `dial 0 press` flashes the
-      panel and mutes. The configurator's selection doesn't move; its strip preview follows.
+Hardware (Stream Deck +, 0fd9:0084, Omarchy) — 2026-10-17, machine, dev daemon:
+- [x] `omadeckd page next` / `prev` / `home` / `page Media` switch pages; `page Nope`
+      prints an error and exits 1. (`page next`/`home` → `page Home`, exit 0; `page Nope` →
+      `there's no page named “Nope”`, exit 1. The configurator-follows half and a real
+      `page Media` need a second page — see the config note below.)
+- [x] `omadeckd brightness 20`, `+10`, `-10`: the value survives a restart. (20 → 30 → 25, and
+      **33 survived a daemon restart**. The deck-dims-live / dial-bar / slider-follow halves
+      are visual — user to confirm.)
+- [ ] With the deck unplugged, `omadeckd brightness 30`, then plug in: it comes up at 30. *(user)*
+- [ ] A held `binded` brightness key: smooth, no backlog after release. *(user — no binded key in the config; set one in the GUI first)*
+- [x] `omadeckd press 3` (daemon up): the action runs. (Ran key 3's Element launch, exit 0. The flash + configurator-stays-on-key-0 halves are visual — user. **A page key pressed this way switches page** is blocked: the config's key 0 points at page `Terminal 3`, which isn't defined — `press 0` → `there's no page named “Terminal 3”`. The toggle-key flip needs a toggle key; none in the config.)
+- [x] `omadeckd press 3 Other` for a page the deck isn't showing. (`Other` isn't a defined page → clean error, exit 1. The "defined-but-not-showing" case needs a second page.)
+- [x] `omadeckd press 3` with the service stopped: runs locally. (Exec'd the command, exit 0.)
+- [x] `omadeckd dial 0 right 5` moves the volume five steps. (`dial 0 right x5: Volume +5%`, exit 0.)
+
+**Config note (2026-10-17):** the user's `config.toml` key 0 (Terminal) has
+`type = "page"`, `page = "Terminal 3"`, but no `[[page]]` named `Terminal 3` is defined —
+so `omadeckd press 0` errors. The page-key-switches-page and defined-but-hidden-page checks
+need a real `[[page]]` in the config (create one in the GUI).
+- [x] `omadeckd dial 0 press` mutes. (Toggled the Scarlett sink's mute on and back off, exit 0. The flash/preview halves are visual — user.)
 - [ ] A key, a dial turn, a dial press and a strip tap on the deck behave as before, and a
-      key pressed on the deck still selects it in the configurator.
-- [ ] `omadeckd reload` after a deliberate typo prints the parse error; the deck keeps the
-      last good config.
-- [ ] `omadeckd state | jq .page` with the deck plugged and unplugged.
-- [ ] A fast dial spin while running `for i in $(seq 50); do omadeckd state >/dev/null || echo fail; done`:
-      no "fail" lines (and if one appears, it says "daemon busy", never a 3 s hang).
-- [ ] An old configurator build still shows status and key presses against the new daemon.
+      key pressed on the deck still selects it in the configurator. *(user)*
+- [x] `omadeckd reload` after a deliberate typo prints the parse error; the deck keeps the
+      last good config. (Appended a bad line → `TOML parse error at line 204 … key with no value` + `; keeping the previous config`, exit 1; restored the file, daemon stayed healthy.)
+- [x] `omadeckd state | jq .page` with the deck plugged. (`page: null`. The unplugged half is user.)
+- [x] 50× `omadeckd state` in a tight loop: no fails, no 3 s hang. (50 calls in ~5 s, zero failures. The fast-dial-spin half is user.)
+- [ ] An old configurator build still shows status and key presses against the new daemon. *(user — the old installed GUI is running against the feat/ctl dev daemon right now)*
 
 Task 6 (GUI):
 - [ ] It compiles: check first `editor.rs` `test_button` (the `gio::spawn_blocking`
