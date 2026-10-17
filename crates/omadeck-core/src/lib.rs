@@ -6,12 +6,14 @@ pub mod audio;
 pub mod config;
 pub mod device;
 pub mod ipc;
+pub mod live;
 pub mod paths;
 pub mod presets;
 pub mod probe;
 pub mod proc;
 pub mod render;
 pub mod state;
+pub mod sysinfo;
 pub mod theme;
 
 pub use config::{
