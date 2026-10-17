@@ -14,7 +14,7 @@ use image::Rgba;
 pub use image::RgbaImage;
 use image::imageops::{self, FilterType};
 
-use crate::config::{AudioDevice, Config, KeyConfig, LevelSource, Style};
+use crate::config::{AudioDevice, Config, KeyConfig, LevelSource, Live, Style};
 use crate::paths;
 use crate::theme::{Rgb, Theme};
 
@@ -120,6 +120,14 @@ const OUTPUT_GLYPH: &str = "f057e"; // 󰕾 speaker
 const INPUT_GLYPH: &str = "f036c"; // 󰎬 microphone
 const MUTE_GLYPH: &str = "f075f"; // 󰝟 muted
 const BRIGHTNESS_GLYPH: &str = "f00de"; // 󰃞 brightness
+// Live sources' own glyphs (PR 9), nf-md.
+const CLOCK_GLYPH: &str = "f0150"; // clock-outline
+const CPU_GLYPH: &str = "f061a"; // cpu-64-bit
+const MEMORY_GLYPH: &str = "f035b"; // memory
+const BATTERY_GLYPH: &str = "f0079"; // battery
+const CHARGING_GLYPH: &str = "f0084"; // battery-charging
+const WORKSPACE_GLYPH: &str = "f056e"; // to check on the machine
+const COMMAND_GLYPH: &str = "f018d"; // console
 
 /// The glyph a volume dial's `$B1` panel shows when it has no icon: the mute glyph when
 /// muted, else the dial's own glyph, else a speaker (output) or a microphone (input).
@@ -335,7 +343,7 @@ impl Renderer {
                         let mut img = solid(size, bg);
                         imageops::overlay(
                             &mut img,
-                            &self.render_face(&f, style, inner, bg),
+                            &self.render_body(k, &f, st, style, inner, bg),
                             ((size - inner) / 2) as i64,
                             0,
                         );
@@ -346,12 +354,60 @@ impl Renderer {
                         draw_bar(&mut img, (bx, by, (s * 0.80) as u32, bh), p as f32 / 100.0, fg, bg.mix(fg, 0.22));
                         img
                     }
-                    None => self.render_face(&f, style, size, bg),
+                    None => self.render_body(k, &f, st, style, size, bg),
                 }
             }
             _ => unreachable!("a face is built exactly when a key is"),
         };
         if st.pressed { self.pressed(out, bg, size) } else { out }
+    }
+
+    /// Draw `face` for key `k`: the live layout when the key has `live` and isn't busy,
+    /// else the ordinary face. The one place the live layout lives; both of `render`'s
+    /// paths (the busy-bar one and the plain one) call it in place of `render_face`.
+    fn render_body(
+        &mut self,
+        k: &KeyConfig,
+        face: &Face,
+        st: &KeyStatus,
+        style: &Style,
+        size: u32,
+        bg: Rgb,
+    ) -> RgbaImage {
+        // The busy face wins over the live value.
+        if k.live.is_none() || matches!(st.state, crate::probe::Toggle::Busy(_)) {
+            return self.render_face(face, style, size, bg);
+        }
+        let text = st.live.as_ref().map_or("–", |l| l.text.as_str());
+        let charging = st.live.as_ref().is_some_and(|l| l.charging);
+        let own_glyph = face.glyph.filter(|g| !g.trim().is_empty());
+        if face.icon.is_some() || own_glyph.is_some() || charging {
+            // The value takes the label's place under the icon, on one line.
+            let line = text.replace('\n', " ");
+            let glyph =
+                if charging && face.icon.is_none() && own_glyph.is_none() { Some(CHARGING_GLYPH) } else { face.glyph };
+            let f = Face {
+                label: &line,
+                show_label: true,
+                icon: face.icon,
+                glyph,
+                background: face.background,
+                background_image: None,
+                label_color: face.label_color,
+            };
+            return self.render_face(&f, style, size, bg);
+        }
+        let mut img = solid(size, bg);
+        let s = size as f32;
+        let fg = self.label_color(Some(face), style, bg);
+        if face.show_label && !face.label.is_empty() {
+            // The label is a small caption; the value fills the area under it.
+            self.draw_line(&mut img, face.label, s * 0.14, s * 0.16, fg, true);
+            self.draw_block_in(&mut img, s * 0.28, s * 0.72, text, fg);
+        } else {
+            self.draw_block(&mut img, text, fg);
+        }
+        img
     }
 
     fn render_face(&mut self, face: &Face, style: &Style, size: u32, bg: Rgb) -> RgbaImage {
@@ -449,7 +505,8 @@ impl Renderer {
     }
 
     /// Render one 200×100 dial panel at native size. A volume dial uses Elgato's `$B1`
-    /// "Indicator" layout (icon left, value and groove bar right); everything else uses
+    /// "Indicator" layout (icon left, value and groove bar right); a live dial `$B1`, or
+    /// `$A1` (no bar) for a text value; everything else uses
     /// `$X1` "Icon" (title left, icon centred). `i` is the panel's index of `panels`,
     /// needed to slice the strip image.
     pub fn render_strip_panel(&mut self, cfg: &Config, i: u8, panels: u32, st: DialStatus) -> RgbaImage {
@@ -477,6 +534,17 @@ impl Renderer {
         let glyph_color =
             face.label_color.and_then(Rgb::parse).unwrap_or(if style.follow_theme { self.theme.accent } else { fg });
 
+        // A live dial shows its value in `$B1` (with a bar) or `$A1` (text only). A dash
+        // until the first value.
+        if let Some(live) = dial.and_then(|d| d.live.as_ref()) {
+            let shown = st.panel.live.as_ref();
+            let icon = self.live_icon(&face, live, shown.is_some_and(|l| l.charging), glyph_color);
+            let level = shown.map(|l| Level { value: l.bar.unwrap_or(0.0), text: l.text.clone(), muted: false });
+            let colors = B1Colors { title, value: fg, fill: fg, track: tone.mix(fg, 0.22) };
+            self.draw_b1(&mut img, &face, colors, want_label, icon, level.as_ref(), live.has_bar());
+            return img;
+        }
+
         // A volume or brightness dial shows its value in the $B1 layout.
         if let Some(src) = dial.and_then(|d| d.level_source()) {
             let icon = match src {
@@ -487,7 +555,7 @@ impl Renderer {
                 LevelSource::Brightness => self.brightness_icon(&face, glyph_color),
             };
             let bar = B1Colors { title, value: fg, fill: fg, track: tone.mix(fg, 0.22) };
-            self.draw_b1(&mut img, &face, bar, want_label, icon, st.panel.level.as_ref());
+            self.draw_b1(&mut img, &face, bar, want_label, icon, st.panel.level.as_ref(), true);
             return img;
         }
 
@@ -527,7 +595,28 @@ impl Renderer {
         self.glyph(glyph, (STRIP_ICON_PX as f32 * 0.86) as u32, color)
     }
 
-    /// Draw the `$B1` "Indicator" layout: title (right), icon (left), value and groove bar.
+    /// The icon for a live dial's panel: the user's icon, else their glyph, else the
+    /// source's own (a charging battery while charging).
+    fn live_icon(&mut self, face: &Face, live: &Live, charging: bool, color: Rgb) -> Option<RgbaImage> {
+        if let Some(p) = face.icon {
+            return self.icon(&paths::resolve(p), STRIP_ICON_PX);
+        }
+        let source = match live {
+            Live::Clock { .. } => CLOCK_GLYPH,
+            Live::Cpu => CPU_GLYPH,
+            Live::Memory => MEMORY_GLYPH,
+            Live::Battery if charging => CHARGING_GLYPH,
+            Live::Battery => BATTERY_GLYPH,
+            Live::Workspace => WORKSPACE_GLYPH,
+            Live::Command { .. } => COMMAND_GLYPH,
+        };
+        let glyph = face.glyph.filter(|g| !g.trim().is_empty()).unwrap_or(source);
+        self.glyph(glyph, (STRIP_ICON_PX as f32 * 0.86) as u32, color)
+    }
+
+    /// Draw the `$B1` "Indicator" layout: title (right), icon (left), value and groove
+    /// bar. Without `bar` it is `$A1` "Value": the same, with no bar.
+    #[allow(clippy::too_many_arguments)]
     fn draw_b1(
         &self,
         img: &mut RgbaImage,
@@ -536,6 +625,7 @@ impl Renderer {
         want_label: bool,
         icon: Option<RgbaImage>,
         level: Option<&Level>,
+        bar: bool,
     ) {
         if want_label {
             self.draw_text_in(img, X1_TITLE, STRIP_TITLE_PX, Align::Left, face.label, colors.title, true);
@@ -553,7 +643,9 @@ impl Renderer {
             None => ("–", 0.0),
         };
         self.draw_text_in(img, B1_VALUE, B1_VALUE_PX, Align::Right, text, colors.value, true);
-        draw_bar(img, B1_BAR, value, colors.fill, colors.track);
+        if bar {
+            draw_bar(img, B1_BAR, value, colors.fill, colors.track);
+        }
     }
 
     /// Pressed state: face shrinks inside an accent ring for tactile feedback.
@@ -693,21 +785,28 @@ impl Renderer {
 
     /// Label without an icon: large, centred, wrapped onto up to three lines.
     fn draw_block(&self, img: &mut RgbaImage, text: &str, color: Rgb) {
+        let height = img.width() as f32;
+        self.draw_block_in(img, 0.0, height, text, color);
+    }
+
+    /// `draw_block` in the band `top..top + height` of the key. `\n` starts a new line
+    /// (a clock's `%n`); each part is wrapped. Sizes still follow the key's width.
+    fn draw_block_in(&self, img: &mut RgbaImage, top: f32, height: f32, text: &str, color: Rgb) {
         let Some(font) = &self.font else { return };
         let s = img.width() as f32;
         let max_w = s * 0.90;
         let mut px = s * 0.26;
         let lines = loop {
-            let lines = wrap(font, px, text, max_w);
+            let lines: Vec<String> = text.split('\n').flat_map(|l| wrap(font, px, l, max_w)).collect();
             let fits = lines.iter().all(|l| Self::text_width(font, px, l) <= max_w)
-                && lines.len() as f32 * px * 1.1 <= s * 0.9;
+                && lines.len() as f32 * px * 1.1 <= height * 0.9;
             if fits || px <= s * 0.12 {
                 break lines;
             }
             px -= 0.5;
         };
         let lh = px * 1.1;
-        let top = (s - lh * lines.len() as f32) / 2.0;
+        let top = top + (height - lh * lines.len() as f32) / 2.0;
         for (i, line) in lines.iter().enumerate() {
             self.draw_line(img, line, px, top + lh * (i as f32 + 0.5), color, false);
         }
@@ -993,11 +1092,11 @@ fn load_font(pattern: &str) -> Option<FontVec> {
 #[cfg(test)]
 mod tests {
     use super::{
-        B1_BAR, DialStatus, Level, PanelStatus, Renderer, RgbaImage, TEST_FONT, X1_ICON, X1_TITLE, fit_cover,
-        glyph_char, load_cover, tap_to_dial,
+        B1_BAR, B1_VALUE, DialStatus, Level, LiveShow, PanelStatus, Renderer, RgbaImage, TEST_FONT, X1_ICON, X1_TITLE,
+        fit_cover, glyph_char, load_cover, tap_to_dial,
     };
     use crate::KeyStatus;
-    use crate::config::{Action, AudioDevice, BusyFace, Config, DialConfig, KeyConfig, OnFace, Style};
+    use crate::config::{Action, AudioDevice, BusyFace, Config, DialConfig, KeyConfig, Live, OnFace, Style};
     use crate::probe::Toggle;
     use crate::render::ON_TINT;
     use crate::theme::Rgb;
@@ -1673,5 +1772,128 @@ mod tests {
         let own = DialConfig { glyph: Some("A".into()), ..volume_dial() };
         assert_eq!(volume_glyph(&own.face(), AudioDevice::Output, false), "A");
         assert_eq!(INPUT_GLYPH, "f036c");
+    }
+
+    fn live(text: &str) -> Option<LiveShow> {
+        Some(LiveShow { text: text.into(), bar: None, charging: false })
+    }
+
+    /// Whether any pixel in rows `y0..y1` differs from `bg`.
+    fn ink_rows(img: &RgbaImage, y0: u32, y1: u32, bg: Rgba<u8>) -> bool {
+        (y0..y1).any(|y| (0..img.width()).any(|x| *img.get_pixel(x, y) != bg))
+    }
+
+    #[test]
+    fn dial_live_text_is_a1_without_bar() {
+        let mut r = renderer_with_font();
+        let mut cfg = Config { style: test_style(), ..Default::default() };
+        cfg.dial_mut(0).live = Some(Live::Clock { format: "%H:%M".into() });
+        let st = DialStatus {
+            panel: PanelStatus {
+                // Test texts use "A": the fixture font is ASCII plus – and ….
+                live: live("AA"),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let panel = r.render_strip_panel(&cfg, 0, 4, st);
+        let bg = *panel.get_pixel(2, 2);
+        let (bx, by, bw, bh) = B1_BAR;
+        // $A1: nothing is drawn where $B1's bar would be.
+        for y in by..by + bh {
+            for x in bx..bx + bw {
+                assert_eq!(*panel.get_pixel(x, y), bg, "bar pixel at {x},{y}");
+            }
+        }
+        // The value is drawn.
+        let (vx, vy, vw, vh) = B1_VALUE;
+        assert!((vy..vy + vh).any(|y| (vx..vx + vw).any(|x| *panel.get_pixel(x, y) != bg)));
+    }
+
+    #[test]
+    fn dial_live_level_is_b1_with_bar() {
+        let mut r = renderer_with_font();
+        let mut cfg = Config { style: test_style(), ..Default::default() };
+        cfg.dial_mut(0).live = Some(Live::Cpu);
+        let shown = LiveShow { text: "50%".into(), bar: Some(0.5), charging: false };
+        let st = DialStatus { panel: PanelStatus { live: Some(shown), ..Default::default() }, ..Default::default() };
+        let panel = r.render_strip_panel(&cfg, 0, 4, st);
+        let bg = *panel.get_pixel(2, 2);
+        let (bx, by, bw, bh) = B1_BAR;
+        assert!((by..by + bh).any(|y| (bx..bx + bw).any(|x| *panel.get_pixel(x, y) != bg)), "the bar is drawn");
+        // The fill reaches a quarter of the way, not three quarters.
+        let mid = by + bh / 2;
+        assert_ne!(*panel.get_pixel(bx + bw / 4, mid), *panel.get_pixel(bx + bw * 3 / 4, mid));
+    }
+
+    #[test]
+    fn live_key_value_centred_without_icon() {
+        let style = test_style();
+        let mut r = renderer_with_font();
+        let k = KeyConfig { live: Some(Live::Cpu), ..KeyConfig::new(0) };
+        let img = r.render(Some(&k), &style, 72, &KeyStatus { live: live("AA"), ..KeyStatus::default() });
+        // The same as a plain key labelled with the value.
+        let plain = KeyConfig { label: "AA".into(), ..KeyConfig::new(0) };
+        assert_eq!(img, r.render(Some(&plain), &style, 72, &KeyStatus::default()));
+    }
+
+    #[test]
+    fn live_key_label_is_caption() {
+        let style = test_style();
+        let mut r = renderer_with_font();
+        let k = KeyConfig { label: "A".into(), live: Some(Live::Cpu), ..KeyConfig::new(0) };
+        let img = r.render(Some(&k), &style, 100, &KeyStatus { live: live("AA"), ..KeyStatus::default() });
+        let bg = *img.get_pixel(0, 0);
+        assert!(ink_rows(&img, 0, 28, bg), "the caption is drawn in the top band");
+        assert!(ink_rows(&img, 28, 100, bg), "the value is drawn below it");
+        // Without the caption the value is centred on the whole key: different.
+        let bare = KeyConfig { live: Some(Live::Cpu), ..KeyConfig::new(0) };
+        assert_ne!(img, r.render(Some(&bare), &style, 100, &KeyStatus { live: live("AA"), ..KeyStatus::default() }));
+    }
+
+    #[test]
+    fn live_key_with_glyph_puts_value_in_label_slot() {
+        let style = test_style();
+        let mut r = renderer_with_font();
+        let k = KeyConfig { label: "Z".into(), glyph: Some("A".into()), live: Some(Live::Cpu), ..KeyConfig::new(0) };
+        let img = r.render(Some(&k), &style, 100, &KeyStatus { live: live("AA"), ..KeyStatus::default() });
+        let bg = *img.get_pixel(0, 0);
+        assert!(ink_rows(&img, 70, 100, bg), "the value is drawn in the label slot");
+        // The same as a plain key with the glyph and the value as its label.
+        let plain = KeyConfig { label: "AA".into(), glyph: Some("A".into()), ..KeyConfig::new(0) };
+        assert_eq!(img, r.render(Some(&plain), &style, 100, &KeyStatus::default()));
+    }
+
+    #[test]
+    fn busy_live_key_shows_busy_face() {
+        let style = test_style();
+        let mut r = renderer_with_font();
+        let plain = KeyConfig { label: "A".into(), busy_while_running: true, ..KeyConfig::new(0) };
+        let k = KeyConfig { live: Some(Live::Cpu), ..plain.clone() };
+        let busy = KeyStatus { state: Toggle::Busy("AA".into()), live: live("A"), ..KeyStatus::default() };
+        assert_eq!(r.render(Some(&k), &style, 72, &busy), r.render(Some(&plain), &style, 72, &busy));
+    }
+
+    #[test]
+    fn draw_block_honours_newline() {
+        let r = renderer_with_font();
+        let bg = Rgba([0, 0, 0, 255]);
+        let mut img = RgbaImage::from_pixel(100, 100, bg);
+        r.draw_block(&mut img, "A\nA", Rgb(255, 255, 255));
+        let rows: Vec<bool> = (0..100).map(|y| ink_rows(&img, y, y + 1, bg)).collect();
+        // Count runs of inked rows: two lines, two bands.
+        let bands = rows.windows(2).filter(|w| !w[0] && w[1]).count() + usize::from(rows[0]);
+        assert_eq!(bands, 2, "{rows:?}");
+    }
+
+    #[test]
+    fn live_without_value_shows_dash() {
+        let style = test_style();
+        let mut r = renderer_with_font();
+        let k = KeyConfig { live: Some(Live::Memory), ..KeyConfig::new(0) };
+        assert_eq!(
+            r.render(Some(&k), &style, 72, &KeyStatus::default()),
+            r.render(Some(&k), &style, 72, &KeyStatus { live: live("–"), ..KeyStatus::default() })
+        );
     }
 }
