@@ -11,6 +11,8 @@ use omadeck_core::{Config, DeckInfo, DialStatus, KeyStatus, PANEL_W, Renderer};
 
 /// How long a panel stays highlighted after a tap on the strip.
 pub const DIAL_FLASH: Duration = Duration::from_millis(150);
+/// How long a key stays drawn pressed after a ctl press.
+pub const KEY_FLASH: Duration = Duration::from_millis(150);
 
 pub struct Deck {
     pub dev: Arc<StreamDeck>,
@@ -21,6 +23,9 @@ pub struct Deck {
     pub dial_pressed: Vec<bool>,
     /// When each dial's panel was tapped (the tap time, not a deadline), while it flashes.
     pub flash_until: Vec<Option<Instant>>,
+    /// When each key was pressed through the socket (the press time, as `flash_until`),
+    /// while it is drawn pressed. A ctl press has no `ButtonUp` to end it.
+    pub key_flash: Vec<Option<Instant>>,
     /// Panels to repaint at the end of this pass (`flush_dirty`), however many changes
     /// dirtied them.
     pub dirty_panels: Vec<bool>,
@@ -60,9 +65,11 @@ impl Deck {
         }
     }
 
-    /// When the earliest tap flash ends, if any is showing.
+    /// When the earliest tap or key flash ends, if any is showing.
     pub fn flash_deadline(&self) -> Option<Instant> {
-        self.flash_until.iter().flatten().map(|t| *t + DIAL_FLASH).min()
+        let panels = self.flash_until.iter().flatten().map(|t| *t + DIAL_FLASH);
+        let keys = self.key_flash.iter().flatten().map(|t| *t + KEY_FLASH);
+        panels.chain(keys).min()
     }
 
     /// End the tap flashes that have run their time; their panels repaint this pass.
@@ -74,6 +81,25 @@ impl Deck {
             }
         }
     }
+
+    /// End the key flashes that have run their time and mark those keys dirty.
+    pub fn expire_key_flashes(&mut self, now: Instant) {
+        for i in take_ended(&mut self.key_flash, now, KEY_FLASH) {
+            self.mark_key_dirty(i);
+        }
+    }
+}
+
+/// Clear the flashes older than `len` and return their indices. Pure, for the test.
+fn take_ended(flashes: &mut [Option<Instant>], now: Instant, len: Duration) -> Vec<u8> {
+    let mut ended = Vec::new();
+    for (i, f) in flashes.iter_mut().enumerate() {
+        if f.is_some_and(|t| now.duration_since(t) >= len) {
+            *f = None;
+            ended.push(i as u8);
+        }
+    }
+    ended
 }
 
 /// Open the first Stream Deck found. Doesn't paint it: the daemon does, with its values.
@@ -103,6 +129,7 @@ pub fn open(hid: &mut HidApi) -> Option<Deck> {
         info,
         dial_pressed: vec![false; n_dials],
         flash_until: vec![None; n_dials],
+        key_flash: vec![None; n_keys],
         dirty_panels: vec![false; n_dials],
         dirty_keys: vec![false; n_keys],
     };
@@ -213,4 +240,20 @@ fn write_key(d: &Deck, cfg: &Config, page: Option<&str>, renderer: &mut Renderer
     let face = renderer.render(cfg.key(page, i), &cfg.style, d.info.key_size, st);
     d.dev.set_button_image(i, image::DynamicImage::ImageRgba8(face))?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn key_flashes_end_after_their_time() {
+        let t0 = Instant::now();
+        let ms = Duration::from_millis;
+        let mut flashes = vec![Some(t0), None, Some(t0 + ms(100))];
+        assert!(take_ended(&mut flashes, t0 + ms(149), KEY_FLASH).is_empty());
+        assert_eq!(take_ended(&mut flashes, t0 + ms(150), KEY_FLASH), vec![0]);
+        assert_eq!(flashes, vec![None, None, Some(t0 + ms(100))]);
+        assert_eq!(take_ended(&mut flashes, t0 + ms(250), KEY_FLASH), vec![2]);
+    }
 }
