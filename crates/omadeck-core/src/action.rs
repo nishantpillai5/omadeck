@@ -26,6 +26,8 @@ pub fn run(action: &Action) -> Result<()> {
         Action::Hyprland { dispatch } => hypr_dispatch(dispatch),
         Action::Volume { device, change, mute } => run_volume(*device, *change, *mute),
         Action::AppVolume { change, mute, .. } => run_app_volume(action, i32::from(*change), *mute),
+        // Task 2 fills these in.
+        Action::Multi { .. } | Action::Delay { .. } => Ok(()),
         // Refused above; the daemon runs these itself.
         Action::Page { .. } | Action::Back | Action::PageStep { .. } | Action::Brightness { .. } => Ok(()),
     }
