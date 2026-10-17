@@ -12,8 +12,8 @@ use omadeck_core::ipc::{self, Command as DaemonCommand, Event};
 use omadeck_core::paths::FileStamp;
 use omadeck_core::probe::{self, Values};
 use omadeck_core::{
-    Action, Config, DeckInfo, DialConfig, DialStatus, Direction, HOME, KeyConfig, Keys, PanelStatus, Renderer, device,
-    paths, tap_to_dial,
+    Action, Config, DeckInfo, DialConfig, DialStatus, Direction, FaceTab, HOME, KeyConfig, KeyStatus, Keys,
+    PanelStatus, Renderer, device, paths, tap_to_dial,
 };
 
 use crate::{editor, media};
@@ -147,6 +147,11 @@ pub struct App {
     /// What the daemon last said each strip panel shows (`Event::DialStatus`). Empty with
     /// no daemon or no deck; the preview then builds panels itself.
     panel_status: RefCell<std::collections::HashMap<u8, PanelStatus>>,
+    /// What the daemon last said each key shows (`Event::KeyState`), per (page, key);
+    /// empty with no daemon. A key not here shows its off face.
+    key_states: RefCell<std::collections::HashMap<(Option<String>, u8), KeyStatus>>,
+    /// Which face the key editor is showing (its Off | On | Busy buttons).
+    pub face_tab: Cell<FaceTab>,
     /// The daemon's live brightness (`Event::Brightness`); `None` with no daemon.
     live_brightness: Cell<Option<u8>>,
     /// The settings slider, so `Event::Brightness` can move it.
@@ -341,6 +346,8 @@ impl App {
             renderer: RefCell::new(renderer),
             deck: RefCell::new(deck),
             panel_status: RefCell::default(),
+            key_states: RefCell::default(),
+            face_tab: Cell::default(),
             live_brightness: Cell::new(None),
             brightness_scale: RefCell::default(),
             syncing_brightness: Cell::new(false),
@@ -582,7 +589,14 @@ impl App {
         let Some((button, image)) = keys.get(i as usize) else { return };
         let cfg = self.config.borrow();
         let key = cfg.key(self.page.borrow().as_deref(), i);
-        let face = self.renderer.borrow_mut().render(key, &cfg.style, PREVIEW_PX, &omadeck_core::KeyStatus::default());
+        // The selected key previews the face tab being edited; the rest show what the
+        // daemon says (off with no daemon).
+        let st = if self.selected.get() == Some(Selection::Key(i)) {
+            self.preview_status(i)
+        } else {
+            self.key_states.borrow().get(&(self.page.borrow().clone(), i)).cloned().unwrap_or_default()
+        };
+        let face = self.renderer.borrow_mut().render(key, &cfg.style, PREVIEW_PX, &st);
         image.set_paintable(Some(&media::texture(face)));
         let tip = match key.filter(|k| !k.is_blank()) {
             Some(k) if !k.label.is_empty() => format!("{} — {}", k.label, k.action.summary()),
@@ -608,6 +622,34 @@ impl App {
         self.refresh_key(i);
         self.schedule_save();
         self.select(Some(Selection::Key(i)));
+    }
+
+    /// What the selected key's preview shows: the face tab being edited (On and Busy
+    /// pin that face, so you can design it), otherwise what the daemon last said. With
+    /// no daemon, no states: the off face.
+    pub fn preview_status(&self, i: u8) -> KeyStatus {
+        let tab = self.face_tab.get();
+        let cfg = self.config.borrow();
+        let key = cfg.key(self.page.borrow().as_deref(), i);
+        if tab != FaceTab::Off {
+            let mut st = probe::key_status(key, &Values::default(), false);
+            st.state = tab.preview();
+            return st;
+        }
+        self.key_states
+            .borrow()
+            .get(&(self.page.borrow().clone(), i))
+            .cloned()
+            .unwrap_or_else(|| probe::key_status(key, &Values::default(), false))
+    }
+
+    /// The key editor's face tab moved: the preview and the appearance rows follow.
+    pub fn set_face_tab(self: &Rc<Self>, tab: FaceTab) {
+        self.face_tab.set(tab);
+        if let Some(Selection::Key(i)) = self.selected.get() {
+            self.refresh_key(i);
+        }
+        self.rebuild_editor();
     }
 
     pub fn refresh_all(&self) {
@@ -1490,9 +1532,11 @@ impl App {
                 self.banner.set_revealed(true);
                 self.live_brightness.set(None);
                 self.panel_status.borrow_mut().clear();
+                self.key_states.borrow_mut().clear();
                 let b = self.config.borrow().brightness;
                 self.sync_slider(b);
                 self.refresh_strip();
+                self.refresh_all();
             }
             Msg::Event(Event::Connected { deck }) => {
                 self.connected.set(true);
@@ -1519,7 +1563,9 @@ impl App {
             Msg::Event(Event::Disconnected) => {
                 self.connected.set(false);
                 self.panel_status.borrow_mut().clear();
+                self.key_states.borrow_mut().clear();
                 self.refresh_strip();
+                self.refresh_all();
             }
             // Follow the deck: pressing a page key there shows that page here too.
             Msg::Event(Event::PageChanged { page }) => self.show_page(page, false),
@@ -1538,10 +1584,34 @@ impl App {
                 }
             }
             Msg::Event(Event::ActionFailed { index, page, message }) => {
-                let _ = page;
-                self.toast(&format!("Key {}: {message}", index + 1));
+                let text = if page == *self.page.borrow() {
+                    format!("Key {}: {message}", index + 1)
+                } else {
+                    format!("Key {} on {}: {message}", index + 1, page.as_deref().unwrap_or(HOME))
+                };
+                self.toast(&text);
             }
-            Msg::Event(Event::KeyState { .. }) => {}
+            Msg::Event(Event::KeyState { page, index, status }) => {
+                let id = (page, index);
+                let mut states = self.key_states.borrow_mut();
+                if status == KeyStatus::default() {
+                    states.remove(&id);
+                } else {
+                    states.insert(id.clone(), status);
+                }
+                drop(states);
+                // Keys on the page being edited repaint; so does the selected key's
+                // preview (it mirrors the daemon's state while on the Off tab).
+                let page = self.page.borrow().clone();
+                if id.0 == page {
+                    self.refresh_key(index);
+                }
+                if let Some(Selection::Key(i)) = self.selected.get()
+                    && (page, i) == id
+                {
+                    self.refresh_key(i);
+                }
+            }
             Msg::Event(Event::DialDown { index }) => {
                 if let Some((b, _)) = self.dials.borrow().get(index as usize) {
                     b.add_css_class("pressed");
