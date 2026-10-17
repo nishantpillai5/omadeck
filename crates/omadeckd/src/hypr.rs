@@ -18,10 +18,8 @@ use std::time::{Duration, Instant};
 pub struct ActiveWindow {
     /// Without a `0x` prefix, lowercase, so event and JSON forms compare equal.
     pub address: String,
-    #[allow(dead_code)]
     pub class: String,
     pub title: String,
-    #[allow(dead_code)]
     pub pid: Option<u32>,
 }
 

@@ -14,7 +14,7 @@ use omadeck_core::proc;
 use omadeck_core::state::State;
 use omadeck_core::{
     Action, AudioDevice, Config, DialConfig, KeyConfig, KeyStatus, Level, LevelSource, Live, PanelStatus, Renderer,
-    action, tap_to_dial,
+    action, audio, tap_to_dial,
 };
 
 use crate::deck::{self, Deck};
@@ -368,7 +368,18 @@ impl Daemon {
         for ev in events {
             match ev {
                 HyprEvent::Workspace { name, .. } => self.apply_value(Probe::Workspace, Some(Value::Text(name)), 0),
-                HyprEvent::ActiveWindow(w) => self.rt.window = w,
+                HyprEvent::ActiveWindow(w) => {
+                    // A retitle of the focused window comes as an `ActiveWindow` too: only
+                    // another window is news (each would re-read `pactl`).
+                    if self.rt.window.as_ref().map(window_identity) != w.as_ref().map(window_identity) {
+                        // Nothing focused included: the watcher only remembers it when no
+                        // focused dial is watched, and a focused dial with no window falls
+                        // back to its sticky app.
+                        let focus = w.as_ref().map(|w| audio::Window { pid: w.pid, class: w.class.clone() });
+                        let _ = self.watcher.cmd.send(WatchCmd::Focus(focus));
+                    }
+                    self.rt.window = w;
+                }
             }
         }
     }
@@ -802,6 +813,13 @@ impl Daemon {
                 let _ = self.watcher.cmd.send(WatchCmd::Volume { device: *device, change, mute: *mute });
                 Ok(false)
             }
+            Action::AppVolume { change, mute, .. } => {
+                let Some(query) = act.app_query() else { anyhow::bail!("no app set") };
+                let change = if *mute { 0 } else { i32::from(action::folded_volume(*change, steps)) };
+                // Runs on the watcher, after any earlier change, and is read back there.
+                let _ = self.watcher.cmd.send(WatchCmd::AppVolume { query, change, mute: *mute });
+                Ok(false)
+            }
             Action::Hyprland { dispatch } => {
                 // Queued on the worker, in order behind earlier ones: `hyprctl` waits for
                 // Hyprland, which must never stall the deck. Only an empty dispatcher fails
@@ -912,6 +930,11 @@ impl Daemon {
     }
 }
 
+/// What makes a focused window another one: a retitle keeps all three.
+fn window_identity(w: &hypr::ActiveWindow) -> (&str, &str, Option<u32>) {
+    (&w.address, &w.class, w.pid)
+}
+
 /// What a volume panel shows for a read: the read plus what is still in flight (`f`,
 /// already net of what this read confirmed), so the bar never drops to a value the
 /// queued changes haven't reached yet. The mute is the read's: a level change doesn't
@@ -939,8 +962,14 @@ fn config_probes(cfg: &Config, n_dials: usize) -> Vec<Probe> {
     };
     for i in 0..n_dials {
         let dial = cfg.dial(i as u8);
-        if let Some(LevelSource::Volume(dev)) = dial.and_then(DialConfig::level_source) {
-            add(Probe::Volume(dev));
+        match dial.and_then(DialConfig::level_source) {
+            Some(LevelSource::Volume(dev)) => add(Probe::Volume(dev)),
+            Some(LevelSource::App) => {
+                if let Some(q) = dial.and_then(DialConfig::app_query) {
+                    add(Probe::AppVolume(q));
+                }
+            }
+            Some(LevelSource::Brightness) | None => {}
         }
         if let Some(l) = dial.and_then(|d| d.live.as_ref()) {
             add(l.probe());
@@ -978,6 +1007,43 @@ mod tests {
         probe::{FAST_WINDOW, SETTLE},
         proc,
     };
+
+    #[test]
+    fn config_probes_keeps_app_dials() {
+        let cfg = Config::parse(
+            r#"
+[[dial]]
+index = 0
+[dial.turn_right]
+type = "app_volume"
+app = "spotify"
+change = 5
+
+[[dial]]
+index = 1
+[dial.turn_right]
+type = "app_volume"
+focused = true
+change = 5
+"#,
+        )
+        .unwrap();
+        use omadeck_core::audio::AppQuery;
+        let all = config_probes(&cfg, 4);
+        assert!(all.contains(&Probe::AppVolume(AppQuery::Named("spotify".into()))));
+        assert!(all.contains(&Probe::AppVolume(AppQuery::Focused)));
+        // Only the dials the deck has.
+        assert_eq!(config_probes(&cfg, 1), vec![Probe::AppVolume(AppQuery::Named("spotify".into()))]);
+    }
+
+    #[test]
+    fn app_volume_without_app_is_an_error() {
+        // What `dispatch` bails on: no app and not following focus.
+        let a = Action::AppVolume { app: "  ".into(), focused: false, change: 5, mute: false };
+        assert_eq!(a.app_query(), None);
+        let a = Action::AppVolume { app: String::new(), focused: true, change: 5, mute: false };
+        assert!(a.app_query().is_some());
+    }
 
     #[test]
     fn settle_expect_ignores_contradiction_until_expiry() {
