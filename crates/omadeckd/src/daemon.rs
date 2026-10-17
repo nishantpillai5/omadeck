@@ -13,12 +13,13 @@ use omadeck_core::probe::{self, FAST_WINDOW, Probe, SETTLE, Toggle, Value, Value
 use omadeck_core::proc;
 use omadeck_core::state::State;
 use omadeck_core::{
-    Action, AudioDevice, Config, DialConfig, KeyConfig, KeyStatus, Level, LevelSource, PanelStatus, Renderer, action,
-    tap_to_dial,
+    Action, AudioDevice, Config, DialConfig, KeyConfig, KeyStatus, Level, LevelSource, Live, PanelStatus, Renderer,
+    action, tap_to_dial,
 };
 
 use crate::deck::{self, Deck};
 use crate::hub::Hub;
+use crate::hypr::{self, HyprEvent};
 use crate::hypr_worker::{HyprJob, HyprWorker};
 use crate::nav::Nav;
 use crate::saver::StateSaver;
@@ -90,6 +91,9 @@ pub struct Runtime {
     settle: HashMap<Probe, Settle>,
     /// `busy_while_running` commands, per key.
     pub jobs: HashMap<KeyId, Running>,
+    /// The focused Hyprland window, from the event listener.
+    #[allow(dead_code)]
+    pub window: Option<hypr::ActiveWindow>,
 }
 
 /// What key `i` on `page` shows now: core's `key_status` (the ONE builder) with the two
@@ -188,6 +192,9 @@ pub struct Daemon {
     pub saver: StateSaver,
     /// Runs every Hyprland dispatch off the loop, in order.
     pub hypr: HyprWorker,
+    /// Hyprland's events (the active workspace and window); `None` outside Hyprland.
+    /// Read only; dispatches go through `hypr`.
+    pub hypr_events: Option<std::sync::mpsc::Receiver<HyprEvent>>,
     pub rt: Runtime,
     pub deck: Option<Deck>,
     /// What was last published per strip panel (`Event::DialStatus`), so only changes go out.
@@ -224,6 +231,7 @@ impl Daemon {
             watcher,
             saver,
             hypr: HyprWorker::start(),
+            hypr_events: hypr::start(),
             rt,
             deck: None,
             published: HashMap::new(),
@@ -349,6 +357,22 @@ impl Daemon {
         }
     }
 
+    /// Take the Hyprland listener's events. With no deck too: the workspace lands in
+    /// `rt.values`, ready for the next attach.
+    pub fn apply_hypr(&mut self) {
+        // Collect first: `apply_value` takes `&mut self`.
+        let events: Vec<HyprEvent> = match &self.hypr_events {
+            Some(rx) => rx.try_iter().collect(),
+            None => return,
+        };
+        for ev in events {
+            match ev {
+                HyprEvent::Workspace { name, .. } => self.apply_value(Probe::Workspace, Some(Value::Text(name)), 0),
+                HyprEvent::ActiveWindow(w) => self.rt.window = w,
+            }
+        }
+    }
+
     /// A read-back from the watcher: `applied` of what we sent is confirmed by this read.
     /// What's still in flight hasn't happened yet, so it's shown on top of the read — the
     /// bar only ever moves forward while a spin is in flight, and settles as the queue
@@ -402,7 +426,10 @@ impl Daemon {
         let page = self.nav.current().map(str::to_string);
         let n = self.key_count();
         for i in 0..n {
-            if self.cfg.key(page.as_deref(), i).and_then(KeyConfig::state_probe).as_ref() == Some(probe) {
+            let k = self.cfg.key(page.as_deref(), i);
+            if k.and_then(KeyConfig::state_probe).as_ref() == Some(probe)
+                || k.and_then(|k| k.live.as_ref()).map(Live::probe).as_ref() == Some(probe)
+            {
                 self.mark_key(page.as_deref(), i);
             }
         }
@@ -436,7 +463,11 @@ impl Daemon {
         let page = self.nav.current().map(str::to_string);
         let mut ids: HashSet<KeyId> = self.published_keys.keys().chain(self.rt.jobs.keys()).cloned().collect();
         for i in 0..self.key_count() {
-            if self.cfg.key(page.as_deref(), i).is_some_and(|k| k.on.is_some() || k.busy_while_running) {
+            if self
+                .cfg
+                .key(page.as_deref(), i)
+                .is_some_and(|k| k.on.is_some() || k.busy_while_running || k.live.is_some())
+            {
                 ids.insert(KeyId { page: page.clone(), index: i });
             }
         }
@@ -455,7 +486,8 @@ impl Daemon {
     }
 
     /// What a reload keeps of the toggle state: flips of keys that are still press
-    /// toggles, settles and values of probes the config still shows.
+    /// toggles, settles and values of probes the config still shows, and always the
+    /// workspace (nothing re-reads it, and the listener sends only changes).
     fn keep_toggle_state(&mut self) {
         retain_flips(&self.cfg, &mut self.rt.flipped);
         let n_dials = self.deck.as_ref().map_or(0, |d| d.info.dials as usize);
@@ -464,7 +496,7 @@ impl Daemon {
         // Values: the dials' probes plus every key's, on any page, so a page you return
         // to shows the last known faces at once.
         let all = config_probes(&self.cfg, n_dials);
-        self.rt.values.probes.retain(|p, _| all.contains(p));
+        self.rt.values.probes.retain(|p, _| *p == Probe::Workspace || all.contains(p));
     }
 
     /// The next moment something is due: a tap flash ending, the post-connect repaint, a
@@ -617,7 +649,12 @@ impl Daemon {
             }
             return; // the toggle's state catches up when the job ends (`finish_job`)
         }
-        if !self.run_input(Source::Key(i), &act, 1) || k.on.is_none() {
+        let ran = self.run_input(Source::Key(i), &act, 1);
+        // A live command key shows what the press changed (e.g. `playerctl status`) at once.
+        if ran && let Some(p @ Probe::Output { .. }) = k.live.as_ref().map(Live::probe) {
+            let _ = self.watcher.cmd.send(WatchCmd::Refresh(p));
+        }
+        if !ran || k.on.is_none() {
             return;
         }
         self.after_toggle_press(&id, &k, before);
@@ -895,12 +932,18 @@ fn retain_flips(cfg: &Config, flipped: &mut HashSet<KeyId>) {
 /// Every probe the config can show: the dials' and every key's, on any page.
 fn config_probes(cfg: &Config, n_dials: usize) -> Vec<Probe> {
     let mut out = Vec::new();
+    let mut add = |p: Probe| {
+        if !out.contains(&p) {
+            out.push(p);
+        }
+    };
     for i in 0..n_dials {
-        if let Some(LevelSource::Volume(dev)) = cfg.dial(i as u8).and_then(DialConfig::level_source) {
-            let p = Probe::Volume(dev);
-            if !out.contains(&p) {
-                out.push(p);
-            }
+        let dial = cfg.dial(i as u8);
+        if let Some(LevelSource::Volume(dev)) = dial.and_then(DialConfig::level_source) {
+            add(Probe::Volume(dev));
+        }
+        if let Some(l) = dial.and_then(|d| d.live.as_ref()) {
+            add(l.probe());
         }
     }
     let mut pages: Vec<Option<&str>> = vec![None];
@@ -908,10 +951,11 @@ fn config_probes(cfg: &Config, n_dials: usize) -> Vec<Probe> {
     for page in pages {
         if let Some(ks) = cfg.page(page) {
             for k in ks.iter() {
-                if let Some(p) = k.state_probe()
-                    && !out.contains(&p)
-                {
-                    out.push(p);
+                if let Some(p) = k.state_probe() {
+                    add(p);
+                }
+                if let Some(l) = &k.live {
+                    add(l.probe());
                 }
             }
         }
@@ -1114,5 +1158,32 @@ mod tests {
         let shown = settle_volume(10, &muted);
         assert!(shown.muted);
         assert_eq!(shown.text, "Muted");
+    }
+
+    #[test]
+    fn config_probes_include_live_on_every_page() {
+        let cfg = Config::parse(
+            r#"
+[[key]]
+index = 0
+live = { source = "cpu" }
+
+[[page]]
+name = "Other"
+[[page.key]]
+index = 3
+live = { source = "command", command = "date" }
+
+[[dial]]
+index = 1
+live = { source = "battery" }
+"#,
+        )
+        .unwrap();
+        let all = config_probes(&cfg, 4);
+        assert!(all.contains(&Probe::Cpu));
+        assert!(all.contains(&Probe::Battery));
+        assert!(all.contains(&Probe::Output { command: "date".into(), interval_ms: 5000 }));
+        assert!(!config_probes(&cfg, 0).contains(&Probe::Battery), "only the dials the deck has");
     }
 }
