@@ -154,6 +154,31 @@ glyph = "f036d"
 # label = "VPN on"
 # state = "nmcli -t -f TYPE connection show --active | grep -q vpn"
 
+# Live keys: a [key.live] table makes the key show a value the daemon keeps up to
+# date: the time ("clock", strftime `format`, default "%H:%M"), "cpu", "memory",
+# "battery", the active Hyprland "workspace", or a "command"'s first output line,
+# re-run every `interval` seconds (default 5). The key's action still runs on press;
+# its label becomes a small caption above the value.
+# [[key]]
+# index = 7
+# label = "CPU"
+# action = { type = "app", command = "omarchy launch-or-focus-tui btop" }
+# [key.live]
+# source = "cpu"
+#
+# [[key]]
+# index = 8
+# [key.live]
+# source = "clock"
+# format = "%H:%M%n%a %d"      # the time, and the day under it
+#
+# [[key]]
+# index = 9
+# [key.live]
+# source = "command"
+# command = "curl -s 'wttr.in/?format=%t'"
+# interval = 900
+
 # The touch strip's background image (Stream Deck +): one image across all the
 # panels, under the dial panels. Any size - it fills the strip and is
 # centre-cropped. Relative paths are against this file's folder.
@@ -206,3 +231,11 @@ glyph = "f036d"
 # [dial.turn_right]
 # type = "brightness"
 # change = 5
+#
+# A live dial: its panel shows a value instead of a level (here the battery, with a
+# bar; text sources like the clock show no bar).
+# [[dial]]
+# index = 2
+# label = "Battery"
+# [dial.live]
+# source = "battery"
