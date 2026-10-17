@@ -31,6 +31,9 @@ listed in each file.
 
 ## What's next, in order
 
+**Regrouped (2026-10-18): the PR candidates are now the ten `up/*` branches** — see
+[UPSTREAM.md](UPSTREAM.md). The `pr/*` notes below are history.
+
 **Folded (2026-10-17):** the fixes now also live inside the features they fix, on
 `pr/01-plus-input` … `pr/16-strip-long-press` (see Branches below). From here, a fix found
 on the machine goes on the `pr/*` branch it belongs to, and the branches above it are
@@ -312,7 +315,10 @@ Useful pages (check they're still current when you use them):
 | `daily` | `upstream/master` + every `feat/*` merged in | What I build and run. Today it is `fix/review-3` (`970b154`, after the 2026-10-18 re-stack; before that `pr/16-strip-long-press` `e9ad538`). |
 | `fix/bugs` | `feat/strip-backgrounds` | The 2026-10-17 bug pass (all 21 bugs closed). |
 | `fix/review` | `fix/bugs` | The 2026-10-17 review fixes, BUGS.md 22–43 (`87be396`). |
-| `pr/01-*` … `pr/16-*` | each on the previous | **The PR series (2026-10-17).** The `feat/*` branches with every fix folded in: each fix is its own commit at the end of the feature it fixes (`Folded from <sha>` in the message). `pr/07b-groundwork` is groundwork as its own PR, before PR 8. `pr/16-strip-long-press` has exactly `fix/review-3`'s tree; `pr/07-…` equals `fix/review`'s and `pr/08-…` equals `fix/review-2`'s. Every tip passes fmt, clippy (GUI type-checked) and the core and daemon tests. The old `feat/*` and `fix/*` branches stay as they were, so the SHAs in these notes still resolve. |
+| `pr/01-*` … `pr/16-*` | each on the previous | **Superseded by `up/*`.** Not consistently stacked after the 2026-10-18 re-stack: `pr/09` and `pr/15` sit on older tips of the branch below, so `pr/09` … `pr/16` lack BUGS.md 105. **The PR series (2026-10-17).** The `feat/*` branches with every fix folded in: each fix is its own commit at the end of the feature it fixes (`Folded from <sha>` in the message). `pr/07b-groundwork` is groundwork as its own PR, before PR 8. `pr/16-strip-long-press` has exactly `fix/review-3`'s tree; `pr/07-…` equals `fix/review`'s and `pr/08-…` equals `fix/review-2`'s. Every tip passes fmt, clippy (GUI type-checked) and the core and daemon tests. The old `feat/*` and `fix/*` branches stay as they were, so the SHAs in these notes still resolve. |
+| `up/01-*` … `up/10-*` | each on the previous, from `fb9052f` | **The upstream series (2026-10-18), what gets opened.** Ten PRs, fixes folded into their task commits, no internal references. [UPSTREAM.md](UPSTREAM.md). |
+| `up/captures` | `up/10-strip-long-press` | The capture script and the machine captures; private. `daily` should move here. |
+| `up/work` | `fb9052f` | The linear series `tools/regroup/build.py` folds into `up/*`. |
 | `plans` | `upstream/master` | These notes only. Never merged anywhere. |
 
 New features from PR 7 on mostly touch the same files as PRs 1–6, so base each new branch
@@ -337,5 +343,5 @@ git merge --no-edit feat/plus-input feat/dial-actions ...   # every live feat/* 
 1. Build everything on `feat/*` branches and run it from `daily` until it works well.
 2. Then contact the author (an issue or discussion on `thewizster/omadeck`) with a summary,
    the proposed config format and the PR order. Ask whether they want them and how.
-3. Open the PRs one at a time, in order. Each plan's "Decisions to explain" becomes the
-   basis of its PR description.
+3. Open the `up/*` PRs one at a time, in order ([UPSTREAM.md](UPSTREAM.md)). Each plan's
+   "Decisions to explain" becomes the basis of its PR description.

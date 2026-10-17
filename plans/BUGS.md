@@ -1289,8 +1289,8 @@ the code; *(plausible)* needs the machine to confirm. All 32 are fixed on `fix/r
 #### 105. Tracked jobs fail everywhere the user bus is down (CI red from `fix/review-2` on)
 
 - **Status:** fixed in `b7a5bc3` on `feat/toggle-keys`, cherry-picked to `pr/08-toggle-keys`
-  (`9352712`); the whole chain rebased on it (`fix/review-2` … `fix/review-3`, `pr/09` …
-  `pr/16`, `daily`). CI on `fix/review-2` is green again (run 39060927550).
+  (`9352712`); the `feat/*`/`fix/*` chain rebased on it (`fix/review-2` … `fix/review-3`,
+  `daily`). `pr/09` … `pr/16` were not (found 2026-10-18); the `up/*` series has it. CI on `fix/review-2` is green again (run 39060927550).
 - **Found:** 2026-10-17, machine pass — the first CI run that includes `run_tracked`
   (run 39060500703): `action::tests::run_tracked_streams_lines` fails in CI, passes on the
   machine. A no-bus run with `XDG_RUNTIME_DIR` pointed at an empty dir reproduces it.
