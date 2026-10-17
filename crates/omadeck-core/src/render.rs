@@ -136,6 +136,7 @@ const OUTPUT_GLYPH: &str = "f057e"; // 󰕾 speaker
 const INPUT_GLYPH: &str = "f036c"; // 󰎬 microphone
 const MUTE_GLYPH: &str = "f075f"; // 󰝟 muted
 const BRIGHTNESS_GLYPH: &str = "f00de"; // 󰃞 brightness
+const APP_GLYPH: &str = "f08c6"; // nf-md application (to check on the machine)
 // Live sources' own glyphs (PR 9), nf-md.
 const CLOCK_GLYPH: &str = "f0150"; // clock-outline
 const CPU_GLYPH: &str = "f061a"; // cpu-64-bit
@@ -531,6 +532,9 @@ impl Renderer {
         let face = dial.map(|d| d.face());
         let backdrop = self.panel_backdrop(cfg, i, panels);
         let tone = backdrop.tone;
+        // What's under each `$B1` text, taken before the image moves into `img`. On a
+        // plain colour all three equal `tone`.
+        let tones = (backdrop.tone_in(X1_TITLE), backdrop.tone_in(B1_VALUE), backdrop.tone_in(B1_BAR));
         // An empty slot with no image is the dimmed base colour, as before; with an
         // image the empty panels show their slice undimmed, so the picture stays
         // continuous, as Elgato's strip background does.
@@ -556,8 +560,32 @@ impl Renderer {
             let shown = st.panel.live.as_ref();
             let icon = self.live_icon(&face, live, shown.is_some_and(|l| l.charging), glyph_color);
             let level = shown.map(|l| Level { value: l.bar.unwrap_or(0.0), text: l.text.clone(), muted: false });
-            let colors = B1Colors { title, value: fg, fill: fg, track: tone.mix(fg, 0.22) };
+            let colors = self.b1_colors(&face, style, tones, st.pressed, false);
             self.draw_b1(&mut img, &face, colors, want_label, icon, level.as_ref(), live.has_bar());
+            return img;
+        }
+
+        // An app volume dial: `$B1` titled with the app (or the label), its icon, its
+        // level; dimmed with a dash while the app has no stream.
+        if let Some(LevelSource::App) = dial.and_then(|d| d.level_source()) {
+            // No status yet (a configurator with no daemon before `dial_status` ran).
+            let app = st.panel.app.clone().unwrap_or_else(|| AppShow {
+                title: face.label.to_string(),
+                icon: None,
+                dimmed: true,
+            });
+            let title_text = app.title.trim().to_string();
+            let face = Face { label: &title_text, ..face };
+            let want_label = face.show_label && !title_text.is_empty();
+            let colors = self.b1_colors(&face, style, tones, st.pressed, app.dimmed);
+            let mut icon = self.app_icon(&face, &app, glyph_color);
+            if app.dimmed
+                && let Some(icon) = icon.as_mut()
+            {
+                fade(icon, 0.5);
+            }
+            let level = if app.dimmed { None } else { st.panel.level.as_ref() };
+            self.draw_b1(&mut img, &face, colors, want_label, icon, level, true);
             return img;
         }
 
@@ -569,11 +597,10 @@ impl Renderer {
                     self.volume_icon(&face, device, muted, glyph_color)
                 }
                 LevelSource::Brightness => self.brightness_icon(&face, glyph_color),
-                // Drawn in task E; until then `$B1` with no icon.
-                LevelSource::App => None,
+                LevelSource::App => unreachable!("drawn above"),
             };
-            let bar = B1Colors { title, value: fg, fill: fg, track: tone.mix(fg, 0.22) };
-            self.draw_b1(&mut img, &face, bar, want_label, icon, st.panel.level.as_ref(), true);
+            let colors = self.b1_colors(&face, style, tones, st.pressed, false);
+            self.draw_b1(&mut img, &face, colors, want_label, icon, st.panel.level.as_ref(), true);
             return img;
         }
 
@@ -611,6 +638,35 @@ impl Renderer {
         }
         let glyph = face.glyph.filter(|g| !g.trim().is_empty()).unwrap_or(BRIGHTNESS_GLYPH);
         self.glyph(glyph, (STRIP_ICON_PX as f32 * 0.86) as u32, color)
+    }
+
+    /// The icon for an app volume panel: the user's icon, else the app's own, else the
+    /// user's glyph, else a generic application glyph. A muted app keeps its icon (which
+    /// app it is matters more; the value says `Muted`).
+    fn app_icon(&mut self, face: &Face, app: &AppShow, color: Rgb) -> Option<RgbaImage> {
+        if let Some(p) = face.icon {
+            return self.icon(&paths::resolve(p), STRIP_ICON_PX);
+        }
+        if let Some(icon) = app.icon.as_deref().and_then(|p| self.icon(p, STRIP_ICON_PX)) {
+            return Some(icon);
+        }
+        let glyph = face.glyph.filter(|g| !g.trim().is_empty()).unwrap_or(APP_GLYPH);
+        self.glyph(glyph, (STRIP_ICON_PX as f32 * 0.86) as u32, color)
+    }
+
+    /// The `$B1` colours: the title against what's under the title, the value and bar
+    /// against what's under them (`tones`: title, value, bar). A press turns the title to
+    /// the accent (R8); a dimmed panel mixes both halfway into what's under them.
+    fn b1_colors(&self, face: &Face, style: &Style, tones: (Rgb, Rgb, Rgb), pressed: bool, dimmed: bool) -> B1Colors {
+        let (title_tone, value_tone, bar_tone) = tones;
+        let mut title = self.label_color(Some(face), style, title_tone);
+        let mut value = self.label_color(Some(face), style, value_tone);
+        if dimmed {
+            title = title.mix(title_tone, 0.5);
+            value = value.mix(value_tone, 0.5);
+        }
+        let title = if pressed { self.theme.accent } else { title };
+        B1Colors { title, value, fill: value, track: bar_tone.mix(value, 0.22) }
     }
 
     /// The icon for a live dial's panel: the user's icon, else their glyph, else the
@@ -978,6 +1034,22 @@ pub struct Backdrop {
     pub has_image: bool,
 }
 
+impl Backdrop {
+    /// The mean colour under `rect` (panel units), for text drawn there. `tone` stays the
+    /// whole-panel mean.
+    pub fn tone_in(&self, rect: (u32, u32, u32, u32)) -> Rgb {
+        let (x, y, w, h) = rect;
+        mean_rgb(&imageops::crop_imm(&self.img, x, y, w, h).to_image())
+    }
+}
+
+/// Multiply every pixel's alpha by `f` (a dimmed panel's icon).
+fn fade(img: &mut RgbaImage, f: f32) {
+    for px in img.pixels_mut() {
+        px[3] = (px[3] as f32 * f).round().clamp(0.0, 255.0) as u8;
+    }
+}
+
 /// The mean RGB of an image, alpha ignored.
 fn mean_rgb(img: &RgbaImage) -> Rgb {
     let (mut r, mut g, mut b) = (0u64, 0u64, 0u64);
@@ -1110,8 +1182,8 @@ fn load_font(pattern: &str) -> Option<FontVec> {
 #[cfg(test)]
 mod tests {
     use super::{
-        B1_BAR, B1_VALUE, DialStatus, Level, LiveShow, PanelStatus, Renderer, RgbaImage, TEST_FONT, X1_ICON, X1_TITLE,
-        fit_cover, glyph_char, load_cover, tap_to_dial,
+        AppShow, B1_BAR, B1_VALUE, Backdrop, DialStatus, Level, LiveShow, PANEL_H, PANEL_W, PanelStatus, Renderer,
+        RgbaImage, TEST_FONT, X1_ICON, X1_TITLE, fit_cover, glyph_char, load_cover, tap_to_dial,
     };
     use crate::KeyStatus;
     use crate::config::{Action, AudioDevice, BusyFace, Config, DialConfig, KeyConfig, Live, OnFace, Style};
@@ -1234,6 +1306,97 @@ mod tests {
         let panel = r.render_strip_panel(&cfg, 0, 4, DialStatus::default());
         let key = r.render(None, &style, 100, &KeyStatus::default());
         assert_eq!(*panel.get_pixel(100, 50), *key.get_pixel(50, 50));
+    }
+
+    #[test]
+    fn tone_in_follows_the_text_area() {
+        // Top half white (under the title), bottom half black.
+        let mut img = RgbaImage::from_pixel(PANEL_W, PANEL_H, Rgba([0, 0, 0, 255]));
+        for y in 0..PANEL_H / 2 {
+            for x in 0..PANEL_W {
+                img.put_pixel(x, y, Rgba([255, 255, 255, 255]));
+            }
+        }
+        let b = Backdrop { tone: super::mean_rgb(&img), img, has_image: true };
+        assert_eq!(b.tone_in(X1_TITLE), Rgb(255, 255, 255));
+        assert_eq!(b.tone_in(B1_BAR), Rgb(0, 0, 0));
+        // The whole-panel mean is mid-grey; that's what used to pick the title colour.
+        assert_eq!(b.tone, Rgb(127, 127, 127));
+    }
+
+    fn app_dial() -> DialConfig {
+        DialConfig {
+            turn_right: Action::AppVolume { app: "spotify".into(), focused: false, change: 5, mute: false },
+            ..DialConfig::new(0)
+        }
+    }
+
+    fn app_status(title: &str, dimmed: bool) -> DialStatus {
+        DialStatus {
+            pressed: false,
+            panel: PanelStatus {
+                level: (!dimmed).then(|| Level { value: 0.5, text: "50%".into(), muted: false }),
+                app: Some(AppShow { title: title.into(), icon: None, dimmed }),
+                ..Default::default()
+            },
+        }
+    }
+
+    /// The largest channel distance from the panel background inside `rect`.
+    fn ink(img: &RgbaImage, rect: (u32, u32, u32, u32)) -> u32 {
+        let bg = img.get_pixel(PANEL_W - 1, 0);
+        img.enumerate_pixels()
+            .filter(|(x, y, _)| in_rect(*x, *y, rect))
+            .map(|(_, _, p)| (0..3).map(|c| (p[c] as i32 - bg[c] as i32).unsigned_abs()).max().unwrap())
+            .max()
+            .unwrap_or(0)
+    }
+
+    #[test]
+    fn app_panel_dimmed_fades_title() {
+        let mut r = renderer_with_font();
+        let mut cfg = Config { style: test_style(), ..Default::default() };
+        cfg.dials.push(app_dial());
+        let lit = r.render_strip_panel(&cfg, 0, 4, app_status("A", false));
+        let dim = r.render_strip_panel(&cfg, 0, 4, app_status("A", true));
+        let (lit_ink, dim_ink) = (ink(&lit, X1_TITLE), ink(&dim, X1_TITLE));
+        assert!(dim_ink > 0 && dim_ink < lit_ink, "dimmed {dim_ink}, lit {lit_ink}");
+        // The bar is empty when dimmed: its fill colour (the value colour) is gone.
+        assert!(ink(&dim, B1_BAR) < ink(&lit, B1_BAR));
+    }
+
+    #[test]
+    fn app_panel_uses_its_title() {
+        let mut r = renderer_with_font();
+        let mut cfg = Config { style: test_style(), ..Default::default() };
+        cfg.dials.push(app_dial());
+        let img = r.render_strip_panel(&cfg, 0, 4, app_status("AA", false));
+        assert!(ink(&img, X1_TITLE) > 100, "the app's title is drawn");
+        cfg.dials[0].show_label = false;
+        let img = r.render_strip_panel(&cfg, 0, 4, app_status("AA", false));
+        assert_eq!(ink(&img, X1_TITLE), 0, "show_label off hides it");
+        // No status at all: dimmed, titled with the (empty) label: no title ink.
+        cfg.dials[0].show_label = true;
+        let img = r.render_strip_panel(&cfg, 0, 4, DialStatus::default());
+        assert_eq!(ink(&img, X1_TITLE), 0);
+    }
+
+    #[test]
+    fn pressed_app_panel_changes_only_the_title() {
+        let mut r = renderer_with_font();
+        let mut cfg = Config { style: test_style(), ..Default::default() };
+        cfg.dials.push(DialConfig { glyph: Some("A".into()), ..app_dial() });
+        let up = r.render_strip_panel(&cfg, 0, 4, app_status("AA", false));
+        let down = r.render_strip_panel(&cfg, 0, 4, DialStatus { pressed: true, ..app_status("AA", false) });
+        let mut title_changed = false;
+        for (x, y, p) in down.enumerate_pixels() {
+            if in_rect(x, y, X1_TITLE) {
+                title_changed |= p != up.get_pixel(x, y);
+            } else {
+                assert_eq!(p, up.get_pixel(x, y), "({x}, {y}) is outside the title");
+            }
+        }
+        assert!(title_changed, "the title turns accent");
     }
 
     #[test]
