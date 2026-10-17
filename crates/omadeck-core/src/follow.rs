@@ -48,6 +48,25 @@ pub fn parse_clients(json: &str) -> Vec<(String, String)> {
     v
 }
 
+/// The window class an installed app's windows get, from its desktop id and, if found, its
+/// desktop entry: the entry's `StartupWMClass`, else the id without `.desktop` (GTK and
+/// Flatpak apps use their app id; matching is case-insensitive, which covers most others).
+pub fn desktop_class(id: &str, entry: Option<&str>) -> String {
+    let mut in_main = false;
+    for line in entry.unwrap_or_default().lines().map(str::trim) {
+        if line.starts_with('[') {
+            in_main = line == "[Desktop Entry]";
+        } else if in_main
+            && let Some((key, value)) = line.split_once('=')
+            && key.trim() == "StartupWMClass"
+            && !value.trim().is_empty()
+        {
+            return value.trim().to_string();
+        }
+    }
+    id.strip_suffix(".desktop").unwrap_or(id).to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -61,6 +80,15 @@ mod tests {
         assert!(class_matches("*", "kitty"));
         assert!(!class_matches("a*b*a", "ab"), "parts can't overlap");
         assert!(!class_matches("", "kitty") && !class_matches("*", ""), "empty never matches");
+    }
+
+    #[test]
+    fn desktop_class_prefers_startup_wm_class() {
+        let entry = "[Desktop Entry]\nName=Spotify\nStartupWMClass = spotify \n[Desktop Action x]\nStartupWMClass=no\n";
+        assert_eq!(desktop_class("spotify.desktop", Some(entry)), "spotify");
+        let only_action = "[Desktop Entry]\nName=X\n[Desktop Action x]\nStartupWMClass=no\n";
+        assert_eq!(desktop_class("org.gnome.Nautilus.desktop", Some(only_action)), "org.gnome.Nautilus");
+        assert_eq!(desktop_class("kitty.desktop", None), "kitty");
     }
 
     #[test]

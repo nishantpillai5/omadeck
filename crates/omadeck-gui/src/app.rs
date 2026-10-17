@@ -18,7 +18,7 @@ use omadeck_core::{
     PanelStatus, Renderer, device, paths, tap_to_dial,
 };
 
-use crate::{editor, media};
+use crate::{editor, media, pages};
 
 /// After this long the brightness slider is considered the user's, and a late
 /// `Event::Brightness` won't move it back.
@@ -266,8 +266,11 @@ impl App {
             .icon_name("folder-symbolic")
             .tooltip_text("Folder: flicks and Next/previous page skip it")
             .build();
+        let follow_apps =
+            gtk::Button::builder().icon_name("emblem-system-symbolic").tooltip_text("Follow apps").build();
         let page_actions = gtk::Box::builder().css_classes(["linked"]).visible(false).build();
         page_actions.append(&folder_toggle);
+        page_actions.append(&follow_apps);
         page_actions.append(&rename_page);
         page_actions.append(&delete_page);
         let page_bar = gtk::Box::builder().spacing(6).halign(gtk::Align::Center).build();
@@ -411,6 +414,14 @@ impl App {
         new_page.connect_clicked(move |_| {
             if let Some(app) = weak.upgrade() {
                 app.ask_new_page();
+            }
+        });
+        let weak = Rc::downgrade(&app);
+        follow_apps.connect_clicked(move |_| {
+            if let Some(app) = weak.upgrade()
+                && let Some(name) = app.current_page()
+            {
+                pages::show(&app, &name);
             }
         });
         let weak = Rc::downgrade(&app);
@@ -1292,12 +1303,23 @@ impl App {
     }
 
     /// Mirror the config's pages in the page switcher. A folder reads as its path
-    /// (`Music › Media › Spotify`), so nested folders are told apart.
+    /// (`Music › Media › Spotify`), so nested folders are told apart; a page that follows
+    /// apps says so.
     fn sync_page_list(&self) {
         self.syncing_pages.set(true);
         let cfg = self.config.borrow();
         let names = cfg.page_names();
-        let labels: Vec<String> = names.iter().map(|n| cfg.page_path(n).join(" › ")).collect();
+        let labels: Vec<String> = names
+            .iter()
+            .map(|n| {
+                let path = cfg.page_path(n).join(" › ");
+                if cfg.pages.iter().any(|p| p.name == *n && !p.folder && !p.apps.is_empty()) {
+                    format!("{path} · follows apps")
+                } else {
+                    path
+                }
+            })
+            .collect();
         let mut items: Vec<&str> = vec![HOME];
         items.extend(labels.iter().map(String::as_str));
         self.page_list.splice(0, self.page_list.n_items(), &items);
@@ -1368,6 +1390,25 @@ impl App {
             app.show_page(Some(name), true);
             app.toast("New page — give a key the “Open page” action to reach it from your deck");
         });
+    }
+
+    /// Edit the `apps` of page `name`; false (and a toast) if the page is gone.
+    pub fn edit_page_apps(self: &Rc<Self>, name: &str, f: impl FnOnce(&mut Vec<String>)) -> bool {
+        // The borrow ends before the page list and the save read the config again.
+        let found = match self.config.borrow_mut().pages.iter_mut().find(|p| p.name == name) {
+            Some(p) => {
+                f(&mut p.apps);
+                true
+            }
+            None => false,
+        };
+        if !found {
+            self.toast("That page is gone");
+            return false;
+        }
+        self.sync_page_list();
+        self.schedule_save();
+        true
     }
 
     fn ask_rename_page(self: &Rc<Self>) {
