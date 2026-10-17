@@ -5,7 +5,7 @@
 # Home page; more pages are [[page]] tables with their own [[page.key]]s.
 # Icon paths may be absolute, start with ~/, or be relative to ~/.config/omadeck/.
 
-brightness = 70
+brightness = 70                # start value; the deck remembers its last brightness, and an edit here sets it
 
 [style]
 follow_theme = true          # use the active Omarchy theme's colours

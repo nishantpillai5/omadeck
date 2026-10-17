@@ -33,7 +33,7 @@ pub struct Face<'a> {
 pub struct DialStatus {
     /// The dial is pressed (or a tap is still flashing).
     pub pressed: bool,
-    /// A value to show in the `$B1` panel layout (volume, PR 4).
+    /// A value to show in the `$B1` panel layout (volume or brightness).
     pub level: Option<Level>,
 }
 

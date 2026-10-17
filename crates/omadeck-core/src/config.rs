@@ -220,7 +220,7 @@ pub enum Direction {
 /// What a dial's strip panel shows a value for, if anything.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LevelSource {
-    /// The level of an audio device, polled by the daemon's audio worker.
+    /// The level of an audio device, read by the daemon.
     Volume(AudioDevice),
     /// The deck's panel brightness, kept in the daemon itself.
     Brightness,
@@ -274,7 +274,7 @@ pub enum Action {
         change: i8,
     },
     /// Change the deck's panel brightness, 0–100. The daemon owns the current value and
-    /// persists it to the config, so this is never "run" like the other actions.
+    /// keeps it in the state file, so this is never "run" like the other actions.
     Brightness {
         /// Percent to change by, signed (per detent on a dial).
         #[serde(default, skip_serializing_if = "is_zero_i8")]

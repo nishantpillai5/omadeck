@@ -143,7 +143,7 @@ omadeckd snapshot x.png [PAGE]  render the layout to an image
 The config file is `~/.config/omadeck/config.toml`. The app edits it for you, but it's plain TOML and safe to edit by hand; the daemon reloads it as soon as you save. See [`examples/config.toml`](examples/config.toml).
 
 ```toml
-brightness = 70
+brightness = 70               # start value; the deck remembers its last brightness, and an edit here sets it
 
 [style]
 follow_theme = true            # colours from the active Omarchy theme
