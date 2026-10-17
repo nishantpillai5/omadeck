@@ -27,6 +27,19 @@ const SLIDER_HOLD: Duration = Duration::from_millis(500);
 /// Previews are rendered larger than displayed so they stay crisp on HiDPI screens.
 const PREVIEW_PX: u32 = 192;
 
+/// The pages a key opens (its action and on action, steps included). A key edit that
+/// changes these can change a folder's path in the page switcher (BUGS.md 98).
+fn opened_pages(key: Option<&KeyConfig>) -> Vec<String> {
+    let Some(key) = key else { return Vec::new() };
+    key.actions()
+        .into_iter()
+        .filter_map(|a| match a {
+            Action::Page { page } => Some(page.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
 /// The key a new page starts with, so a page opened from a key works like a folder.
 fn back_key() -> KeyConfig {
     KeyConfig { label: "Back".into(), glyph: Some("\u{f004d}".into()), action: Action::Back, ..KeyConfig::new(0) }
@@ -928,9 +941,17 @@ impl App {
 
     /// Mutate a key, refresh its preview and queue a save.
     pub fn edit(self: &Rc<Self>, i: u8, f: impl FnOnce(&mut KeyConfig)) {
-        self.with_page(|keys| f(keys.get_mut(i)));
+        let opens_changed = self.with_page(|keys| {
+            let before = opened_pages(keys.get(i));
+            let key = keys.get_mut(i);
+            f(key);
+            before != opened_pages(Some(key))
+        });
         self.refresh_key(i);
         self.schedule_save();
+        if opens_changed {
+            self.sync_page_list();
+        }
     }
 
     /// The key `i` of the page being edited, to edit later with [`App::edit_ref`].
@@ -944,17 +965,25 @@ impl App {
         if self.locked.borrow().is_some() {
             return false;
         }
-        match self.config.borrow_mut().page_mut(at.page.as_deref()) {
-            Some(keys) => f(keys.get_mut(at.index)),
+        let opens_changed = match self.config.borrow_mut().page_mut(at.page.as_deref()) {
+            Some(keys) => {
+                let before = opened_pages(keys.get(at.index));
+                let key = keys.get_mut(at.index);
+                f(key);
+                before != opened_pages(Some(key))
+            }
             None => {
                 self.toast("That key's page was deleted, so the change was dropped");
                 return false;
             }
-        }
+        };
         if *self.page.borrow() == at.page {
             self.refresh_key(at.index);
         }
         self.schedule_save();
+        if opens_changed {
+            self.sync_page_list();
+        }
         true
     }
 
@@ -976,9 +1005,16 @@ impl App {
     pub fn clear_key(self: &Rc<Self>, i: u8) {
         // Before `refresh_key`, which borrows `key_states` itself.
         self.key_states.borrow_mut().remove(&(self.page.borrow().clone(), i));
-        self.with_page(|keys| keys.clear(i));
+        let opened = self.with_page(|keys| {
+            let opened = !opened_pages(keys.get(i)).is_empty();
+            keys.clear(i);
+            opened
+        });
         self.refresh_key(i);
         self.schedule_save();
+        if opened {
+            self.sync_page_list();
+        }
         self.rebuild_editor();
     }
 
