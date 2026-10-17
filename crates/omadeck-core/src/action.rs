@@ -85,14 +85,7 @@ pub fn apply_volume(device: AudioDevice, change: i8, mute: bool) {
     // Omarchy 3's pop-up needs the focused monitor, which costs a `hyprctl` run.
     let monitor = (backend == audio::Backend::Omarchy3).then(audio::focused_monitor).flatten();
     let cmds = volume_command(backend, device, change, mute, monitor.as_deref());
-    log::info!("exec {}", cmds.iter().map(|a| format!("{a:?}")).collect::<Vec<_>>().join(" ; "));
-    for argv in cmds {
-        let mut c = Command::new(&argv[0]);
-        c.args(&argv[1..]).process_group(0);
-        if proc::output_timeout(&mut c, proc::COMMAND_TIMEOUT).is_none() {
-            log::warn!("{argv:?} failed to start or didn't finish");
-        }
-    }
+    audio::run_commands(&cmds);
     // Omarchy 4 has no command to change the mic's volume, so show its pop-up ourselves.
     // The change above has finished, so this reads the new level.
     if backend == audio::Backend::Omarchy4
