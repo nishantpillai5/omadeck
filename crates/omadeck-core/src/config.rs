@@ -2205,7 +2205,7 @@ slow = true
             blocks.push(&rest[start..end]);
             idx = end;
         }
-        assert_eq!(blocks.len(), 3, "three dial examples");
+        assert_eq!(blocks.len(), 4, "four dial examples");
         let uncommented = blocks
             .iter()
             .map(|b| b.lines().map(|l| l.strip_prefix("# ").unwrap_or(l)).collect::<Vec<_>>().join("\n"))
@@ -2213,10 +2213,11 @@ slow = true
             .join("\n");
         let c: Config = toml::from_str(&format!("{before}{uncommented}"))
             .expect("the commented dial blocks, uncommented, are valid config");
-        assert_eq!(c.dials.len(), 3);
+        assert_eq!(c.dials.len(), 4);
         assert!(!c.dials[0].turn_left.is_none());
         assert!(matches!(c.dials[1].turn_right, Action::Volume { .. }));
         assert!(matches!(c.dials[2].turn_right, Action::Brightness { .. }));
+        assert!(c.dials[3].live.is_some());
     }
 
     #[test]
