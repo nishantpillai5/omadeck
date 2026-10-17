@@ -287,6 +287,10 @@ impl Poller {
                     self.in_flight.insert(p.clone(), (self.next_run, cancel.clone()));
                     start.push((p, self.next_run, cancel));
                 }
+                // Not read yet (Task D); nothing watches them before the daemon wiring.
+                _ => {
+                    self.next_due.insert(p.clone(), now + p.interval());
+                }
             }
         }
         start

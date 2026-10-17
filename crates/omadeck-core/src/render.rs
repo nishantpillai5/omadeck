@@ -47,6 +47,21 @@ pub struct PanelStatus {
     /// A value for the `$B1` layout (volume, brightness); `None` before the first read.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub level: Option<Level>,
+    /// A live dial's value: `$B1` when it has a bar, else `$A1`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub live: Option<LiveShow>,
+}
+
+/// What a live key or strip panel shows.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct LiveShow {
+    /// "14:05", "42%", "3"; may hold `\n` (a clock's `%n`).
+    pub text: String,
+    /// 0.0..=1.0 for the strip's `$B1` bar; `None` for text sources.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bar: Option<f32>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub charging: bool,
 }
 
 /// A value for the `$B1` layout: a bar position plus the text next to it (e.g. `40%`).
@@ -60,9 +75,9 @@ pub struct Level {
     pub muted: bool,
 }
 
-/// What a key looks like right now, beside its config. Mirrors `DialStatus`; built only by
-/// `probe::key_status`. Serializable for `Event::KeyState`; every field is `serde(default)`
-/// and skipped when default, so fields can be added.
+/// What a key looks like right now, beside its config. Mirrors `DialStatus`; built only
+/// by `probe::key_status`. Serializable for `Event::KeyState`; every field is
+/// `serde(default)` and skipped when default, so fields can be added.
 #[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct KeyStatus {
     /// Drawn with the press ring.
@@ -71,6 +86,9 @@ pub struct KeyStatus {
     /// Off, on or busy; drawn by `KeyConfig::face_for`.
     #[serde(default, skip_serializing_if = "crate::probe::Toggle::is_off")]
     pub state: crate::probe::Toggle,
+    /// A live key's value; `None` before the first read (drawn as `–`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub live: Option<LiveShow>,
 }
 
 /// One dial panel of the Stream Deck + touch strip, in native 200×100 units.
@@ -1207,6 +1225,7 @@ mod tests {
             pressed: false,
             panel: PanelStatus {
                 level: Some(Level { value: v, text: if muted { "Muted".into() } else { "50%".into() }, muted }),
+                live: None,
             },
         }
     }
@@ -1683,7 +1702,7 @@ mod tests {
         cfg.dials.push(DialConfig { glyph: Some("A".into()), ..volume_dial() });
         let st = DialStatus {
             pressed: false,
-            panel: PanelStatus { level: Some(Level { value: 0.4, text: "40%".into(), muted: false }) },
+            panel: PanelStatus { level: Some(Level { value: 0.4, text: "40%".into(), muted: false }), live: None },
         };
         golden(&r.render_strip_panel(&cfg, 0, 4, st), "strip-b1.png");
     }
