@@ -636,6 +636,9 @@ fn dial_presets_button(app: &Rc<App>, i: u8) -> gtk::MenuButton {
             d.turn_left = Action::Volume { device: AudioDevice::Output, change: -5, mute: false };
             d.turn_right = Action::Volume { device: AudioDevice::Output, change: 5, mute: false };
             d.press = Action::Volume { device: AudioDevice::Output, change: 0, mute: true };
+            // A preset defines the whole dial: a long press left over would keep running
+            // and could decide what the panel shows.
+            d.long_press = Action::None;
         });
         a.rebuild_editor();
     });
@@ -654,6 +657,9 @@ fn dial_presets_button(app: &Rc<App>, i: u8) -> gtk::MenuButton {
             // A preset sets every slot: a Volume press left over from the Volume preset
             // would make the panel show the volume.
             d.press = Action::None;
+            // A preset defines the whole dial: a long press left over would keep running
+            // and could decide what the panel shows.
+            d.long_press = Action::None;
         });
         a.rebuild_editor();
     });
@@ -674,6 +680,9 @@ fn dial_presets_button(app: &Rc<App>, i: u8) -> gtk::MenuButton {
                 d.turn_left = act(-5, false);
                 d.turn_right = act(5, false);
                 d.press = act(0, true);
+                // A preset defines the whole dial: a long press left over would keep running
+                // and could decide what the panel shows.
+                d.long_press = Action::None;
             });
             a2.rebuild_editor();
         });
@@ -692,6 +701,9 @@ fn dial_presets_button(app: &Rc<App>, i: u8) -> gtk::MenuButton {
             d.turn_left = act(-5, false);
             d.turn_right = act(5, false);
             d.press = act(0, true);
+            // A preset defines the whole dial: a long press left over would keep running
+            // and could decide what the panel shows.
+            d.long_press = Action::None;
         });
         a.rebuild_editor();
     });
@@ -711,6 +723,9 @@ fn dial_presets_button(app: &Rc<App>, i: u8) -> gtk::MenuButton {
             d.turn_left = act(-5);
             d.turn_right = act(5);
             d.press = act(0);
+            // A preset defines the whole dial: a long press left over would keep running
+            // and could decide what the panel shows.
+            d.long_press = Action::None;
         });
         a.rebuild_editor();
     });
