@@ -126,6 +126,7 @@ fn finish_job(rt: &mut Runtime, cfg: &Config, id: &KeyId, status: std::process::
     let refresh = match k.state_probe() {
         Some(p @ Probe::Command { .. }) => Some(p), // ask the real state now; no guessing
         Some(Probe::Volume(_)) => None,
+        Some(_) => None, // a state probe is only ever a volume or a command
         None => {
             // A press toggle flips only when its command succeeded.
             if ok && k.on.is_some() && !rt.flipped.remove(id) {
