@@ -20,7 +20,8 @@ use omadeck_core::ipc::{self, Command, Event, Reply};
 const CLIENT_QUEUE: usize = 256;
 
 pub struct Hub {
-    path: PathBuf,
+    /// The socket file, removed at shutdown; `None` for a detached hub (tests).
+    path: Option<PathBuf>,
     inner: Arc<Mutex<Inner>>,
     commands: mpsc::Receiver<Request>,
 }
@@ -96,6 +97,22 @@ struct Replay {
     keys: BTreeMap<(Option<String>, u8), Event>,
 }
 
+impl Inner {
+    /// No clients yet, and the replay of a daemon that just started.
+    fn shared() -> Arc<Mutex<Self>> {
+        Arc::new(Mutex::new(Inner {
+            clients: Vec::new(),
+            replay: Replay {
+                status: Event::Disconnected,
+                page: Event::PageChanged { page: None },
+                brightness: None,
+                panels: BTreeMap::new(),
+                keys: BTreeMap::new(),
+            },
+        }))
+    }
+}
+
 impl Replay {
     fn remember(&mut self, ev: &Event) {
         match ev {
@@ -138,16 +155,7 @@ impl Hub {
         // The runtime dir is already 0700; the socket accepts commands, so make it explicit.
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))
             .with_context(|| format!("restricting {}", path.display()))?;
-        let inner = Arc::new(Mutex::new(Inner {
-            clients: Vec::new(),
-            replay: Replay {
-                status: Event::Disconnected,
-                page: Event::PageChanged { page: None },
-                brightness: None,
-                panels: BTreeMap::new(),
-                keys: BTreeMap::new(),
-            },
-        }));
+        let inner = Inner::shared();
         let (tx, commands) = mpsc::channel();
         let shared = inner.clone();
         std::thread::Builder::new().name("ipc".into()).spawn(move || {
@@ -180,7 +188,21 @@ impl Hub {
                 spawn_writer(stream, lines);
             }
         })?;
-        Ok(Self { path, inner, commands })
+        Ok(Self { path: Some(path), inner, commands })
+    }
+
+    /// A hub with no socket and no listener thread, for tests: what it publishes lands
+    /// only in its replay, and commands come from the returned sender.
+    #[cfg(test)]
+    pub fn detached() -> (Self, mpsc::Sender<Request>) {
+        let (tx, commands) = mpsc::channel();
+        (Self { path: None, inner: Inner::shared(), commands }, tx)
+    }
+
+    /// The lines a client connecting now would be sent first.
+    #[cfg(test)]
+    pub fn replay_lines(&self) -> Vec<String> {
+        self.inner.lock().unwrap().replay.lines().iter().map(|l| l.trim_end().to_string()).collect()
     }
 
     /// Send `ev` to every client. Never waits on a client: it only queues the line.
@@ -201,7 +223,9 @@ impl Hub {
     }
 
     pub fn shutdown(self) {
-        let _ = std::fs::remove_file(&self.path);
+        if let Some(path) = &self.path {
+            let _ = std::fs::remove_file(path);
+        }
     }
 }
 
@@ -396,6 +420,24 @@ mod tests {
 
     fn socket(name: &str) -> PathBuf {
         std::env::temp_dir().join(format!("omadeck-{name}-{}.sock", std::process::id()))
+    }
+
+    #[test]
+    fn a_detached_hub_keeps_the_replay() {
+        let (hub, _tx) = Hub::detached();
+        hub.publish(Event::Brightness { value: 40 });
+        hub.publish(Event::DialStatus { index: 1, status: Default::default() });
+        hub.publish(Event::DialTurn { index: 0, delta: 1 }); // not state: not replayed
+        assert_eq!(
+            hub.replay_lines(),
+            vec![
+                r#"{"event":"disconnected"}"#,
+                r#"{"event":"page_changed","page":null}"#,
+                r#"{"event":"brightness","value":40}"#,
+                r#"{"event":"dial_status","index":1,"status":{}}"#,
+            ]
+        );
+        hub.shutdown();
     }
 
     #[test]
