@@ -1389,5 +1389,6 @@ mod tests {
         assert_eq!(volume_glyph(&face, AudioDevice::Input, true), MUTE_GLYPH);
         let own = DialConfig { glyph: Some("A".into()), ..volume_dial() };
         assert_eq!(volume_glyph(&own.face(), AudioDevice::Output, false), "A");
+        assert_eq!(INPUT_GLYPH, "f036c");
     }
 }
