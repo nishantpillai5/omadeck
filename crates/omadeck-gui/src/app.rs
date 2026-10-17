@@ -49,6 +49,11 @@ impl KeyRef {
     pub fn page(&self) -> Option<&str> {
         self.page.as_deref()
     }
+
+    /// The key's index on its page.
+    pub fn index(&self) -> u8 {
+        self.index
+    }
 }
 
 /// Which action an editor edits, for work that finishes later (a picker, a file dialog, a
@@ -1091,10 +1096,19 @@ impl App {
         *self.save_source.borrow_mut() = Some(id);
     }
 
-    fn flush_save(self: &Rc<Self>) {
-        if let Some(id) = self.save_source.borrow_mut().take() {
-            id.remove();
-            self.save_now();
+    /// Write a pending save now. True when there was one (Try it now then has the
+    /// daemon reload before it presses).
+    pub fn flush_save(self: &Rc<Self>) -> bool {
+        // Taken in its own statement: `save_now` borrows other cells, and the guard must
+        // not live across it.
+        let pending = self.save_source.borrow_mut().take();
+        match pending {
+            Some(id) => {
+                id.remove();
+                self.save_now();
+                true
+            }
+            None => false,
         }
     }
 
@@ -1381,6 +1395,11 @@ impl App {
         {
             log::warn!("telling omadeckd: {e}");
         }
+    }
+
+    /// Whether omadeckd is running (the configurator is connected to it).
+    pub fn daemon_up(&self) -> bool {
+        self.daemon_up.get()
     }
 
     pub fn toast(&self, msg: &str) {

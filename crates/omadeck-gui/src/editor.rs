@@ -7,7 +7,7 @@ use adw::prelude::*;
 use gtk::{gdk, gio, glib};
 use omadeck_core::{
     Action, AudioDevice, BusyFace, DialConfig, Direction, FaceTab, HOME, KeyConfig, Live, LookField, OnFace, Rgb,
-    StateChoice, action, audio, paths,
+    StateChoice, action, audio, ipc, paths,
 };
 
 use crate::app::{ActionTarget, App, Target};
@@ -74,11 +74,7 @@ pub fn build_key(app: &Rc<App>, i: u8) -> gtk::Widget {
     };
 
     let buttons = gtk::Box::new(gtk::Orientation::Horizontal, 6);
-    // ▶ runs the face being edited: the on action while the On tab shows (falling back
-    // to the key's action when it has none), the key's action otherwise.
-    let run = Rc::new(move |a: &Rc<App>| {
-        a.key(i).map(|k| k.action_for(a.face_tab.get() == FaceTab::On).clone()).unwrap_or_default()
-    });
+    let run = Rc::new(move |a: &Rc<App>| a.key(i).map(|k| k.action).unwrap_or_default());
     buttons.append(&test_button(app, &slot, run));
     buttons.append(&presets_button(app, i));
     let clear = gtk::Button::builder()
@@ -254,6 +250,8 @@ pub fn build_key(app: &Rc<App>, i: u8) -> gtk::Widget {
             }),
             on_favicon: None,
         };
+        // ▶ here runs the on action only, whatever state the key is in: no flip.
+        toggle.set_header_suffix(Some(&test_button(app, &on_slot, on_slot.get.clone())));
         action_editor(app, &toggle, "When pressed while on", &on_slot);
     }
     // A busy-while-running key has a busy face without being a toggle: the row follows
@@ -774,17 +772,71 @@ impl ActionSlot {
     }
 }
 
-/// The ▶ "Try it now" button for a slot. `run` is what a click executes (a key's is
-/// the face being edited). Off for an empty action and for actions only the deck runs
-/// (`Action::is_deck_owned`), except Open page, which shows the page here.
-fn test_button(app: &Rc<App>, _slot: &ActionSlot, run: ActionRun) -> gtk::Button {
+/// What ▶ does with an action, given whether the daemon is up. Pure, for the test.
+#[derive(Debug, PartialEq)]
+enum Route {
+    /// Nothing to run.
+    Nothing,
+    /// Open page: show it here (and on the deck), as before.
+    ShowPage(String),
+    /// `Command::Press` for the key itself, through the daemon.
+    Press { index: u8, page: String },
+    /// `Command::Run` through the daemon.
+    Daemon,
+    /// A deck-owned action with no daemon: say so.
+    NeedsDaemon,
+    /// Run it here, off the GTK thread.
+    Local,
+}
+
+/// `key` is the key's index and page (`None` is Home) when ▶ is the key's own, `None`
+/// for a nested editor or a dial. First match wins.
+fn route(act: &Action, key: Option<(u8, Option<&str>)>, daemon_up: bool) -> Route {
+    match (act, key) {
+        (Action::None, _) => Route::Nothing,
+        (_, Some((index, page))) if daemon_up => Route::Press { index, page: page.unwrap_or(HOME).to_string() },
+        (Action::Page { page }, _) => Route::ShowPage(page.clone()),
+        (a, _) if a.is_deck_owned() => {
+            if daemon_up {
+                Route::Daemon
+            } else {
+                Route::NeedsDaemon
+            }
+        }
+        _ => {
+            if daemon_up {
+                Route::Daemon
+            } else {
+                Route::Local
+            }
+        }
+    }
+}
+
+/// Toast what went wrong with a request to the daemon, if anything did.
+fn toast_reply<E>(a: &App, res: Result<anyhow::Result<Option<ipc::Reply>>, E>) {
+    match res {
+        Ok(Ok(Some(ipc::Reply::Error { message }))) => a.toast(&message),
+        Ok(Ok(Some(_))) => {}
+        Ok(Ok(None)) => a.toast("omadeckd isn't running"),
+        Ok(Err(e)) => a.toast(&format!("{e:#}")),
+        Err(_) => a.toast("Couldn't reach omadeckd"),
+    }
+}
+
+/// The ▶ "Try it now" button for a slot. `run` is what a click executes. With the daemon
+/// up, a key's own ▶ presses the key there (flash, toggle flip) and every other ▶ runs
+/// its action there, so deck-owned actions work too; with no daemon it runs here, off
+/// the GTK thread. Open page shows the page here (and on the deck). The choice is made
+/// on click, so it never goes stale.
+fn test_button(app: &Rc<App>, slot: &ActionSlot, run: ActionRun) -> gtk::Button {
     let act = (run)(app);
     let (tip, sensitive) = match &act {
         Action::Page { page } => ("Try it now".to_string(), app.config.borrow().has_page(page)),
         Action::AppVolume { focused: true, .. } => {
             ("Follows the focused window — here that would be the configurator".to_string(), false)
         }
-        a if a.is_deck_owned() => (format!("{} only works on the deck", Action::KINDS[a.kind_index()]), false),
+        a if a.is_deck_owned() => ("Try it on the deck".to_string(), true),
         a => ("Try it now".to_string(), !a.is_none()),
     };
     let test = gtk::Button::builder()
@@ -794,13 +846,57 @@ fn test_button(app: &Rc<App>, _slot: &ActionSlot, run: ActionRun) -> gtk::Button
         .sensitive(sensitive)
         .css_classes(["flat"])
         .build();
+    // Only a key's own ▶ presses the key; a nested editor's or a dial's runs its action.
+    let key: Option<(u8, Option<String>)> = match &slot.target {
+        ActionTarget::Key(k) => Some((k.index(), k.page().map(str::to_string))),
+        _ => None,
+    };
     let app = app.clone();
     test.connect_clicked(move |_| {
         let act = (run)(&app);
-        if let Action::Page { page } = act {
-            app.show_page(Some(page), true);
-        } else if let Err(e) = action::run(&act) {
-            app.toast(&format!("{e:#}"));
+        let r = route(&act, key.as_ref().map(|(i, p)| (*i, p.as_deref())), app.daemon_up());
+        match r {
+            Route::Nothing => {}
+            Route::ShowPage(p) => app.show_page(Some(p), true),
+            Route::NeedsDaemon => app.toast("This works on the deck: start omadeck's service first"),
+            Route::Daemon => {
+                let a = app.clone();
+                glib::spawn_future_local(async move {
+                    let res = gio::spawn_blocking(move || ipc::request(&ipc::Command::Run { action: act })).await;
+                    toast_reply(&a, res);
+                });
+            }
+            Route::Press { index, page } => {
+                // The daemon presses what it has loaded: write a pending edit first.
+                let saved = app.flush_save();
+                let a = app.clone();
+                glib::spawn_future_local(async move {
+                    let res = gio::spawn_blocking(move || -> anyhow::Result<Option<ipc::Reply>> {
+                        if saved {
+                            // The daemon's own reload waits 150 ms; this press must see the edit.
+                            ipc::request(&ipc::Command::Reload)?;
+                        }
+                        match ipc::request(&ipc::Command::Press { index, page: Some(page) })? {
+                            // No deck: run the action on the daemon instead.
+                            Some(ipc::Reply::NoDeck) => ipc::request(&ipc::Command::Run { action: act }),
+                            r => Ok(r),
+                        }
+                    })
+                    .await;
+                    toast_reply(&a, res);
+                });
+            }
+            Route::Local => {
+                let a = app.clone();
+                glib::spawn_future_local(async move {
+                    let res = gio::spawn_blocking(move || action::run(&act)).await;
+                    match res {
+                        Ok(Ok(())) => {}
+                        Ok(Err(e)) => a.toast(&format!("{e:#}")),
+                        Err(_) => a.toast("Couldn't run it"),
+                    }
+                });
+            }
         }
     });
     test
@@ -1734,4 +1830,30 @@ fn browse_button(
         });
     });
     btn
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn try_it_routes() {
+        let url = Action::Url { url: "omarchy.org".into() };
+        let media = Action::Page { page: "Media".into() };
+        // Nested editors and dials (no key): Run for that action only.
+        assert_eq!(route(&Action::None, None, true), Route::Nothing);
+        assert_eq!(route(&media, None, false), Route::ShowPage("Media".into()));
+        assert_eq!(route(&Action::Back, None, true), Route::Daemon);
+        assert_eq!(route(&Action::Back, None, false), Route::NeedsDaemon);
+        assert_eq!(route(&url, None, true), Route::Daemon);
+        assert_eq!(route(&url, None, false), Route::Local);
+        // A key's own ▶: a press of that key while the daemon is up, by page name.
+        assert_eq!(route(&url, Some((3, None)), true), Route::Press { index: 3, page: "Home".into() });
+        assert_eq!(route(&media, Some((0, Some("Apps"))), true), Route::Press { index: 0, page: "Apps".into() });
+        assert_eq!(route(&Action::None, Some((3, None)), true), Route::Nothing);
+        // No daemon: as a nested ▶.
+        assert_eq!(route(&url, Some((3, None)), false), Route::Local);
+        assert_eq!(route(&Action::Back, Some((3, None)), false), Route::NeedsDaemon);
+        assert_eq!(route(&media, Some((3, None)), false), Route::ShowPage("Media".into()));
+    }
 }

@@ -135,12 +135,31 @@ On the deck, **Go back** returns to the page you came from, or Home. Renaming a 
 ```text
 omadeckd                        run the daemon (normally via systemd)
 omadeckd list                   show connected decks
-omadeckd press 3 [PAGE]         run key 3's action (keys count from 0)
-omadeckd dial 0 left            run dial 0's turn-left / turn-right / press action
+omadeckd page next|prev|home|NAME   next / previous page (as a flick), Home, or the page NAME
+omadeckd brightness N|+N|-N     set the brightness to N%, or change it by N
+omadeckd press 3 [PAGE]         press key 3 (keys count from 0) on the page the deck shows, or on PAGE
+omadeckd dial 0 left [STEPS]    turn dial 0 left / right, or press it (`dial 0 press`)
+omadeckd reload                 re-read the config and theme now; prints the error if it's broken
+omadeckd state                  print the daemon's state as one JSON line
 omadeckd snapshot x.png [PAGE]  render the layout to an image
 ```
 
-`omadeckd press` is handy in Hyprland bindings and scripts, for example to share one action between a key and a keyboard shortcut.
+`page`, `brightness`, `reload` and `state` drive the running daemon, and say so if it isn't running. `press` and `dial` go through the daemon when it runs, so the key flashes and page and brightness keys work; with no daemon (or no deck) they run the action themselves. They print one line on success, errors go to stderr with exit status 1. `state` prints JSON for `jq`:
+
+```text
+{"reply":"state","deck":{"model":"Stream Deck +",…},"page":"Media","pages":["Media","Apps"],"brightness":40}
+```
+
+They're handy in Hyprland bindings and scripts, for example to share one action between a key and a keyboard shortcut. Omarchy keeps your own binds in `~/.config/hypr/bindings.conf`; `bindd` adds a description, and `binded` repeats while held:
+
+```conf
+bindd = SUPER, F1, Next deck page, exec, omadeckd page next
+bindd = SUPER SHIFT, F1, Previous deck page, exec, omadeckd page prev
+bindd = SUPER, F2, Deck home page, exec, omadeckd page home
+binded = SUPER, F3, Dim deck, exec, omadeckd brightness -10
+binded = SUPER, F4, Brighten deck, exec, omadeckd brightness +10
+bindd = SUPER, F5, Deck key 3, exec, omadeckd press 3
+```
 
 ## Configuration
 
@@ -307,7 +326,7 @@ site/             project website: static HTML/CSS/JS with an interactive demo
 
 - **Single source of truth.** The GUI only writes `config.toml` (atomically). The daemon watches it, plus Omarchy's theme state in `~/.local/state/omarchy/current`, and repaints.
 - **Same pixels everywhere.** The renderer in `omadeck-core` is shared, so the previews in the app are rendered by the same code that paints the hardware.
-- **Event feed.** The daemon publishes connect/disconnect, page and key events as JSON lines on `$XDG_RUNTIME_DIR/omadeck.sock`. The app uses this for its status line, press-to-select and following the deck's page, and sends back the page you're editing so the deck can show it.
+- **Event feed and control.** The daemon publishes connect/disconnect, page and key events as JSON lines on `$XDG_RUNTIME_DIR/omadeck.sock` (mode 0600). The app uses this for its status line, press-to-select and following the deck's page, and sends back the page you're editing so the deck can show it. The same socket takes commands (`{"command":"press","index":3}`, `{"command":"run","action":{"type":"page_step"}}`, `{"command":"state"}`, …), each answered with one `{"reply":…}` line on the connection that sent it; `omadeckd page`, `brightness`, `press`, `dial`, `reload` and `state` are thin clients of it, and *Try it now* in the app goes through it too. A client that stops reading loses events; if a reply can't be queued, the daemon closes that connection.
 
 ## Troubleshooting
 

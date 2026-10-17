@@ -7,6 +7,11 @@ All notable changes to omadeck are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- `omadeckd page`, `brightness`, `reload` and `state` control the running daemon, e.g.
+  from Hyprland binds. `press` and `dial` go through the daemon when it runs, so the key
+  flashes and page and brightness keys work. *Try it now* runs through the daemon, so Go
+  back, Next/previous page and Brightness work there too, and a key's own ▶ presses the
+  key, toggle flip included. The socket is now 0600.
 - App volume: an `app_volume` action changes or mutes one app's audio (all its
   streams), chosen by name or following the focused Hyprland window (staying on the
   last focused app that played audio). On a dial the strip panel shows the app's icon,
