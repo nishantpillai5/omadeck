@@ -239,3 +239,39 @@ glyph = "f036d"
 # label = "Battery"
 # [dial.live]
 # source = "battery"
+#
+# An app volume dial (in place of the volume dial above): one app's volume, all its
+# streams together, capped at 100%. The panel shows the app's icon, name and level,
+# dimmed with a dash while the app plays nothing.
+# [[dial]]
+# index = 1
+# label = "Spotify"            # optional; defaults to the app's name
+# [dial.turn_left]
+# type = "app_volume"
+# app = "spotify"              # a process name, app name, Flatpak id or desktop id
+# change = -5
+# [dial.turn_right]
+# type = "app_volume"
+# app = "spotify"
+# change = 5
+# [dial.press]
+# type = "app_volume"
+# app = "spotify"
+# mute = true
+#
+# A focused-app dial (in place of the battery dial above): whichever app has the
+# focused window, or the last focused one that played audio.
+# [[dial]]
+# index = 2
+# [dial.turn_left]
+# type = "app_volume"
+# focused = true
+# change = -5
+# [dial.turn_right]
+# type = "app_volume"
+# focused = true
+# change = 5
+# [dial.press]
+# type = "app_volume"
+# focused = true
+# mute = true
