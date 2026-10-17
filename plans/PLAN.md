@@ -31,6 +31,16 @@ listed in each file.
 
 ## What's next, in order
 
+**Built, not verified (2026-10-17): `fix/review-2` and PRs 9–16.** All nine branches were
+built on the Mac in one go and pushed to the fork, each on the one before:
+`fix/review-2` → `feat/live-keys` → `feat/app-volume` → `feat/ctl` →
+`feat/multi-actions` → `feat/folders` → `feat/media-dial` → `feat/app-pages` →
+`feat/strip-long-press`. Core and daemon tests, clippy and fmt pass on each (except the
+hub socket tests, which the sandbox can't bind). **The GUI was never compiled**, and
+nothing was run on the deck. Next: work through [VERIFY.md](VERIFY.md) on the Omarchy
+machine, branch by branch from the bottom. Fix compile errors and bugs on the lowest
+branch that has them, then rebase the ones above. After that, rebuild `daily`.
+
 **Done (2026-10-17): [rebase onto upstream's pages](rebase-on-upstream-pages.md).**
 PRs 1–6 are rebuilt on `upstream/pages-and-folders` (`fb9052f`); `daily` is now
 `feat/brightness` (`b53a2e6`), and the Plus's page parts are the new PR 5
@@ -91,15 +101,15 @@ order; the order is mine, not upstream's roadmap order.
 | – | `fix/review` | Bugs from the 2026-10-17 review — **done** (`87be396`) | [review-fixes](review-fixes.md) |
 | – | `feat/groundwork` | Daemon split, watcher, ordered volume, non-blocking hub, GUI mirrors the daemon, `ActionSlot` — **done** (2026-10-17) | [groundwork](groundwork.md) |
 | 8 | `feat/toggle-keys` | Keys with on/off faces that follow real state, plus a busy state with progress for slow toggles (e.g. a model server starting up) and for any key while its command runs — **done** (2026-10-17) | [pr8](pr8-toggle-keys.md) |
-| – | `fix/review-2` | Bugs from the second review (50–72) and the API fixes PRs 9–16 rely on | [review-fixes-2](review-fixes-2.md) |
-| 9 | `feat/live-keys` | Keys that show a clock, CPU, workspace, … and update themselves; the Hyprland event listener | [pr9](pr9-live-keys.md) |
-| 10 | `feat/app-volume` | Per-app volume: a dial for a chosen app, or for the focused app | [pr10](pr10-app-volume.md) |
-| 11 | `feat/ctl` | Drive the running daemon from the shell (`omadeckd page next`, `brightness 30`, …) | [pr11](pr11-ctl.md) |
-| 12 | `feat/multi-actions` | One key runs several actions, with optional delays | [pr12](pr12-multi-actions.md) |
-| 13 | `feat/folders` | Folder gestures: hold Back for Home, page steps from nested folders, double-click a folder in the configurator (upstream already has folders) | [pr13](pr13-folders.md) |
-| 14 | `feat/media-dial` | Media dial: scrub, play/pause, track and progress on the strip | [pr14](pr14-media-dial.md) |
-| 15 | `feat/app-pages` | Pages follow the focused app (`apps` on `[[page]]`, Elgato's Smart Profiles) | [pr15](pr15-app-pages.md) |
-| 16 | `feat/strip-long-press` | Hold a strip panel for a second action per dial (Elgato's "long touch"). Needs PR 11's `tap_dial`/`try_input`, so it can move up to right after PR 11 | [pr16](pr16-strip-long-press.md) |
+| – | `fix/review-2` | Bugs from the second review (50–72) and the API fixes PRs 9–16 rely on — **built, not verified** ([VERIFY.md](VERIFY.md)) | [review-fixes-2](review-fixes-2.md) |
+| 9 | `feat/live-keys` | Keys that show a clock, CPU, workspace, … and update themselves; the Hyprland event listener — **built, not verified** ([VERIFY.md](VERIFY.md)) | [pr9](pr9-live-keys.md) |
+| 10 | `feat/app-volume` | Per-app volume: a dial for a chosen app, or for the focused app — **built, not verified** ([VERIFY.md](VERIFY.md)) | [pr10](pr10-app-volume.md) |
+| 11 | `feat/ctl` | Drive the running daemon from the shell (`omadeckd page next`, `brightness 30`, …) — **built, not verified** ([VERIFY.md](VERIFY.md)) | [pr11](pr11-ctl.md) |
+| 12 | `feat/multi-actions` | One key runs several actions, with optional delays — **built, not verified** ([VERIFY.md](VERIFY.md)) | [pr12](pr12-multi-actions.md) |
+| 13 | `feat/folders` | Folder gestures: hold Back for Home, page steps from nested folders, double-click a folder in the configurator (upstream already has folders) — **built, not verified** ([VERIFY.md](VERIFY.md)) | [pr13](pr13-folders.md) |
+| 14 | `feat/media-dial` | Media dial: scrub, play/pause, track and progress on the strip — **built, not verified** ([VERIFY.md](VERIFY.md)) | [pr14](pr14-media-dial.md) |
+| 15 | `feat/app-pages` | Pages follow the focused app (`apps` on `[[page]]`, Elgato's Smart Profiles) — **built, not verified** ([VERIFY.md](VERIFY.md)) | [pr15](pr15-app-pages.md) |
+| 16 | `feat/strip-long-press` | Hold a strip panel for a second action per dial (Elgato's "long touch"). Needs PR 11's `tap_dial`/`try_input`, so it can move up to right after PR 11 — **built, not verified** ([VERIFY.md](VERIFY.md)) | [pr16](pr16-strip-long-press.md) |
 
 ### Shared building blocks
 
@@ -255,9 +265,10 @@ Useful pages (check they're still current when you use them):
 
 ### Still to do (once)
 
-- [ ] Personal identity for this repo only: `git config user.email <personal or noreply>`
-      (it's currently the work email).
-- [ ] Push access to `nishantpillai5/omadeck` with my personal account.
+- [x] Personal identity for this repo only (done 2026-10-17 on the Mac:
+      `nishantpillai5@users.noreply.github.com`). Repeat on the Omarchy machine if needed.
+- [x] Push access to `nishantpillai5/omadeck` with my personal account (done 2026-10-17,
+      fine-grained token).
 - [x] `git remote add upstream https://github.com/thewizster/omadeck.git && git fetch upstream`
       (done 2026-10-16; not having it is how we missed upstream's pages).
 - [ ] **Before starting any feature:** `git fetch upstream` and `git branch -r` to see

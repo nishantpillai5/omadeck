@@ -400,7 +400,7 @@ numbers). 22–43 are fixed on `fix/review` ([review-fixes.md](review-fixes.md))
 
 #### 25. Renaming or deleting a page misses dial actions that open it
 
-- **Status:** fixed in `6622480` (core) and `25fb9a1` (GUI) for keys and dials; **regressed
+- **Status:** the rest fixed in `b1cdf93` on `fix/review-2`, not yet verified on the machine ([VERIFY.md](VERIFY.md)). Before that: fixed in `6622480` (core) and `25fb9a1` (GUI) for keys and dials; **regressed
   by PR 8**: `all_actions(_mut)` don't walk a toggle's `on.action`, which can be Open page
   (review 2). Fixed again on `fix/review-2` (task 1, one recursive action walker).
   **Found:** 2026-10-17, review follow-up (checked in the code).
@@ -470,7 +470,7 @@ numbers). 22–43 are fixed on `fix/review` ([review-fixes.md](review-fixes.md))
 
 #### 31. A Hyprland dial turn runs up to eight `hyprctl` calls on the deck loop
 
-- **Status:** partly fixed in `6622480`: more than one step runs on a thread, but a single
+- **Status:** the rest fixed in `b1cdf93` on `fix/review-2`, not yet verified on the machine ([VERIFY.md](VERIFY.md)). Before that: partly fixed in `6622480`: more than one step runs on a thread, but a single
   step (every key press) still blocks the loop up to 2 s (4 s on Lua config), and the
   multi-step threads are unbounded and unordered across reports (review 2). The rest is
   `fix/review-2` task 6: every dispatch on one ordered worker. **Found:** 2026-10-17, code
@@ -537,7 +537,7 @@ numbers). 22–43 are fixed on `fix/review` ([review-fixes.md](review-fixes.md))
 
 #### 38. A dial picker result lands in memory while config.toml is broken
 
-- **Status:** fixed in `c71b21c` for dials; `App::set_strip_background` still has no
+- **Status:** the rest fixed in `8b33817` on `fix/review-2`, not yet verified on the machine ([VERIFY.md](VERIFY.md)). Before that: fixed in `c71b21c` for dials; `App::set_strip_background` still has no
   `locked` check, so a strip background picked while config.toml is broken is lost the same
   way (review 2). The rest is `fix/review-2` task 8. **Found:** 2026-10-17, code review.
 - **Where:** `app.rs` `App::edit_dial` (no `locked` check, unlike `edit_ref`).
@@ -613,7 +613,7 @@ numbers). 22–43 are fixed on `fix/review` ([review-fixes.md](review-fixes.md))
 
 #### 45. Brightness can revert on a quick replug
 
-- **Status:** fixed in `87e08c7` + `0badd8e` for the replug (brightness in `Runtime`, which
+- **Status:** the rest fixed in `b1cdf93` on `fix/review-2`, not yet verified on the machine ([VERIFY.md](VERIFY.md)). Before that: fixed in `87e08c7` + `0badd8e` for the replug (brightness in `Runtime`, which
   outlives the deck). **Partly regressed at start** by `d9644be`'s rule "the config wins
   when its mtime is newer than the state file's": the configurator rewrites config.toml on
   every edit with the old `brightness`, so after any GUI edit a restart goes back to it
@@ -647,7 +647,7 @@ numbers). 22–43 are fixed on `fix/review` ([review-fixes.md](review-fixes.md))
 
 #### 48. A hung `pactl` or `wpctl` freezes the bars for good
 
-- **Status:** partly fixed in `66373ff` + `edc4bdb` (`proc::output_timeout` on the watcher's
+- **Status:** the rest fixed in `b1cdf93` on `fix/review-2`, not yet verified on the machine ([VERIFY.md](VERIFY.md)). Before that: partly fixed in `66373ff` + `edc4bdb` (`proc::output_timeout` on the watcher's
   reads and changes). Review 2: on timeout `output_timeout` kills only the direct child, so
   a script's children (and the pipes they hold) survive; and after a normal exit it waits
   up to the rest of the deadline for a pipe a background grandchild holds, on the watcher
@@ -701,7 +701,7 @@ base `feat/toggle-keys`), task in brackets, except 65 (PR 13, as decided).
 
 #### 50. The configurator aborts when a key is drawn "on" without an on face
 
-- **Status:** open. **Found:** 2026-10-17, review 2 (core, render and GUI parts; panic
+- **Status:** fixed in `b1cdf93` (core) and `8b33817` (GUI, not compiled yet) on `fix/review-2`, not yet verified on the machine ([VERIFY.md](VERIFY.md)). **Found:** 2026-10-17, review 2 (core, render and GUI parts; panic
   reproduced). *(proto)*
 - **Where:** core `config.rs` `KeyConfig::face_for` (`.expect("a key is on only with an on
   face")`), reached from `Renderer::render` and `editor.rs` `appearance_rows`; GUI `app.rs`
@@ -720,7 +720,7 @@ base `feat/toggle-keys`), task in brackets, except 65 (PR 13, as decided).
 
 #### 51. The Service… preset moves the key to index 0
 
-- **Status:** open. **Found:** 2026-10-17, review 2 (core and GUI parts).
+- **Status:** fixed in `b1cdf93` (core) and `8b33817` (GUI, not compiled yet) on `fix/review-2`, not yet verified on the machine ([VERIFY.md](VERIFY.md)). **Found:** 2026-10-17, review 2 (core and GUI parts).
 - **Where:** `editor.rs` `service_dialog`: `let mut k = KeyConfig::new(0); apply_service(&mut k, …);
   a2.edit(i, |k2| *k2 = k)`.
 - **What goes wrong:** the whole key is replaced by one with `index = 0`. Apply it to key
@@ -736,7 +736,7 @@ base `feat/toggle-keys`), task in brackets, except 65 (PR 13, as decided).
 
 #### 52. The Service preset puts the health URL into the shell unquoted
 
-- **Status:** open. **Found:** 2026-10-17, review 2 (reproduced with a mocked `curl`). *(proto)*
+- **Status:** fixed in `b1cdf93` on `fix/review-2`, not yet verified on the machine ([VERIFY.md](VERIFY.md)). **Found:** 2026-10-17, review 2 (reproduced with a mocked `curl`). *(proto)*
 - **Where:** `presets.rs` `apply_service`: `curl -sf -o /dev/null -m 2 {url}`. PR 8's plan
   said it's quoted with `shell_words::quote`.
 - **What goes wrong:** `http://127.0.0.1:8000/h?a=1&b=2`: `&` puts `curl` in the
@@ -747,7 +747,7 @@ base `feat/toggle-keys`), task in brackets, except 65 (PR 13, as decided).
 
 #### 53. A slow toggle whose state never moves stays busy for good
 
-- **Status:** open. **Found:** 2026-10-17, review 2 (confirmed with a `Poller` test). *(proto)*
+- **Status:** fixed in `b1cdf93` on `fix/review-2`, not yet verified on the machine ([VERIFY.md](VERIFY.md)). **Found:** 2026-10-17, review 2 (confirmed with a `Poller` test). *(proto)*
 - **Where:** `watch.rs` `Poller::record` (the `Leave` window); `daemon.rs`
   `after_toggle_press` (slow arm) and `Settle::Leaving`.
 - **What goes wrong:** a slow press shows `Busy("")` and sends `Leave`. Every read that
@@ -759,7 +759,7 @@ base `feat/toggle-keys`), task in brackets, except 65 (PR 13, as decided).
 
 #### 54. The volume in-flight total can drift for good
 
-- **Status:** open. **Found:** 2026-10-17, review 2. *(proto)*
+- **Status:** fixed in `b1cdf93` on `fix/review-2`, not yet verified on the machine ([VERIFY.md](VERIFY.md)). **Found:** 2026-10-17, review 2. *(proto)*
 - **Where:** `daemon.rs` `in_flight`, `guess_volume`, `apply_value`/`settle_volume`,
   `detach`, `watch`; `watch.rs` `Poller::handle` (`WatchCmd::Volume`), `coalesce`.
 - **What goes wrong:** only a read-back takes a change off the total, and four paths
@@ -778,7 +778,7 @@ base `feat/toggle-keys`), task in brackets, except 65 (PR 13, as decided).
 
 #### 55. After a replug the configurators lose every toggle's state
 
-- **Status:** open. **Found:** 2026-10-17, review 2 (daemon and GUI parts). *(proto)*
+- **Status:** fixed in `b1cdf93` on `fix/review-2`, not yet verified on the machine ([VERIFY.md](VERIFY.md)). **Found:** 2026-10-17, review 2 (daemon and GUI parts). *(proto)*
 - **Where:** `daemon.rs` `Daemon::attach`/`detach` (clear `published`, not
   `published_keys`); `hub.rs` `Replay::remember` and the GUI's `Event::Disconnected`
   handler (both clear key states); `main.rs` `run()`, the no-deck branch.
@@ -792,7 +792,7 @@ base `feat/toggle-keys`), task in brackets, except 65 (PR 13, as decided).
 
 #### 56. A probe dropped and watched again mid-run gets two runs
 
-- **Status:** open. **Found:** 2026-10-17, review 2 (confirmed with a `Poller` test). *(proto)*
+- **Status:** fixed in `b1cdf93` on `fix/review-2`, not yet verified on the machine ([VERIFY.md](VERIFY.md)). **Found:** 2026-10-17, review 2 (confirmed with a `Poller` test). *(proto)*
 - **Where:** `watch.rs` `Poller::handle` (`Watch` cancels and forgets; `Done` matches by
   probe only).
 - **What goes wrong:** page A → B → A while A's state command runs: run 1 is cancelled,
@@ -804,7 +804,7 @@ base `feat/toggle-keys`), task in brackets, except 65 (PR 13, as decided).
 
 #### 57. The "State from" combo shows nothing for a mute key
 
-- **Status:** open. **Found:** 2026-10-17, review 2 (GUI part; PR 8's unverified "Follows
+- **Status:** fixed in `8b33817` (GUI, not compiled yet) on `fix/review-2`, not yet verified on the machine ([VERIFY.md](VERIFY.md)). **Found:** 2026-10-17, review 2 (GUI part; PR 8's unverified "Follows
   mute" check).
 - **Where:** `editor.rs` `build_key`: `state_row.set_selected(key.state_choice() as usize as u32)`.
 - **What goes wrong:** the enum's discriminant is used as the row: `Mute` is 2, but a mute
@@ -816,7 +816,7 @@ base `feat/toggle-keys`), task in brackets, except 65 (PR 13, as decided).
 
 #### 58. The state command runs while you type it
 
-- **Status:** open. **Found:** 2026-10-17, review 2 (GUI part).
+- **Status:** fixed in `8b33817` (GUI, not compiled yet) on `fix/review-2`, not yet verified on the machine ([VERIFY.md](VERIFY.md)). **Found:** 2026-10-17, review 2 (GUI part).
 - **Where:** `editor.rs` `build_key`, the "State command" `EntryRow::connect_changed`.
 - **What goes wrong:** each pause while typing saves (250 ms), the daemon reloads, and the
   watcher runs the half-typed command every `interval`: `systemctl --user stop` before the
@@ -826,7 +826,7 @@ base `feat/toggle-keys`), task in brackets, except 65 (PR 13, as decided).
 
 #### 59. Toggle rows don't follow their own switches; jobs can't get a progress bar
 
-- **Status:** open. **Found:** 2026-10-17, review 2 (GUI part).
+- **Status:** fixed in `8b33817` (GUI, not compiled yet) on `fix/review-2`, not yet verified on the machine ([VERIFY.md](VERIFY.md)). **Found:** 2026-10-17, review 2 (GUI part).
 - **Where:** `editor.rs` `build_key`: the "Busy while running" and "Slow" switches; the
   "Progress bar" row inside `if let Some(on) = &key.on`.
 - **What goes wrong:** the two switches don't rebuild the editor, so the Busy tab and the
@@ -838,7 +838,7 @@ base `feat/toggle-keys`), task in brackets, except 65 (PR 13, as decided).
 
 #### 60. Busy bars appear for numbers that aren't percentages
 
-- **Status:** open. **Found:** 2026-10-17, review 2 (render part; measured). *(proto)*
+- **Status:** fixed in `b1cdf93` on `fix/review-2`, not yet verified on the machine ([VERIFY.md](VERIFY.md)). **Found:** 2026-10-17, review 2 (render part; measured). *(proto)*
 - **Where:** `probe.rs` `progress` (also reads the part after the last `%`).
 - **What goes wrong:** `"1/4"` → 4, `"Downloading 3 of 7"` → 7, `"Loading 43% step 5"` → 5.
   A job printing `1/4`…`4/4` with `bar = true` shows a bar stuck at 4%.
@@ -846,7 +846,7 @@ base `feat/toggle-keys`), task in brackets, except 65 (PR 13, as decided).
 
 #### 61. Pressing a `$B1` dial recolours the value and the whole bar
 
-- **Status:** open. **Found:** 2026-10-17, review 2 (render part). *(proto)*
+- **Status:** fixed in `b1cdf93` on `fix/review-2`, not yet verified on the machine ([VERIFY.md](VERIFY.md)). **Found:** 2026-10-17, review 2 (render part). *(proto)*
 - **Where:** `render.rs` `Renderer::render_strip_panel`: `fg` is the accent when pressed,
   then `B1Colors { title: fg, value: fg, fill: fg, … }`.
 - **What goes wrong:** the comment, PR 3's decision and PR 10/14's plans say a press turns
@@ -856,7 +856,7 @@ base `feat/toggle-keys`), task in brackets, except 65 (PR 13, as decided).
 
 #### 62. The example's Backup key is never busy, and the toggle docs contradict the code
 
-- **Status:** open. **Found:** 2026-10-17, review 2 (core part; the TOML placement tested).
+- **Status:** fixed in `f309370` on `fix/review-2`, not yet verified on the machine ([VERIFY.md](VERIFY.md)). **Found:** 2026-10-17, review 2 (core part; the TOML placement tested).
 - **Where:** `examples/config.toml` (the index-12 Backup block), README "Toggle keys",
   CHANGELOG.
 - **What goes wrong:** `busy_while_running = true` sits after `[key.on]`, so TOML puts it in
@@ -872,7 +872,7 @@ base `feat/toggle-keys`), task in brackets, except 65 (PR 13, as decided).
 
 #### 63. Clearing a look field on the On or Busy tab creates that face
 
-- **Status:** open. **Found:** 2026-10-17, review 2 (core part; tested). *(proto)*
+- **Status:** fixed in `b1cdf93` on `fix/review-2`, not yet verified on the machine ([VERIFY.md](VERIFY.md)). **Found:** 2026-10-17, review 2 (core part; tested). *(proto)*
 - **Where:** `config.rs` `KeyConfig::set_look`: the blank branch calls `get_or_insert_with`.
 - **What goes wrong:** clearing an On field on a plain key gives it `[key.on]`, which makes
   it a press toggle; clearing a Busy field leaves an empty `[key.busy]`. Reachable through
@@ -881,7 +881,7 @@ base `feat/toggle-keys`), task in brackets, except 65 (PR 13, as decided).
 
 #### 64. State commands of keys the deck doesn't have are polled
 
-- **Status:** open. **Found:** 2026-10-17, review 2 (core and daemon parts). *(proto)*
+- **Status:** fixed in `b1cdf93` on `fix/review-2`, not yet verified on the machine ([VERIFY.md](VERIFY.md)). **Found:** 2026-10-17, review 2 (core and daemon parts). *(proto)*
 - **Where:** `probe.rs` `watched_probes` (every key on the page); `daemon.rs` `watch`
   (called from `reload` and `show_page` with no deck too).
 - **What goes wrong:** the example's key 10 on a Plus (8 keys), or a config from an XL,
@@ -891,9 +891,7 @@ base `feat/toggle-keys`), task in brackets, except 65 (PR 13, as decided).
 
 #### 65. A held key is repainted as released
 
-- **Status:** open, **for PR 13** ([pr13-folders.md](pr13-folders.md), task 2; decided:
-  its Back hold adds held-key state to `Deck`).
-  **Found:** 2026-10-17, review 2 (daemon part).
+- **Status:** fixed in `a09db77` on `feat/folders`, not yet verified on the machine ([VERIFY.md](VERIFY.md)). **Found:** 2026-10-17, review 2 (daemon part).
 - **Where:** `daemon.rs` `Daemon::key_states` (`pressed: false`), used by
   `deck::flush_dirty`.
 - **What goes wrong:** pressing a toggle key paints it pressed, `press_key` marks it dirty,
@@ -903,7 +901,7 @@ base `feat/toggle-keys`), task in brackets, except 65 (PR 13, as decided).
 
 #### 66. A runner thread that fails to start silences its probe
 
-- **Status:** open. **Found:** 2026-10-17, review 2 (daemon part). *(proto)*
+- **Status:** fixed in `b1cdf93` on `fix/review-2`, not yet verified on the machine ([VERIFY.md](VERIFY.md)). **Found:** 2026-10-17, review 2 (daemon part). *(proto)*
 - **Where:** `watch.rs` `run`, `if let Err(e) = spawned`.
 - **What goes wrong:** the probe stays in `in_flight`, `next_due` skips it, and it is
   never polled again until the next `Watch`.
@@ -911,7 +909,7 @@ base `feat/toggle-keys`), task in brackets, except 65 (PR 13, as decided).
 
 #### 67. The face tab buttons aren't a group
 
-- **Status:** open. **Found:** 2026-10-17, review 2 (GUI part).
+- **Status:** fixed in `8b33817` (GUI, not compiled yet) on `fix/review-2`, not yet verified on the machine ([VERIFY.md](VERIFY.md)). **Found:** 2026-10-17, review 2 (GUI part).
 - **Where:** `editor.rs` `appearance_tabs`: plain `ToggleButton`s, no `set_group`.
 - **What goes wrong:** clicking the active tab un-toggles it (no tab shown active);
   clicking another leaves two active until the idle rebuild.
@@ -919,7 +917,7 @@ base `feat/toggle-keys`), task in brackets, except 65 (PR 13, as decided).
 
 #### 68. The configurator repaints everything every 2 s while the daemon is down
 
-- **Status:** open. **Found:** 2026-10-17, review 2 (GUI part).
+- **Status:** fixed in `8b33817` (GUI, not compiled yet) on `fix/review-2`, not yet verified on the machine ([VERIFY.md](VERIFY.md)). **Found:** 2026-10-17, review 2 (GUI part).
 - **Where:** `app.rs` `App::handle`, `Msg::DaemonDown` (sent after every failed connect).
 - **What goes wrong:** every 2 s: `sync_slider`, `refresh_strip`, then `refresh_all`
   (which draws the strip again): every key at 192 px, forever, while the daemon is
@@ -929,7 +927,7 @@ base `feat/toggle-keys`), task in brackets, except 65 (PR 13, as decided).
 
 #### 69. The starter layout's night light ignores that it needs `jq`
 
-- **Status:** open. **Found:** 2026-10-17, review 2 (GUI part).
+- **Status:** fixed in `8b33817` (GUI, not compiled yet) on `fix/review-2`, not yet verified on the machine ([VERIFY.md](VERIFY.md)). **Found:** 2026-10-17, review 2 (GUI part).
 - **Where:** `starter.rs` `layout`: `PRESETS[1]` and `PRESETS[2]` by index.
 - **What goes wrong:** without `jq` the night light key's state command fails (127) on
   every poll after one warning, and the key never shows on. Indexing breaks silently if
@@ -938,7 +936,7 @@ base `feat/toggle-keys`), task in brackets, except 65 (PR 13, as decided).
 
 #### 70. An action editor overwrites its group's description
 
-- **Status:** open. **Found:** 2026-10-17, review 2 (GUI part).
+- **Status:** fixed in `8b33817` (GUI, not compiled yet) on `fix/review-2`, not yet verified on the machine ([VERIFY.md](VERIFY.md)). **Found:** 2026-10-17, review 2 (GUI part).
 - **Where:** `editor.rs` `action_rows`: `group.set_description(..)` for Volume, Brightness
   and Hyprland.
 - **What goes wrong:** a key whose action is Volume loses "Home · Row 1 · Column 2"; the
@@ -948,7 +946,7 @@ base `feat/toggle-keys`), task in brackets, except 65 (PR 13, as decided).
 
 #### 71. Some render tests depend on the machine's font and theme
 
-- **Status:** open. **Found:** 2026-10-17, review 2 (render part). *(proto)*
+- **Status:** fixed in `b1cdf93` on `fix/review-2`, not yet verified on the machine ([VERIFY.md](VERIFY.md)). **Found:** 2026-10-17, review 2 (render part). *(proto)*
 - **Where:** `render.rs` tests built with `Renderer::new` (`strip_panel_isolation`,
   `panel_isolation_with_strip_image`, `busy_face_uses_accent_label_by_default` and 16
   others): `fc-match` and `Theme::load_omarchy()`.
@@ -959,7 +957,7 @@ base `feat/toggle-keys`), task in brackets, except 65 (PR 13, as decided).
 
 #### 72. "New page" on a toggle's on action restyles the key's off face
 
-- **Status:** open. **Found:** 2026-10-17, review 2 (GUI part).
+- **Status:** fixed in `8b33817` (GUI, not compiled yet) on `fix/review-2`, not yet verified on the machine ([VERIFY.md](VERIFY.md)). **Found:** 2026-10-17, review 2 (GUI part).
 - **Where:** `editor.rs` `build_key`, `on_slot.on_new_page` → `new_folder(a, i)`.
 - **What goes wrong:** `new_folder` gives the key a folder glyph (and the page name as its
   label) when it has none: right for a key that opens a folder, wrong when only its on
