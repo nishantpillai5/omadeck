@@ -7,6 +7,7 @@ pub mod config;
 pub mod device;
 pub mod ipc;
 pub mod paths;
+pub mod presets;
 pub mod probe;
 pub mod proc;
 pub mod render;
@@ -18,5 +19,6 @@ pub use config::{
     LookField, OnFace, Page, StateChoice, Style,
 };
 pub use device::DeckInfo;
+pub use presets::{PRESETS, Preset, apply_service, on_path};
 pub use render::{Align, DialStatus, Face, KeyStatus, Level, PANEL_W, PanelStatus, Renderer, tap_to_dial};
 pub use theme::{Rgb, Theme};
