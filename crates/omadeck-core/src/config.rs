@@ -7,6 +7,7 @@ use std::path::Path;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
+use crate::audio::AppQuery;
 use crate::paths;
 use crate::probe::Probe;
 
@@ -768,6 +769,8 @@ pub enum LevelSource {
     Volume(AudioDevice),
     /// The deck's panel brightness, kept in the daemon itself.
     Brightness,
+    /// One app's audio streams (`DialConfig::app_query` says which), read by the daemon.
+    App,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -827,10 +830,26 @@ pub enum Action {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         set: Option<u8>,
     },
+    /// Change or mute one app's audio streams (PipeWire sink inputs).
+    AppVolume {
+        /// The app: a process name (`spotify`), an app name (`Firefox`), a Flatpak id
+        /// (`com.spotify.Client`) or a desktop id (`spotify.desktop`). Ignored when `focused`.
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        app: String,
+        /// Follow the focused window instead of a chosen app.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        focused: bool,
+        /// Percent to change by, signed (per detent on a dial). Ignored when `mute` is set.
+        #[serde(default, skip_serializing_if = "is_zero_i8")]
+        change: i8,
+        /// Toggle the app's mute instead.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        mute: bool,
+    },
 }
 
 impl Action {
-    pub const KINDS: [&'static str; 11] = [
+    pub const KINDS: [&'static str; 12] = [
         "Nothing",
         "Launch app",
         "Run script",
@@ -842,6 +861,7 @@ impl Action {
         "Volume",
         "Next/previous page",
         "Brightness",
+        "App volume",
     ];
 
     /// Run by the daemon itself (page moves and the panel brightness), never by
@@ -864,6 +884,7 @@ impl Action {
             Action::Volume { .. } => 8,
             Action::PageStep { .. } => 9,
             Action::Brightness { .. } => 10,
+            Action::AppVolume { .. } => 11,
         }
     }
 
@@ -909,6 +930,8 @@ impl Action {
             8 => Action::Volume { device: AudioDevice::Output, change: 5, mute: false },
             9 => Action::PageStep { change: 1 },
             10 => Action::Brightness { change: 5, set: None },
+            // Focused works without choosing anything.
+            11 => Action::AppVolume { app: String::new(), focused: true, change: 5, mute: false },
             _ => Action::None,
         }
     }
@@ -922,6 +945,12 @@ impl Action {
             (Action::Volume { device, .. }, Direction::Press) => Action::Volume { device, change: 0, mute: true },
             (Action::Volume { device, change, mute }, Direction::Left) => {
                 Action::Volume { device, change: -change, mute }
+            }
+            (Action::AppVolume { app, focused, .. }, Direction::Press) => {
+                Action::AppVolume { app, focused, change: 0, mute: true }
+            }
+            (Action::AppVolume { app, focused, change, mute }, Direction::Left) => {
+                Action::AppVolume { app, focused, change: -change, mute }
             }
             (Action::Brightness { change, set }, Direction::Left) => Action::Brightness { change: -change, set },
             (Action::PageStep { change }, Direction::Left) => Action::PageStep { change: -change },
@@ -947,6 +976,17 @@ impl Action {
                 c => format!("Page {c}"),
             },
             Action::Brightness { change, set } => brightness_summary(*change, *set),
+            Action::AppVolume { app, focused, change, mute } => app_volume_summary(app, *focused, *change, *mute),
+        }
+    }
+
+    /// The app an app volume action targets: `Focused`, else the chosen app. `None` for
+    /// an app volume with no app set, and for every other action.
+    pub fn app_query(&self) -> Option<AppQuery> {
+        match self {
+            Action::AppVolume { focused: true, .. } => Some(AppQuery::Focused),
+            Action::AppVolume { app, .. } if !app.trim().is_empty() => Some(AppQuery::Named(app.trim().to_string())),
+            _ => None,
         }
     }
 }
@@ -958,6 +998,20 @@ fn volume_summary(device: AudioDevice, change: i8, mute: bool) -> String {
     }
     let sign = if change >= 0 { "+" } else { "" };
     if mic { format!("Mic {sign}{change}%") } else { format!("Volume {sign}{change}%") }
+}
+
+fn app_volume_summary(app: &str, focused: bool, change: i8, mute: bool) -> String {
+    let name = if focused { String::new() } else { crate::audio::display_app(app) };
+    if !focused && name.is_empty() {
+        return "App volume (no app set)".into();
+    }
+    let sign = if change >= 0 { "+" } else { "" };
+    match (focused, mute) {
+        (true, true) => "Toggle mute (focused app)".into(),
+        (true, false) => format!("Focused app volume {sign}{change}%"),
+        (false, true) => format!("Toggle mute ({name})"),
+        (false, false) => format!("{name} volume {sign}{change}%"),
+    }
 }
 
 fn brightness_summary(change: i8, set: Option<u8>) -> String {
@@ -1042,7 +1096,7 @@ impl DialConfig {
     pub fn volume_device(&self) -> Option<AudioDevice> {
         self.level_source().and_then(|s| match s {
             LevelSource::Volume(dev) => Some(dev),
-            LevelSource::Brightness => None,
+            LevelSource::Brightness | LevelSource::App => None,
         })
     }
 
@@ -1080,21 +1134,29 @@ impl DialConfig {
         }
     }
 
-    /// What this dial's strip panel shows: the first `Volume` action's device (which
-    /// wins), else `Brightness` when any of its actions is a brightness action. `None`
-    /// when `live` is set: an explicit live value wins.
+    /// What this dial's strip panel shows: the first `Volume` action's device or `App`
+    /// for the first app volume with an app set, in turn_right, turn_left, press order
+    /// (the first wins), else `Brightness` when any of its actions is a brightness
+    /// action. `None` when `live` is set: an explicit live value wins.
     pub fn level_source(&self) -> Option<LevelSource> {
         if self.live.is_some() {
             return None;
         }
         let actions = [&self.turn_right, &self.turn_left, &self.press];
-        if let Some(dev) = actions.into_iter().find_map(|a| match a {
-            Action::Volume { device, .. } => Some(*device),
+        if let Some(src) = actions.into_iter().find_map(|a| match a {
+            Action::Volume { device, .. } => Some(LevelSource::Volume(*device)),
+            Action::AppVolume { .. } if a.app_query().is_some() => Some(LevelSource::App),
             _ => None,
         }) {
-            return Some(LevelSource::Volume(dev));
+            return Some(src);
         }
         actions.iter().any(|a| matches!(a, Action::Brightness { .. })).then_some(LevelSource::Brightness)
+    }
+
+    /// The app this dial's app volume actions target: the first `Action::app_query`
+    /// among turn_right, turn_left and press.
+    pub fn app_query(&self) -> Option<AppQuery> {
+        [&self.turn_right, &self.turn_left, &self.press].into_iter().find_map(Action::app_query)
     }
 
     /// The look fields, shared with the key face renderer.
@@ -1761,6 +1823,79 @@ slow = true
         let on = k.face_for(&crate::probe::Toggle::On);
         let off = k.face_for(&crate::probe::Toggle::Off);
         assert_eq!((on.label, on.glyph, on.background), (off.label, off.glyph, off.background));
+    }
+
+    #[test]
+    fn app_volume_roundtrip() {
+        let mut c = Config::default();
+        let d = c.dial_mut(1);
+        d.turn_right = Action::AppVolume { app: "spotify".into(), focused: false, change: 5, mute: false };
+        d.press = Action::AppVolume { app: String::new(), focused: true, change: 0, mute: true };
+        let s = toml::to_string_pretty(&c).unwrap();
+        assert!(s.contains(r#"type = "app_volume""#), "{s}");
+        assert!(s.contains(r#"app = "spotify""#), "{s}");
+        assert!(!s.contains("focused = false"), "defaults are left out: {s}");
+        assert!(!s.contains("change = 0"), "{s}");
+        assert_eq!(toml::from_str::<Config>(&s).unwrap(), c);
+        assert_eq!(c.dial(1).unwrap().level_source(), Some(LevelSource::App));
+        assert_eq!(c.dial(1).unwrap().app_query(), Some(AppQuery::Named("spotify".into())));
+    }
+
+    #[test]
+    fn level_source_app() {
+        let app = |app: &str| Action::AppVolume { app: app.into(), focused: false, change: 5, mute: false };
+        let d = DialConfig {
+            turn_left: Action::Volume { device: AudioDevice::Input, change: -5, mute: false },
+            turn_right: app("spotify"),
+            ..DialConfig::new(0)
+        };
+        assert_eq!(d.level_source(), Some(LevelSource::App), "turn_right comes first");
+        assert_eq!(d.volume_device(), None);
+        // No app set: skipped, so the Volume wins.
+        let d = DialConfig { turn_right: app("  "), ..d };
+        assert_eq!(d.level_source(), Some(LevelSource::Volume(AudioDevice::Input)));
+        assert_eq!(d.app_query(), None);
+        // Alone with no app set: no level source (the panel stays $X1).
+        let d = DialConfig { turn_right: app(""), ..DialConfig::new(0) };
+        assert_eq!(d.level_source(), None);
+        let d = DialConfig {
+            press: Action::AppVolume { app: String::new(), focused: true, change: 0, mute: true },
+            ..DialConfig::new(0)
+        };
+        assert_eq!((d.level_source(), d.app_query()), (Some(LevelSource::App), Some(AppQuery::Focused)));
+    }
+
+    #[test]
+    fn summary_app_volume() {
+        let a =
+            |app: &str, focused, change, mute| Action::AppVolume { app: app.into(), focused, change, mute }.summary();
+        assert_eq!(a("spotify", false, 5, false), "Spotify volume +5%");
+        assert_eq!(a("spotify", false, 0, true), "Toggle mute (Spotify)");
+        assert_eq!(a("", true, -5, false), "Focused app volume -5%");
+        assert_eq!(a("spotify", true, 0, true), "Toggle mute (focused app)");
+        assert_eq!(a(" ", false, 5, false), "App volume (no app set)");
+    }
+
+    #[test]
+    fn kinds_has_app_volume_at_11() {
+        assert_eq!(Action::KINDS[11], "App volume");
+        let a = Action::empty_of_kind(11);
+        assert_eq!(a.kind_index(), 11);
+        assert_eq!(a, Action::AppVolume { app: String::new(), focused: true, change: 5, mute: false });
+        assert!(!a.is_deck_owned() && !a.is_trackable());
+        assert_eq!(a.app_query(), Some(AppQuery::Focused));
+    }
+
+    #[test]
+    fn default_for_app_volume() {
+        assert_eq!(
+            Action::default_for(11, Direction::Left),
+            Action::AppVolume { app: String::new(), focused: true, change: -5, mute: false }
+        );
+        assert_eq!(
+            Action::default_for(11, Direction::Press),
+            Action::AppVolume { app: String::new(), focused: true, change: 0, mute: true }
+        );
     }
 
     #[test]

@@ -553,6 +553,8 @@ impl Renderer {
                     self.volume_icon(&face, device, muted, glyph_color)
                 }
                 LevelSource::Brightness => self.brightness_icon(&face, glyph_color),
+                // Drawn in task E; until then `$B1` with no icon.
+                LevelSource::App => None,
             };
             let bar = B1Colors { title, value: fg, fill: fg, track: tone.mix(fg, 0.22) };
             self.draw_b1(&mut img, &face, bar, want_label, icon, st.panel.level.as_ref(), true);

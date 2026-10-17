@@ -25,6 +25,7 @@ pub fn run(action: &Action) -> Result<()> {
         Action::Url { url } => open_url(url),
         Action::Hyprland { dispatch } => hypr_dispatch(dispatch),
         Action::Volume { device, change, mute } => run_volume(*device, *change, *mute),
+        Action::AppVolume { change, mute, .. } => run_app_volume(action, i32::from(*change), *mute),
         // Refused above; the daemon runs these itself.
         Action::Page { .. } | Action::Back | Action::PageStep { .. } | Action::Brightness { .. } => Ok(()),
     }
@@ -37,6 +38,9 @@ pub fn run_steps(action: &Action, steps: u8) -> Result<()> {
     // script ignores a second mute within 250 ms, and one command is snappier.
     if let Action::Volume { device, change, mute } = action {
         return run_volume(*device, if *mute { 0 } else { folded_volume(*change, steps) }, *mute);
+    }
+    if let Action::AppVolume { change, mute, .. } = action {
+        return run_app_volume(action, if *mute { 0 } else { i32::from(folded_volume(*change, steps)) }, *mute);
     }
     // `hyprctl dispatch` waits for Hyprland's answer. The daemon never gets here with a
     // Hyprland action (it queues it on its ordered `HyprWorker`); for the other callers
@@ -74,6 +78,29 @@ pub fn folded_volume(change: i8, steps: u8) -> i8 {
 /// "Try it now"). The daemon calls [`apply_volume`] on its watcher thread instead.
 fn run_volume(device: AudioDevice, change: i8, mute: bool) -> Result<()> {
     thread::Builder::new().name("volume".into()).spawn(move || apply_volume(device, change, mute))?;
+    Ok(())
+}
+
+/// Change an app's volume on a helper thread (`omadeckd press`, "Try it now"). The
+/// daemon runs `WatchCmd::AppVolume` on its watcher instead. No sticky app here: a
+/// focused action outside the daemon changes the focused window's app or nothing.
+fn run_app_volume(action: &Action, change: i32, mute: bool) -> Result<()> {
+    let Some(query) = action.app_query() else { bail!("no app set") };
+    thread::Builder::new().name("app-volume".into()).spawn(move || {
+        let Some(streams) = audio::streams() else {
+            log::warn!("app volume: couldn't read the audio streams (is pactl installed?)");
+            return;
+        };
+        let window = if query == audio::AppQuery::Focused { audio::focused_window() } else { None };
+        let mut sticky = None;
+        let lv = audio::resolve(&streams, &query, window.as_ref(), &mut sticky, audio::proc_parent);
+        if lv.ids.is_empty() {
+            log::info!("no app with audio for {query:?}");
+            return;
+        }
+        let mute_to = mute.then(|| !lv.level.is_some_and(|l| l.muted));
+        audio::run_commands(&audio::app_volume_commands(&lv.ids, change, mute_to));
+    })?;
     Ok(())
 }
 
@@ -456,8 +483,9 @@ mod tests {
     #[test]
     fn run_refuses_exactly_the_deck_owned_kinds() {
         for kind in 0..Action::KINDS.len() {
-            // Volume would really change the volume; it isn't deck-owned anyway.
-            if kind == 8 {
+            // Volume would really change the volume, and App volume would run pactl and
+            // wpctl; neither is deck-owned anyway.
+            if kind == 8 || kind == 11 {
                 continue;
             }
             let a = Action::empty_of_kind(kind);

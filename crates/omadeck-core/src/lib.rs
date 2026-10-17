@@ -16,6 +16,7 @@ pub mod state;
 pub mod sysinfo;
 pub mod theme;
 
+pub use audio::{AppLevel, AppQuery};
 pub use config::{
     Action, AudioDevice, BusyFace, Config, DialConfig, Direction, FaceTab, HOME, KeyConfig, Keys, LevelSource, Live,
     LookField, OnFace, Page, StateChoice, Style,
