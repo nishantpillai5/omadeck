@@ -57,21 +57,22 @@ Task 4 (brightness):
 - [x] With the daemon running, edit `brightness = 45`: the deck dims within a second. (2026-10-17, machine, dev build; edited to 60, `brightness 60%` logged <1 s later and saved to state.toml.)
 
 Task 5 (watcher):
-- [ ] Spin the volume dial hard both ways, then stop. The bar ends on the real level
-      (`wpctl get-volume @DEFAULT_AUDIO_SINK@`) and is still there 2 s later.
-- [ ] Unplug the deck mid-spin and plug it back: the bar shows the real level.
-- [ ] Mute the mic with its key, then unplug and replug: the GUI still shows the key on.
-- [ ] A `slow = true` toggle with `state = "false"` and an action that does nothing.
-      Press it: busy, then off again after about 15 s.
-- [ ] Deck unplugged, GUI open: `RUST_LOG=debug omadeckd` shows no `Disconnected` every
-      2 s, and the GUI doesn't flicker.
+- [x] Spin the volume dial hard both ways, then stop. The bar ends on the real level
+      (`wpctl get-volume @DEFAULT_AUDIO_SINK@`) and is still there 2 s later. (2026-10-17, machine; ended at 55%, stable at 2 s, GUI agreed.)
+- [x] Unplug the deck mid-spin and plug it back: the bar shows the real level. (2026-10-17, machine; came back at the real 20%, no guess-from-0 flash.)
+- [x] Mute the mic with its key, then unplug and replug: the GUI still shows the key on. (2026-10-17, machine; the Mic toggle key 7, made with the Mic-mute preset, stayed on after replug on deck and GUI.)
+- [x] A `slow = true` toggle with `state = "false"` and an action that does nothing.
+      Press it: busy, then off again after about 15 s. (2026-10-17, machine; key 5, Busy tab + progress bar, settled to off.)
+- [x] Deck unplugged, GUI open: `RUST_LOG=debug omadeckd` shows no `Disconnected` every
+      2 s, and the GUI doesn't flicker. (2026-10-17, machine; exactly one `lost Stream Deck +` event over ~10 s out.)
 
 Task 6 (Hyprland worker):
-- [ ] A dial on `workspace e+1`, spun hard: workspaces step in order, with no stall.
-- [ ] A key with `dispatch = "nosuchdispatcher"`: the GUI toasts "Key N: hyprctl: …"
-      within a moment, and the deck stays responsive.
+- [x] A dial on `workspace e+1`, spun hard: workspaces step in order, with no stall. (2026-10-17, machine; dial 1, ordered `workspace e+1` in the log. Note: this Hyprland translates to Lua dispatchers, `hl.dsp.focus({ workspace = "e+1" })`.)
+- [x] A key with `dispatch = "nosuchdispatcher"`: the GUI toasts "Key N: hyprctl: …"
+      within a moment, and the deck stays responsive. (2026-10-17, machine; key 5, toast shown, deck responsive.)
 
-Task 7 (toggle editor, GUI):
+Task 7 (toggle editor, GUI) — **skipped at the user's request (2026-10-17)**; the GUI was
+linked and runs (Tasks 5–6 exercised it), but these editor click-throughs were not done:
 - [ ] Select a toggle key, click **On**, then click a plain key: no crash, and the plain
       key's editor shows no tabs. Back on the toggle key, the Off tab is shown.
 - [ ] On the On tab, switch **Two faces** off: no crash, and the Off tab is shown.
@@ -90,7 +91,7 @@ Task 7 (toggle editor, GUI):
       toggle (no key moves to slot 1), its background stays, and config.toml's state
       command quotes the URL. Cancel closes the dialog with no change.
 
-Task 8 (GUI):
+Task 8 (GUI) — **skipped at the user's request (2026-10-17)**:
 - [ ] A key set to Volume keeps "Home · Row 1 · Column 2" under its title, and the
       volume explanation is a dim row.
 - [ ] `systemctl --user stop omadeckd` with the GUI open: the banner shows, and the
@@ -102,9 +103,8 @@ Task 8 (GUI):
 - [ ] With `jq` renamed away, a fresh starter layout's key 11 is a plain Night light key.
 
 Task 9 (docs):
-- [ ] Uncomment the Backup block in a scratch copy of `examples/config.toml`; `cargo run
-      -p omadeckd -- snapshot /tmp/s.png` loads it. (On the Mac, its TOML was checked to
-      parse as one `[[key]]` with `busy_while_running` and `[key.busy] bar = true`.)
+- [x] Uncomment the Backup block in a scratch copy of `examples/config.toml`; `cargo run
+      -p omadeckd -- snapshot /tmp/s.png` loads it. (2026-10-17, machine; dev build, `snapshot /tmp/s.png` wrote the PNG with the block uncommented — `busy_while_running`, `[key.on] slow/state` and `[key.busy] bar` all parse.)
 
 Not done on the Mac, deliberately:
 - `dial_slot` has no caller until PR 10, so it carries `#[allow(dead_code)]`. PR 10
