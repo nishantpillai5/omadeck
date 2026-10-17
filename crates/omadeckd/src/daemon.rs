@@ -11,7 +11,9 @@ use omadeck_core::device::{DeviceStateUpdate, StreamDeckError};
 use omadeck_core::ipc::{Command, Event};
 use omadeck_core::probe::{self, Probe, Value, Values};
 use omadeck_core::state::State;
-use omadeck_core::{Action, AudioDevice, Config, Level, LevelSource, PanelStatus, Renderer, action, tap_to_dial};
+use omadeck_core::{
+    Action, AudioDevice, Config, Level, LevelSource, PanelStatus, Renderer, action, paths, tap_to_dial,
+};
 
 use crate::deck::{self, Deck};
 use crate::hub::Hub;
@@ -42,9 +44,32 @@ impl Runtime {
     /// Read the state file once, at start.
     pub fn load(cfg: &Config) -> Self {
         let state = State::load();
-        let brightness = state.brightness.unwrap_or(cfg.brightness);
+        let brightness = start_brightness(cfg.brightness, state.brightness, config_newer_than_state());
         Runtime { values: Values { brightness, ..Values::default() }, state }
     }
+}
+
+/// The brightness at start: the last value the daemon saved, unless the config's
+/// `brightness` was edited after that save (a hand edit, or the slider with the daemon
+/// stopped) — then that edit wins, as the state file's own docs promise.
+fn start_brightness(cfg: u8, state: Option<u8>, cfg_newer: bool) -> u8 {
+    if let Some(v) = state
+        && !cfg_newer
+    {
+        return v;
+    }
+    cfg
+}
+
+/// Whether the config file was modified after the state file.
+fn config_newer_than_state() -> bool {
+    let (Ok(c), Ok(s)) = (
+        std::fs::metadata(paths::config_file()).and_then(|m| m.modified()),
+        std::fs::metadata(paths::state_file()).and_then(|m| m.modified()),
+    ) else {
+        return false;
+    };
+    c > s
 }
 
 /// Where an input came from, so a failure is reported against the right key or dial.
@@ -569,6 +594,13 @@ mod tests {
         let old = Config { brightness: 70, ..Config::default() };
         assert_eq!(hand_edited_brightness(&old, &Config { brightness: 30, ..Config::default() }), Some(30));
         assert_eq!(hand_edited_brightness(&old, &Config { brightness: 70, ..Config::default() }), None);
+    }
+
+    #[test]
+    fn start_brightness_saved_value_wins_unless_the_config_was_edited_later() {
+        assert_eq!(start_brightness(90, Some(50), false), 50); // the saved value
+        assert_eq!(start_brightness(75, Some(50), true), 75); // the config was edited after the save
+        assert_eq!(start_brightness(90, None, false), 90); // no state yet: the config
     }
 
     #[test]
