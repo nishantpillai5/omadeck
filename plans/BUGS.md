@@ -600,7 +600,7 @@ numbers). 22–43 are fixed on `fix/review` ([review-fixes.md](review-fixes.md))
 
 #### 44. The GUI's brightness slider and preview show the config's value, not the deck's
 
-- **Status:** fixed in `485a6ca`. **Found:** 2026-10-17, code review.
+- **Status:** fixed in `75738f8` + `ad261b5` (groundwork: `Event::Brightness`, the GUI mirrors it; an earlier note named `485a6ca`, which is a docs commit). **Found:** 2026-10-17, code review.
 - **Where:** `app.rs` `refresh_strip` (`LevelSource::Brightness => cfg.brightness`),
   `settings_popover` (the slider), the slider handler (writes `config.brightness`).
 - **What goes wrong:** turn a brightness dial from 50 to 80: the slider and the panel
@@ -1054,8 +1054,8 @@ the code; *(plausible)* needs the machine to confirm. All 32 are fixed on `fix/r
 - **Status:** fixed in `9df8df3` on `fix/review-3`, not yet verified on the machine ([VERIFY.md](VERIFY.md)). **Found:** 2026-10-17, review 3 (GUI) *(test: GUI type-checked with a
   stub pkg-config)*.
 - **Branch:** `feat/live-keys` (`969ab3a`: two `type_complexity` warnings on the `LiveEdit`
-  closures in `editor.rs`); `feat/strip-long-press` (`large_enum_variant` on `app.rs`
-  `Msg`, first seen at its tip).
+  closures in `editor.rs`); `feat/media-dial` (`large_enum_variant` on `app.rs` `Msg`:
+  PR 14's events made `Event` 280 bytes).
 - **What goes wrong:** every plan's check step, and CI, run clippy with `-D warnings`: CI is
   red from `feat/live-keys` on.
 - **Fix:** a `type LiveEdit = Rc<dyn Fn(&Rc<App>, Box<dyn FnOnce(&mut Option<Live>)>)>;`
@@ -1162,7 +1162,7 @@ the code; *(plausible)* needs the machine to confirm. All 32 are fixed on `fix/r
 #### 90. A preset applied in place keeps the key's live value and busy settings
 
 - **Status:** fixed in `9387a41` on `fix/review-3`, not yet verified on the machine ([VERIFY.md](VERIFY.md)). **Found:** 2026-10-17, review 3 (core) *(read)*.
-- **Branch:** `fix/review-2` (`b1cdf93`, presets apply in place); `live` is PR 9's.
+- **Branch:** `fix/review-2` (`b1cdf93`, presets apply in place); `live` is PR 9's; PR 14's Play/Pause preset needs the same clearing (folded there too).
 - **What goes wrong:** Mic mute on a CPU key keeps showing CPU; a leftover
   `busy_while_running` or `[key.busy]` stays.
 - **Fix:** the shared preset helper also sets `live = None`, `busy = None`,
@@ -1191,7 +1191,7 @@ the code; *(plausible)* needs the machine to confirm. All 32 are fixed on `fix/r
 #### 94. A media dial's panel and its actions can follow different players
 
 - **Status:** fixed in `324c99d` on `fix/review-3`, not yet verified on the machine ([VERIFY.md](VERIFY.md)). **Found:** 2026-10-17, review 3 (core probes) *(read)*.
-- **Branch:** `feat/media-dial` (`839d72d`).
+- **Branch:** `feat/media-dial` (`839d72d`); the strip long press (PR 16) adds `Source::LongTap` to the dial sources that fall back.
 - **Where:** `DialConfig::media_player` (the panel) vs `Daemon::dispatch` (each action's
   own `player`).
 - **What goes wrong:** turns on `player = "spotify"`, press with no player: the panel shows
@@ -1274,6 +1274,8 @@ the code; *(plausible)* needs the machine to confirm. All 32 are fixed on `fix/r
 
 - **Status:** fixed in `746e326` on `fix/review-3` (GUI: type-checked, not run), not yet verified on the machine ([VERIFY.md](VERIFY.md)). **Found:** 2026-10-17, review 3 (GUI editor) *(plausible; older than
   `55d0d62`, but the new App volume, Media and Volume spins use it)*.
+- **Branch:** older than `55d0d62` (the key slot's `get`/`set` since groundwork); the fix
+  needs PR 12's `ActionTarget` handling, so it is folded into PR 12.
 - **Where:** `editor.rs` `build_key`, `slot.get`/`slot.set` and `on_slot`'s
   (`a.key(i)`/`a.edit(i, …)`).
 - **What goes wrong:** a spin's focus-out commit after the deck changed page writes key `i`

@@ -31,6 +31,14 @@ listed in each file.
 
 ## What's next, in order
 
+**Folded (2026-10-17):** the fixes now also live inside the features they fix, on
+`pr/01-plus-input` … `pr/16-strip-long-press` (see Branches below). From here, a fix found
+on the machine goes on the `pr/*` branch it belongs to, and the branches above it are
+rebased (or, until the PRs are opened, on `daily` first and folded later).
+Still to do on the series, separately from the fold (the fold kept the content
+byte-identical): merge the CHANGELOG "Fixed" entries for unreleased features into their
+"Added" text, and tidy five duplicated or misplaced doc comments.
+
 **Built, not verified (2026-10-17): `fix/review-2` and PRs 9–16.** All nine branches were
 built on the Mac in one go and pushed to the fork, each on the one before:
 `fix/review-2` → `feat/live-keys` → `feat/app-volume` → `feat/ctl` →
@@ -299,6 +307,7 @@ Useful pages (check they're still current when you use them):
 | `daily` | `upstream/master` + every `feat/*` merged in | What I build and run. Today the chain is linear, so it is `fix/review-3` (`746e326`). |
 | `fix/bugs` | `feat/strip-backgrounds` | The 2026-10-17 bug pass (all 21 bugs closed). |
 | `fix/review` | `fix/bugs` | The 2026-10-17 review fixes, BUGS.md 22–43 (`87be396`). |
+| `pr/01-*` … `pr/16-*` | each on the previous | **The PR series (2026-10-17).** The `feat/*` branches with every fix folded in: each fix is its own commit at the end of the feature it fixes (`Folded from <sha>` in the message). `pr/07b-groundwork` is groundwork as its own PR, before PR 8. `pr/16-strip-long-press` has exactly `fix/review-3`'s tree; `pr/07-…` equals `fix/review`'s and `pr/08-…` equals `fix/review-2`'s. Every tip passes fmt, clippy (GUI type-checked) and the core and daemon tests. The old `feat/*` and `fix/*` branches stay as they were, so the SHAs in these notes still resolve. |
 | `plans` | `upstream/master` | These notes only. Never merged anywhere. |
 
 New features from PR 7 on mostly touch the same files as PRs 1–6, so base each new branch
