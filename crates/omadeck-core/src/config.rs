@@ -377,6 +377,144 @@ impl KeyConfig {
     }
 }
 
+/// Which face of a key the configurator's editor is showing.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum FaceTab {
+    #[default]
+    Off,
+    On,
+    Busy,
+}
+
+impl FaceTab {
+    /// The state a preview of this tab shows (Busy with a sample percentage, so the bar
+    /// is visible too).
+    pub fn preview(self) -> crate::probe::Toggle {
+        use crate::probe::Toggle;
+        match self {
+            FaceTab::Off => Toggle::Off,
+            FaceTab::On => Toggle::On,
+            FaceTab::Busy => Toggle::Busy("Loading 42%".into()),
+        }
+    }
+}
+
+/// One of the look fields a face can carry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LookField {
+    Label,
+    Icon,
+    Glyph,
+    Background,
+    LabelColor,
+}
+
+impl KeyConfig {
+    /// The field as set on that tab's face; `None` when unset there.
+    pub fn look(&self, tab: FaceTab, field: LookField) -> Option<String> {
+        let on = self.on.as_ref();
+        let busy = self.busy.as_ref();
+        match (tab, field) {
+            (FaceTab::Off, LookField::Label) => Some(self.label.clone()),
+            (FaceTab::Off, LookField::Icon) => self.icon.clone(),
+            (FaceTab::Off, LookField::Glyph) => self.glyph.clone(),
+            (FaceTab::Off, LookField::Background) => self.background.clone(),
+            (FaceTab::Off, LookField::LabelColor) => self.label_color.clone(),
+            (FaceTab::On, LookField::Label) => on.and_then(|f| f.label.clone()),
+            (FaceTab::On, LookField::Icon) => on.and_then(|f| f.icon.clone()),
+            (FaceTab::On, LookField::Glyph) => on.and_then(|f| f.glyph.clone()),
+            (FaceTab::On, LookField::Background) => on.and_then(|f| f.background.clone()),
+            (FaceTab::On, LookField::LabelColor) => on.and_then(|f| f.label_color.clone()),
+            (FaceTab::Busy, LookField::Label) => busy.and_then(|f| f.label.clone()),
+            (FaceTab::Busy, LookField::Icon) => busy.and_then(|f| f.icon.clone()),
+            (FaceTab::Busy, LookField::Glyph) => busy.and_then(|f| f.glyph.clone()),
+            (FaceTab::Busy, LookField::Background) => busy.and_then(|f| f.background.clone()),
+            (FaceTab::Busy, LookField::LabelColor) => busy.and_then(|f| f.label_color.clone()),
+        }
+    }
+
+    /// Set the field on that tab's face; `None` or blank clears it (Off's label becomes
+    /// ""). On and Busy create their table if missing.
+    pub fn set_look(&mut self, tab: FaceTab, field: LookField, v: Option<String>) {
+        let Some(v) = v.as_deref().map(str::trim).filter(|s| !s.is_empty()).map(str::to_string) else {
+            // Blank clears.
+            match (tab, field) {
+                (FaceTab::Off, LookField::Label) => self.label.clear(),
+                (FaceTab::Off, LookField::Icon) => self.icon = None,
+                (FaceTab::Off, LookField::Glyph) => self.glyph = None,
+                (FaceTab::Off, LookField::Background) => self.background = None,
+                (FaceTab::Off, LookField::LabelColor) => self.label_color = None,
+                (FaceTab::On, f) => {
+                    let on = self.on.get_or_insert_with(OnFace::default);
+                    on.clear(f);
+                }
+                (FaceTab::Busy, f) => {
+                    let busy = self.busy.get_or_insert_with(BusyFace::default);
+                    busy.clear(f);
+                }
+            }
+            return;
+        };
+        match (tab, field) {
+            (FaceTab::Off, LookField::Label) => self.label = v,
+            (FaceTab::Off, LookField::Icon) => self.icon = Some(v),
+            (FaceTab::Off, LookField::Glyph) => self.glyph = Some(v),
+            (FaceTab::Off, LookField::Background) => self.background = Some(v),
+            (FaceTab::Off, LookField::LabelColor) => self.label_color = Some(v),
+            (FaceTab::On, f) => {
+                let on = self.on.get_or_insert_with(OnFace::default);
+                on.set(f, v);
+            }
+            (FaceTab::Busy, f) => {
+                let busy = self.busy.get_or_insert_with(BusyFace::default);
+                busy.set(f, v);
+            }
+        }
+    }
+}
+
+impl OnFace {
+    pub fn clear(&mut self, f: LookField) {
+        match f {
+            LookField::Label => self.label = None,
+            LookField::Icon => self.icon = None,
+            LookField::Glyph => self.glyph = None,
+            LookField::Background => self.background = None,
+            LookField::LabelColor => self.label_color = None,
+        }
+    }
+    pub fn set(&mut self, f: LookField, v: String) {
+        match f {
+            LookField::Label => self.label = Some(v),
+            LookField::Icon => self.icon = Some(v),
+            LookField::Glyph => self.glyph = Some(v),
+            LookField::Background => self.background = Some(v),
+            LookField::LabelColor => self.label_color = Some(v),
+        }
+    }
+}
+
+impl BusyFace {
+    pub fn clear(&mut self, f: LookField) {
+        match f {
+            LookField::Label => self.label = None,
+            LookField::Icon => self.icon = None,
+            LookField::Glyph => self.glyph = None,
+            LookField::Background => self.background = None,
+            LookField::LabelColor => self.label_color = None,
+        }
+    }
+    pub fn set(&mut self, f: LookField, v: String) {
+        match f {
+            LookField::Label => self.label = Some(v),
+            LookField::Icon => self.icon = Some(v),
+            LookField::Glyph => self.glyph = Some(v),
+            LookField::Background => self.background = Some(v),
+            LookField::LabelColor => self.label_color = Some(v),
+        }
+    }
+}
+
 /// Merge one state's look over a face. Setting `icon` or `glyph` replaces both (one
 /// image per state, as in Elgato; otherwise a base icon would always beat an on glyph).
 fn merge_looks<'a>(
@@ -1114,6 +1252,20 @@ slow = true
         // A blank busy.label falls through to the text.
         let k = KeyConfig { busy: Some(BusyFace { label: Some("  ".into()), ..BusyFace::default() }), ..base() };
         assert_eq!(k.face_for(&crate::probe::Toggle::Busy("43%".into())).label, "43%");
+    }
+
+    #[test]
+    fn set_look_targets_each_tab() {
+        let mut k = KeyConfig { label: "Mic".into(), ..KeyConfig::new(0) };
+        k.set_look(FaceTab::On, LookField::Label, Some("Muted".into()));
+        assert_eq!(k.on.as_ref().unwrap().label.as_deref(), Some("Muted"), "On creates [key.on]");
+        assert_eq!(k.label, "Mic", "the off face is untouched");
+        k.set_look(FaceTab::Busy, LookField::Glyph, Some("f0bc8".into()));
+        assert_eq!(k.look(FaceTab::Busy, LookField::Glyph).as_deref(), Some("f0bc8"));
+        k.set_look(FaceTab::On, LookField::Label, Some("  ".into()));
+        assert_eq!(k.look(FaceTab::On, LookField::Label), None, "blank clears");
+        k.set_look(FaceTab::Off, LookField::Label, None);
+        assert_eq!(k.label, "");
     }
 
     #[test]
