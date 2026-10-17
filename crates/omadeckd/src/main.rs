@@ -4,10 +4,10 @@
 mod daemon;
 mod deck;
 mod hub;
+mod hypr_worker;
 mod nav;
 mod saver;
 mod watch;
-mod worker;
 
 use std::path::Path;
 use std::sync::Arc;
@@ -26,7 +26,6 @@ use omadeck_core::{Config, DeckInfo, Renderer, action, paths};
 
 use daemon::Daemon;
 use hub::Hub;
-use worker::Worker;
 
 const SCAN_INTERVAL: Duration = Duration::from_secs(2);
 const RELOAD_DEBOUNCE: Duration = Duration::from_millis(150);
@@ -169,7 +168,6 @@ fn run() -> Result<()> {
     }
 
     let mut hid = device::new_hidapi().context("initialising hidapi")?;
-    let worker = Worker::start().context("starting the action worker")?;
     let (cfg, cfg_loaded) = match Config::load() {
         Ok(c) => (c, true),
         Err(e) => {
@@ -177,7 +175,7 @@ fn run() -> Result<()> {
             (Config::default(), false)
         }
     };
-    let mut daemon = Daemon::new(cfg, cfg_loaded, hub, watch::start(), saver::start_saver(), worker);
+    let mut daemon = Daemon::new(cfg, cfg_loaded, hub, watch::start(), saver::start_saver());
     log::info!("theme: {}", daemon.renderer.theme.name);
     let mut last_scan: Option<Instant> = None;
 
@@ -222,8 +220,8 @@ fn run() -> Result<()> {
         }
         daemon.handle_commands();
         daemon.apply_values();
-        daemon.drain_worker_failures();
         daemon.poll_jobs();
+        daemon.poll_hypr();
 
         if daemon.deck.is_none() {
             // With no deck, `flush` only runs `publish_keys`: a job's progress and a

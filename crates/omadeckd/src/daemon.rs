@@ -19,10 +19,10 @@ use omadeck_core::{
 
 use crate::deck::{self, Deck};
 use crate::hub::Hub;
+use crate::hypr_worker::{HyprJob, HyprWorker};
 use crate::nav::Nav;
 use crate::saver::StateSaver;
 use crate::watch::{WatchCmd, Watcher};
-use crate::worker::Worker;
 
 /// The longest a pass waits for the deck; also the latency of hub commands and values.
 pub const READ_TIMEOUT: Duration = Duration::from_millis(100);
@@ -185,8 +185,8 @@ pub struct Daemon {
     pub hub: Hub,
     pub watcher: Watcher,
     pub saver: StateSaver,
-    /// Actions that wait for an answer (Hyprland dispatchers) run here, off the deck loop.
-    pub worker: Worker,
+    /// Runs every Hyprland dispatch off the loop, in order.
+    pub hypr: HyprWorker,
     pub rt: Runtime,
     pub deck: Option<Deck>,
     /// What was last published per strip panel (`Event::DialStatus`), so only changes go out.
@@ -206,7 +206,7 @@ pub struct Daemon {
 impl Daemon {
     /// `cfg_loaded` is false when config.toml didn't parse and `cfg` is the empty
     /// fallback: its `brightness` is then no edit.
-    pub fn new(cfg: Config, cfg_loaded: bool, hub: Hub, watcher: Watcher, saver: StateSaver, worker: Worker) -> Self {
+    pub fn new(cfg: Config, cfg_loaded: bool, hub: Hub, watcher: Watcher, saver: StateSaver) -> Self {
         let renderer = Renderer::new(&cfg.style);
         let saved = State::load();
         let rt = Runtime::start(saved.clone(), cfg_loaded.then_some(cfg.brightness));
@@ -222,7 +222,7 @@ impl Daemon {
             hub,
             watcher,
             saver,
-            worker,
+            hypr: HyprWorker::start(),
             rt,
             deck: None,
             published: HashMap::new(),
@@ -697,15 +697,7 @@ impl Daemon {
         } else {
             log::info!("{src}: {}", act.summary());
         }
-        // hyprctl waits for Hyprland's answer; the deck shouldn't. These run on the
-        // worker, one at a time, in the order they were pressed.
-        if matches!(act, Action::Hyprland { .. }) {
-            for _ in 0..steps {
-                self.worker.run(Self::index_of(src), act.clone());
-            }
-            return true;
-        }
-        match self.dispatch(act, steps) {
+        match self.dispatch(src, act, steps) {
             Ok(moved) => {
                 if moved {
                     self.show_page();
@@ -717,22 +709,6 @@ impl Daemon {
                 self.report_failure(src, page, format!("{e:#}"));
                 false
             }
-        }
-    }
-
-    /// The key or dial a failure is reported against; a flick has none.
-    fn index_of(src: Source) -> u8 {
-        match src {
-            Source::Key(i) | Source::Turn(i) | Source::Press(i) | Source::Tap(i) => i,
-            Source::Flick => 0,
-        }
-    }
-
-    /// Publish the worker's failures since the last pass, against their keys.
-    pub fn drain_worker_failures(&mut self) {
-        for (i, message) in self.worker.failures() {
-            log::warn!("key {i}: {message}");
-            self.hub.publish(Event::ActionFailed { index: i, page: None, message });
         }
     }
 
@@ -749,9 +725,16 @@ impl Daemon {
         }
     }
 
+    /// Every pass: report the Hyprland dispatches that failed on the worker.
+    pub fn poll_hypr(&mut self) {
+        while let Ok(f) = self.hypr.failed.try_recv() {
+            self.report_failure(f.src, f.page, f.message);
+        }
+    }
+
     /// Run an action: page moves, brightness and volume are handled here, everything else
     /// goes to `action::run_steps`. Returns whether the page moved.
-    fn dispatch(&mut self, act: &Action, steps: u8) -> Result<bool> {
+    fn dispatch(&mut self, src: Source, act: &Action, steps: u8) -> Result<bool> {
         match act {
             Action::Page { page } if self.cfg.has_page(page) => Ok(self.nav.go(Some(page))),
             Action::Page { page } => Err(anyhow::anyhow!("there's no page named “{page}”")),
@@ -779,6 +762,17 @@ impl Daemon {
                 self.guess_volume(*device, change, *mute);
                 // Runs on the watcher, after any earlier change, and is read back there.
                 let _ = self.watcher.cmd.send(WatchCmd::Volume { device: *device, change, mute: *mute });
+                Ok(false)
+            }
+            Action::Hyprland { dispatch } => {
+                // Queued on the worker, in order behind earlier ones: `hyprctl` waits for
+                // Hyprland, which must never stall the deck. Only an empty dispatcher fails
+                // here; anything else comes back through `poll_hypr`.
+                if dispatch.trim().is_empty() {
+                    anyhow::bail!("no dispatcher set");
+                }
+                let page = self.nav.current().map(str::to_string);
+                self.hypr.send(HyprJob { src, page, dispatch: dispatch.clone(), steps });
                 Ok(false)
             }
             a => action::run_steps(a, steps).map(|_| false),
