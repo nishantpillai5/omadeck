@@ -176,13 +176,14 @@ impl Runtime {
 }
 
 /// Where an input came from, so a failure is reported against the right key or dial.
-/// PR 16 adds `LongTap(u8)`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Source {
     Key(u8),
     Turn(u8),
     Press(u8),
     Tap(u8),
+    /// A long press on a dial's strip panel.
+    LongTap(u8),
     Flick,
     /// A control command run as itself (`omadeckd page`, `brightness`, Try it now): its
     /// reply carries a failure, so nothing is published for it.
@@ -195,7 +196,7 @@ impl fmt::Display for Source {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Source::Key(i) => write!(f, "key {i}"),
-            Source::Turn(i) | Source::Press(i) | Source::Tap(i) => write!(f, "dial {i}"),
+            Source::Turn(i) | Source::Press(i) | Source::Tap(i) | Source::LongTap(i) => write!(f, "dial {i}"),
             Source::Flick => write!(f, "strip flick"),
             Source::Ctl => write!(f, "omadeckd"),
             Source::Step => write!(f, "step"),
@@ -491,7 +492,7 @@ impl Daemon {
                 let (res, what) = match dir {
                     Direction::Left => (self.turn_dial(index, -(steps as i8), false), "left"),
                     Direction::Right => (self.turn_dial(index, steps as i8, false), "right"),
-                    Direction::Press => (self.tap_dial(index), "press"),
+                    Direction::Press => (self.tap_dial(index, false), "press"),
                 };
                 let times = if steps > 1 && dir != Direction::Press { format!(" x{steps}") } else { String::new() };
                 match res {
@@ -855,16 +856,14 @@ impl Daemon {
                 self.hub.publish(Event::StripTap { x, y });
                 // A tap on a panel does the same as pressing its dial, as in the Elgato
                 // app: run the dial's press and flash the title.
-                let Some(d) = &mut self.deck else { return };
-                let Some((w, _)) = d.info.strip else { return };
-                let Some(i) = tap_to_dial(x as u32, w, d.info.dials as usize) else { return };
-                log::info!("strip tap on dial {i}");
-                let _ = self.tap_dial(i as u8);
+                self.strip_touch(x, false);
             }
             DeviceStateUpdate::TouchScreenLongPress(x, y) => {
-                // Published for now; PR 16's long press uses it.
                 log::info!("strip long press at ({x}, {y})");
                 self.hub.publish(Event::StripLongPress { x, y });
+                // The firmware decides what a long press is; it runs the dial's long
+                // press, else its press (Elgato's "long touch").
+                self.strip_touch(x, true);
             }
             DeviceStateUpdate::TouchScreenSwipe(from, to) => {
                 log::info!("strip swipe {from:?} to {to:?}");
@@ -909,20 +908,35 @@ impl Daemon {
         self.try_input(Source::Turn(i), &act, delta.unsigned_abs().min(8))
     }
 
-    /// A tap on panel `i` (a strip tap, and ctl's `Dial { dir: Press }`): flash the panel
-    /// and run the dial's press. Publishes nothing: the strip arm publishes `StripTap`.
-    fn tap_dial(&mut self, i: u8) -> Result<()> {
+    /// A tap or long press on the strip: the dial under `x`, then `tap_dial`, as in the
+    /// Elgato app.
+    fn strip_touch(&mut self, x: u16, long: bool) {
+        let Some(d) = &self.deck else { return };
+        let Some((w, _)) = d.info.strip else { return };
+        let Some(i) = tap_to_dial(u32::from(x), w, d.info.dials as usize) else { return };
+        log::info!("strip {} on dial {i}", if long { "long press" } else { "tap" });
+        let _ = self.tap_dial(i as u8, long);
+    }
+
+    /// A tap (or, with `long`, a long press) on panel `i` (a strip touch, and ctl's
+    /// `Dial { dir: Press }` as a tap): flash the panel and run the dial's press, or its
+    /// `long_press_action`. Publishes nothing: the strip arm publishes `StripTap` or
+    /// `StripLongPress`.
+    fn tap_dial(&mut self, i: u8, long: bool) -> Result<()> {
         if let Some(d) = &mut self.deck
             && let Some(f) = d.flash_until.get_mut(i as usize)
         {
+            // The tap time, not a deadline (bug 15).
             *f = Some(Instant::now());
             d.mark_dirty(i);
         }
-        let act = self.cfg.dial(i).map(|d| d.press.clone()).unwrap_or_default();
+        // Cloned out of the config before `try_input` takes `&mut self` (BUGS.md 4).
+        let act =
+            self.cfg.dial(i).map(|d| if long { d.long_press_action() } else { &d.press }.clone()).unwrap_or_default();
         if act.is_none() {
             return Ok(());
         }
-        self.try_input(Source::Tap(i), &act, 1)
+        self.try_input(if long { Source::LongTap(i) } else { Source::Tap(i) }, &act, 1)
     }
 
     /// A hardware press or release ends a ctl press's flash on that key.
@@ -1105,7 +1119,7 @@ impl Daemon {
         log::warn!("{src}: {message}");
         match src {
             Source::Key(index) => self.hub.publish(Event::ActionFailed { index, page, message }),
-            Source::Turn(index) | Source::Press(index) | Source::Tap(index) => {
+            Source::Turn(index) | Source::Press(index) | Source::Tap(index) | Source::LongTap(index) => {
                 self.hub.publish(Event::DialActionFailed { index, message })
             }
             // Only logged: the reply carries it (or, for a Hyprland dispatch that failed
@@ -1118,13 +1132,13 @@ impl Daemon {
     }
 
     /// The run a multi started by `src` belongs to: the key (on the shown page), the dial
-    /// (a press and a tap are one), or ctl. `None` for a flick and for a step: a step
+    /// (a press, a tap and a long press are one), or ctl. `None` for a flick and for a step: a step
     /// can't start a multi.
     fn run_of(&self, src: Source) -> Option<RunOf> {
         match src {
             Source::Key(index) => Some(RunOf::Key(KeyId { page: self.nav.current().map(str::to_string), index })),
             Source::Turn(i) => Some(RunOf::Turn(i)),
-            Source::Press(i) | Source::Tap(i) => Some(RunOf::Press(i)),
+            Source::Press(i) | Source::Tap(i) | Source::LongTap(i) => Some(RunOf::Press(i)),
             Source::Ctl => Some(RunOf::Ctl),
             Source::Flick | Source::Step => None,
         }
@@ -1724,6 +1738,7 @@ change = 5
         assert_eq!(Source::Step.to_string(), "step");
         assert_eq!(Source::Ctl.to_string(), "omadeckd");
         assert_eq!(Source::Tap(2).to_string(), "dial 2");
+        assert_eq!(Source::LongTap(2).to_string(), "dial 2");
     }
 
     #[test]
