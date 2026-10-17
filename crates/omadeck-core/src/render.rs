@@ -92,6 +92,47 @@ pub struct Level {
     pub muted: bool,
 }
 
+/// The media panel's display model (PR 14). `position_ms` was true at `as_of_ms` (Unix
+/// ms), so a replayed event isn't stale: whoever draws it advances it with [`MediaShow::at`].
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct MediaShow {
+    pub title: String,
+    pub artist: String,
+    pub playing: bool,
+    pub position_ms: u64,
+    /// `None` for a live stream: the bar stays empty and the time shows elapsed only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub length_ms: Option<u64>,
+    pub as_of_ms: u64,
+    /// A local cover file, for the GUI to load. The deck uses `art_img`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub art: Option<PathBuf>,
+    /// The cover, decoded off the deck loop (48 × 48 box). Not sent over IPC.
+    #[serde(skip)]
+    pub art_img: Option<Arc<RgbaImage>>,
+    /// Why there's no track, e.g. "Needs playerctl". Empty: nothing playing.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub note: String,
+}
+
+impl MediaShow {
+    /// The position at `now_ms`: moves while playing, clamped to the length.
+    pub fn position_at(&self, now_ms: u64) -> u64 {
+        let p = if self.playing { self.position_ms + now_ms.saturating_sub(self.as_of_ms) } else { self.position_ms };
+        self.length_ms.map_or(p, |l| p.min(l))
+    }
+
+    /// This panel advanced to `now_ms`.
+    pub fn at(&self, now_ms: u64) -> MediaShow {
+        MediaShow { position_ms: self.position_at(now_ms), as_of_ms: now_ms, ..self.clone() }
+    }
+
+    /// No track: nothing playing, or no way to read one.
+    pub fn is_idle(&self) -> bool {
+        self.title.is_empty() && self.artist.is_empty()
+    }
+}
+
 /// What a key looks like right now, beside its config. Mirrors `DialStatus`; built only
 /// by `probe::key_status`. Serializable for `Event::KeyState`; every field is
 /// `serde(default)` and skipped when default, so fields can be added.
