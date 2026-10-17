@@ -331,6 +331,7 @@ impl Daemon {
             match cmd {
                 Command::ShowPage { page } => show = Some(page),
                 Command::SetBrightness { value } => bright = Some(value),
+                _ => {}
             }
         }
         // With no deck too: it's saved and applied on connect.

@@ -748,8 +748,10 @@ impl AudioDevice {
     }
 }
 
-/// One of a dial's three action slots.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// One of a dial's three action slots. On the socket (`Command::Dial`) it is `"left"`,
+/// `"right"` or `"press"`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Direction {
     Left,
     Right,
