@@ -44,7 +44,7 @@ impl HyprWorker {
     }
 
     /// With the dispatch function swapped out, for tests.
-    fn start_with(run: fn(&str) -> Result<()>) -> Self {
+    pub(crate) fn start_with(run: fn(&str) -> Result<()>) -> Self {
         let (tx, jobs) = mpsc::channel::<HyprJob>();
         let (failed_tx, failed) = mpsc::channel();
         // Not joined at shutdown: a queued dispatch may wait 2 s on a stalled Hyprland,
