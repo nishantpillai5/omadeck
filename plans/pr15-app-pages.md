@@ -1,17 +1,19 @@
 # PR 15: `feat/app-pages`: switch page when an app is focused
 
 Part of [PLAN.md](PLAN.md). Base: `feat/media-dial` (PR 14). Needs the **Hyprland event
-listener** from PR 9 (`omadeckd/src/hypr.rs`, `HyprEvent::ActiveWindow`), `Nav::nearest`
-from PR 13, `Config::is_folder` from fix/review, and groundwork's `Daemon` struct and
-`Daemon::next_deadline` (D3/D4). Works without PR 11 (ctl); a ctl page change is just
-another manual move.
+listener** from PR 9 and `Nav::nearest` from PR 13. Works without PR 11 (ctl); a ctl page
+change is just another manual move. Nothing from PRs 10, 12 and 14 is used (PR 10's
+`WatchCmd::Focus` send stays where it is).
 
 **Outcome:** a page can follow apps. While a linked app is focused, the deck shows that
 page. When focus moves to an app that isn't linked, the deck goes back to where it was,
 open folder included. This is Elgato's **Smart Profiles**, with omadeck's pages in place
 of Elgato's profiles. You set it up with `apps = ["spotify"]` on upstream's `[[page]]`
-table, or with **Follow apps** in the configurator's page settings. Configs without
-`apps` load and save byte-identical.
+table, or with **Follow apps…** in the configurator's page bar. Configs without `apps`
+load and save byte-identical.
+
+**Size:** about 650 lines: core ~170 with tests, daemon ~230 with tests, GUI ~220, docs
+~30.
 
 ## How the Elgato app does it (researched 2026-10-16, trimmed)
 
@@ -45,12 +47,13 @@ table, or with **Follow apps** in the configurator's page settings. Configs with
   (the rebase's rule for sideways moves).
 - **Decided: leaving restores the whole `Nav`** saved before the first linked app took
   over: the page, an open folder and its trail. `Nav::retain_existing` drops anything a
-  reload removed meanwhile. This replaces the old plan's "pop to root".
-- **Decided: a manual move sticks, detected by position.** No `manual()` hook in every
+  reload removed meanwhile.
+- **Decided: a manual move sticks, detected by position.** A page you picked by hand is
+  where you want to be, so leaving the app doesn't undo it. No `manual()` hook in every
   page path. On leaving, the deck goes back only if it is still on the linked page or in
   a folder opened from it (`Nav::nearest(|p| !cfg.is_folder(p)) == link`). A flick, a
-  page key, the configurator's switcher and PR 11's ctl all count as manual with no extra
-  code.
+  page key, a Back hold (PR 13), the configurator's switcher and PR 11's ctl all count as
+  manual with no extra code.
 - **Decided: A → B → leave returns to before A.** Moving from one linked app to another
   keeps the saved place, unless you moved by hand in between (then the place you moved to
   is saved).
@@ -58,78 +61,137 @@ table, or with **Follow apps** in the configurator's page settings. Configs with
 - **Decided: match on window class,** ASCII case-insensitive, `*` matches any run. The
   glob covers Chromium web apps (`chrome-<host>__<path>-Default`).
 - **Decided: 200 ms settle** (`APP_FOCUS_SETTLE`). Only the newest focus event counts, so
-  an alt-tab through four windows makes one decision.
+  an alt-tab through four windows makes one decision, and 200 ms isn't felt.
 - **Decided: the configurator's window is ignored** (`CONFIGURATOR_CLASS`). Same result as
   Elgato's pause ("editing never jumps"), without pausing while the window sits on another
   workspace.
 - **Decided: following works with the deck unplugged.** `Nav` and the follow state live in
   `Daemon`, not `Deck`, so a deck plugged in while Spotify is focused shows the Spotify
   page.
+- **Decided: a reload re-decides in place.** `reload` folds the follow move into its own
+  `moved` flag, so a link added in the GUI takes effect without a focus change and the
+  deck paints once.
 - **Decided: no new IPC.** `PageChanged` already moves the configurator.
 
 ## Ask before building
 
-1. A manual page change while a linked app is focused sticks when you leave (planned). Or
-   should leaving always return?
-2. 200 ms settle before switching: OK, or shorter?
+None; all settled 2026-10-17.
 
-## Before building: check against the base
+## What this PR builds on
 
-PR 9 and groundwork weren't merged when this plan was written. Check these on
-`feat/media-dial` and use the branch's names if they differ:
-
-```bash
-grep -n "pub enum HyprEvent\|pub struct ActiveWindow\|pub fn start" crates/omadeckd/src/hypr.rs
-grep -n "HyprEvent::ActiveWindow\|rt.window\|fn next_deadline\|fn show_page\|retain_existing" crates/omadeckd/src/*.rs
-grep -n "pub fn nearest\|pub fn is_folder" crates/omadeckd/src/nav.rs crates/omadeck-core/src/config.rs
-grep -rn "Page { name" crates
-```
-
-Expected (PR 9's plan, PR 13, fix/review, `d7bd448`):
+### Code as merged (`daily` = `feat/toggle-keys`, `55d0d62`), verbatim
 
 ```rust
-// crates/omadeckd/src/hypr.rs (PR 9)
-/// The focused window, as `j/activewindow` reports it.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ActiveWindow {
-    /// Without a `0x` prefix, lowercase, so event and JSON forms compare equal.
-    pub address: String,
-    pub class: String,
-    pub title: String,
-    pub pid: Option<u32>,
-}
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum HyprEvent {
-    /// The focused workspace changed, moved monitor, or was renamed.
-    Workspace { id: i64, name: String },
-    /// The focused window changed or was retitled; `None` when nothing has focus.
-    ActiveWindow(Option<ActiveWindow>),
-}
-/// Starts the `hypr` thread. `None` outside Hyprland (no thread).
-pub fn start() -> Option<mpsc::Receiver<HyprEvent>>;
-// daemon.rs: Daemon: `hypr: Option<mpsc::Receiver<HyprEvent>>`; Runtime: `window: Option<hypr::ActiveWindow>`.
-// `Daemon::apply_hypr(&mut self)` drains `hypr` with try_recv; main.rs's run() calls it every
-// iteration right after `apply_values`, before the no-deck branch;
-// its `ActiveWindow(w)` arm sets `rt.window = w` and sends PR 10's `WatchCmd::Focus(w)` ("PR 10 and 15 hook in here").
-// A title change arrives as ActiveWindow(Some) with the same class.
-
-// crates/omadeckd/src/nav.rs (PR 13)
-#[derive(Debug, Default)]
-pub struct Nav { current: Option<String>, history: Vec<Option<String>> }
-pub fn nearest(&self, keep: impl Fn(&str) -> bool) -> Option<&str>;
-pub fn switch(&mut self, page: Option<&str>) -> bool;
-pub fn retain_existing(&mut self, cfg: &Config) -> bool;
-
-// crates/omadeck-core/src/config.rs (upstream + PR 5 + fix/review)
+// crates/omadeck-core/src/config.rs
+/// A named page of keys. A `folder` page is one you open from a key (it starts with a
+/// Back key); flicks and `page_step` skip it.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Page {
     pub name: String,
     #[serde(default, rename = "key", skip_serializing_if = "Keys::is_empty")]
     pub keys: Keys,
+    /// Skipped by flicks and `page_step`.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub folder: bool,
 }
 pub fn is_folder(&self, name: &str) -> bool;
+pub fn add_page(&mut self, base: &str, folder: bool, first: KeyConfig) -> String;
+    // self.pages.push(Page { name: name.clone(), keys: Keys(vec![first]), folder });
+
+// crates/omadeckd/src/nav.rs
+#[derive(Debug, Default)]
+pub struct Nav { current: Option<String>, history: Vec<Option<String>> }
+pub fn current(&self) -> Option<&str>;
+pub fn go(&mut self, page: Option<&str>) -> bool;
+pub fn switch(&mut self, page: Option<&str>) -> bool;
+pub fn back(&mut self) -> bool;
+pub fn retain_existing(&mut self, cfg: &Config) -> bool;
+// (and `parent`, which PR 13 replaces with `nearest`)
+```
+
+`Page { … }` literals today: `Config::add_page`, the `config.rs` tests (`roundtrip`,
+`step_page`, `pages`, `added_pages_step_unless_folder`, …) and `nav.rs`'s test helper
+`cfg()`.
+
+`Daemon::reload` (`daemon.rs`), the part after the new config is in:
+
+```rust
+let mut moved = self.nav.retain_existing(&self.cfg);
+if let Some(p) = self.wanted_page.take_if(|p| self.cfg.has_page(p)) {
+    moved |= self.nav.go(Some(&p));
+}
+if moved {
+    self.hub.publish(Event::PageChanged { page: self.nav.current().map(str::to_string) });
+}
+// … hand-edited brightness …
+self.watch();
+self.paint_all();
+```
+
+`fn show_page(&mut self)` logs `page: …`, calls `paint_all`, `watch` and publishes
+`PageChanged`. `pub fn next_deadline(&self) -> Option<Instant>` takes the min of a list
+of deadlines. `main.rs`'s `run()` calls, each iteration: the reload check,
+`handle_commands`, `apply_values`, `poll_jobs`, then the no-deck branch (`flush`, scan or
+sleep `wait_for(now, next_deadline())`) or `pass()`.
+
+With the chain up to PR 14 on top, each iteration is: drain notify → 1 s stamp check →
+`reload()` when due → `handle_commands()` → `run_due_steps(Instant::now())` (PR 12) →
+`apply_values()` → `apply_hypr()` (PR 9) → `poll_jobs()` → `poll_hypr()` (fix/review-2,
+the Hyprland worker's failures) → no deck: `flush()`, every 2 s `deck::open` → `attach`,
+else sleep `wait_for(now, next_deadline())`; deck: `pass()`, `Err` → `detach`.
+
+GUI: `pub const APP_ID: &str = "dev.omadeck.Omadeck";` in `crates/omadeck-gui/src/main.rs`.
+In `App::build` the page bar is `new_page` and a `page_actions` box (`linked`, shown only
+for a page, not Home) holding `folder_toggle` (a `gtk::ToggleButton`), `rename_page` and
+`delete_page`; each button's handler holds a `Weak<App>`. There is no page settings
+dialog. `fn sync_page_list(&self)` fills the dropdown (PR 13 labels pages with
+`cfg.page_path(name).join(" › ")`) and sets `folder_toggle`. `App::schedule_save`,
+`App::toast(&self, msg: &str)`, `App::current_page()`. `apps::pick(parent: &impl
+IsA<gtk::Widget>, on_pick: impl Fn(gio::AppInfo) + 'static)`. Core has `serde_json`; the
+GUI crate doesn't, so JSON parsing stays in core.
+
+### From the plans before this one
+
+- **PR 9** (`crates/omadeckd/src/hypr.rs`):
+  ```rust
+  /// The focused window, as `j/activewindow` reports it.
+  #[derive(Debug, Clone, PartialEq, Eq)]
+  pub struct ActiveWindow {
+      /// Without a `0x` prefix, lowercase, so event and JSON forms compare equal.
+      pub address: String,
+      pub class: String,
+      pub title: String,
+      pub pid: Option<u32>,
+  }
+  #[derive(Debug, Clone, PartialEq, Eq)]
+  pub enum HyprEvent {
+      /// The focused workspace changed, moved monitor, or was renamed.
+      Workspace { id: i64, name: String },
+      /// The focused window changed or was retitled; `None` when nothing has focus.
+      ActiveWindow(Option<ActiveWindow>),
+  }
+  /// Starts the `hypr-events` thread. `None` outside Hyprland (no thread).
+  pub fn start() -> Option<mpsc::Receiver<HyprEvent>>;
+  ```
+  `Daemon` gains `hypr_events: Option<mpsc::Receiver<hypr::HyprEvent>>` (set by
+  `hypr::start()` in `Daemon::new`), `Runtime` gains `window: Option<hypr::ActiveWindow>`,
+  and `Daemon::apply_hypr(&mut self)` drains `hypr_events` with `try_iter` (collect
+  first, then apply, so the receiver borrow ends). `run()` calls it every iteration right
+  after `apply_values`, before the no-deck branch. (`Daemon.hypr` is something else:
+  fix/review-2's `HyprWorker`, which runs Hyprland dispatches. This PR doesn't touch it.) Its `HyprEvent::ActiveWindow(w)` arm sets `rt.window`; PR 10 then
+  sends `WatchCmd::Focus(w)` there. A title change arrives as `ActiveWindow(Some)` with
+  the same class.
+- **PR 13:** `Nav::nearest(&self, keep: impl Fn(&str) -> bool) -> Option<&str>` (current
+  first, then the trail; `None` is Home), `Config::page_path`, and `show_page` clears
+  `Deck.key_pressed` and `Deck.back_held`.
+
+Check these on `feat/media-dial` before Task 2; if a name differs, the branch wins:
+
+```bash
+grep -n "pub enum HyprEvent\|pub struct ActiveWindow\|pub fn start" crates/omadeckd/src/hypr.rs
+grep -n "fn apply_hypr\|HyprEvent::ActiveWindow\|window:\|hypr_events" crates/omadeckd/src/daemon.rs
+grep -n "pub fn nearest" crates/omadeckd/src/nav.rs
+grep -rn "Page { name" crates
 ```
 
 ## Config
@@ -223,14 +285,16 @@ pub fn parse_clients(json: &str) -> Vec<(String, String)> {
 }
 ```
 
-- **Trap:** every `Page { name, keys, folder }` literal (config tests, `nav.rs` tests,
-  PR 13's tests, fix/review's `Config::add_page`) needs `apps: Vec::new()`. The grep above lists them.
+- **Trap:** every `Page { name, keys, folder }` literal needs `apps: Vec::new()`:
+  `Config::add_page`, the `config.rs` tests, `nav.rs`'s `cfg()` helper, PR 13's tests.
+  `grep -rn "Page { name" crates` lists them; `cargo build --workspace --tests` finds the
+  rest.
 - `rename_page`/`remove_page` need nothing: `apps` lives on the page itself.
 
 Tests in `follow.rs` (copy this one): `class_matches_globs`, plus
 `parse_clients_dedups_and_sorts` (two Spotify windows and a kitty window → two pairs;
-`"not json"` → empty). In `config.rs`: `follow_apps_omitted_when_empty` (a page without `apps`
-saves without the word), `follow_app_page_skips_folders_and_takes_first` (a folder
+`"not json"` → empty). In `config.rs`: `follow_apps_omitted_when_empty` (a page without
+`apps` saves without the word), `follow_app_page_skips_folders_and_takes_first` (a folder
 listing `spotify` and two pages listing it: the first non-folder wins).
 
 ```rust
@@ -251,11 +315,17 @@ mod tests {
 }
 ```
 
-**Check:** `cargo test -p omadeck-core follow && cargo clippy --all-targets -- -D warnings`
-→ `test result: ok. 4 passed` (two in `follow::tests`, two `config::tests::follow_*`),
-no clippy warnings.
+**Check:**
 
-## Task 2: daemon: `AppFollow` and the focus wiring (~260 lines)
+```bash
+cargo test -p omadeck-core follow::tests && cargo test -p omadeck-core config::tests::follow_ && cargo clippy --all-targets -- -D warnings
+```
+
+→ `test result: ok. 2 passed` twice, no clippy warnings. (Don't filter on bare `follow`:
+`state_choice_follows_…`, `default_for_follows_direction` and fix/review-2's
+`face_tabs_follow_the_key` match it too.)
+
+## Task 2: daemon: `AppFollow` and the focus wiring (~230 lines)
 
 **Files:** new `crates/omadeckd/src/follow.rs` (`mod follow;` in `main.rs`),
 `crates/omadeckd/src/nav.rs` (derive), `crates/omadeckd/src/daemon.rs` (`Daemon`).
@@ -313,57 +383,72 @@ impl AppFollow {
 }
 ```
 
-`Daemon` gains (all outlive a replug):
+In `daemon.rs`:
 
 ```rust
 /// Hyprland sends a focus event for every window an alt-tab passes; act once focus has
 /// stayed put this long.
 const APP_FOCUS_SETTLE: Duration = Duration::from_millis(200);
-
-follow: AppFollow,
-/// The focused window's class once it settled; `""` when nothing has focus.
-focus_class: Option<String>,
-/// The newest focus change and when it settles.
-focus_pending: Option<(String, Instant)>,
 ```
 
-- Imports: `use omadeck_core::{HOME, follow::CONFIGURATOR_CLASS};` and `use follow::AppFollow;`.
-- **In PR 9's `HyprEvent::ActiveWindow(w)` arm** of `apply_hypr` (where it sets `rt.window = w`), first
-  `let class = w.as_ref().map(|w| w.class.clone()).unwrap_or_default();`, then PR 9's and
-  PR 10's handling as they are, then, unless
+`Daemon` gains (all outlive a replug; set in `Daemon::new`):
+
+```rust
+follow: AppFollow,                             // AppFollow::default()
+/// The focused window's class once it settled; `""` when nothing has focus.
+focus_class: Option<String>,                   // None
+/// The newest focus change and when it settles.
+focus_pending: Option<(String, Instant)>,      // None
+```
+
+- Imports: `use omadeck_core::follow::CONFIGURATOR_CLASS;` and `use crate::follow::AppFollow;`.
+- **In PR 9's `HyprEvent::ActiveWindow(w)` arm** of `apply_hypr` (where it sets
+  `rt.window`), first `let class = w.as_ref().map(|w| w.class.clone()).unwrap_or_default();`,
+  then PR 9's and PR 10's handling unchanged, then, unless
   `class.eq_ignore_ascii_case(CONFIGURATOR_CLASS)`,
   `self.focus_pending = Some((class, Instant::now() + APP_FOCUS_SETTLE));`.
-- **`Daemon::next_deadline()`** includes `self.focus_pending.as_ref().map(|(_, at)| *at)`.
-- **Each pass**, before the no-deck branch: at the end of `apply_hypr` (after its drain
-  loop; `run()` calls it every iteration), with `let now = Instant::now();`:
-  `if let Some((class, _)) = self.focus_pending.take_if(|(_, at)| now >= *at) { self.focus_class = Some(class); self.apply_focus(); }`.
+- **At the end of `apply_hypr`** (after its drain loop; `run()` calls it every iteration,
+  deck or not):
+  ```rust
+  let now = Instant::now();
+  if let Some((class, _)) = self.focus_pending.take_if(|(_, at)| now >= *at) {
+      self.focus_class = Some(class);
+      if self.follow_focus() {
+          self.show_page();
+      }
+  }
+  ```
+- **`next_deadline()`** adds `self.focus_pending.as_ref().map(|(_, at)| *at)` to its list.
 - New method:
 
 ```rust
-/// Show the page the focused app is linked to, or go back when it isn't linked.
-fn apply_focus(&mut self) {
-    let Some(class) = self.focus_class.clone() else { return };
+/// Move `nav` to the page the focused app is linked to, or back when it isn't linked.
+/// Returns whether the page moved; the caller repaints.
+fn follow_focus(&mut self) -> bool {
+    let Some(class) = self.focus_class.clone() else { return false };
     let link = self.cfg.app_page(&class).map(str::to_string);
-    if self.follow.focus(link.as_deref(), &mut self.nav, &self.cfg) {
-        let page = self.nav.current().unwrap_or(HOME).to_string();
-        match &link {
-            Some(_) => log::info!("page {page} (follows {class})"),
-            None => log::info!("page {page} (left {class})"),
-        }
-        self.show_page();
+    if !self.follow.focus(link.as_deref(), &mut self.nav, &self.cfg) {
+        return false;
     }
+    let page = self.nav.current().unwrap_or(omadeck_core::HOME).to_string();
+    match &link {
+        Some(_) => log::info!("page {page} (follows {class})"),
+        None => log::info!("page {page} (left {class})"),
+    }
+    true
 }
 ```
 
-- **Reload:** call `self.apply_focus()` right after the reload's `nav.retain_existing`
-  and its `PageChanged`. A link added or removed in the GUI takes effect without a focus
-  change; an unchanged link is a no-op.
+- **Reload:** in `reload`, right after the `wanted_page` line and before `if moved {
+  … PageChanged … }`: `moved |= self.follow_focus();`. A link added or removed in the GUI
+  takes effect without a focus change; the reload's own `paint_all` and `watch` paint it
+  once. An unchanged link is a no-op.
 - **Connect / disconnect:** nothing. `Nav` survives the replug, so the deck comes up on
   the followed page.
-- **Trap:** `apply_focus` borrows `self.follow`, `self.nav` and `self.cfg` as separate
-  fields in one call. That compiles only as written, inside the method body. Don't move
-  it into a helper that takes `&mut self` and `&self.cfg`. And `class` and `link` are
-  owned `String`s so `self.show_page()` can borrow `self` mutably.
+- **Trap:** `self.follow.focus(…, &mut self.nav, &self.cfg)` borrows three fields
+  separately. That compiles only inside the method body, as written. Don't move it into a
+  helper that takes `&mut self` and `&self.cfg`. And `class` and `link` are owned
+  `String`s so nothing borrows `self` when the caller runs `self.show_page()`.
 
 Tests in `follow.rs`: copy this one, then add `a_then_b_then_leave_returns_to_before_a`,
 `manual_move_sticks` (follow Music, `nav.switch(Some("Work"))`, leave → stays on Work,
@@ -378,8 +463,7 @@ mod tests {
     use omadeck_core::{Keys, Page};
 
     fn cfg() -> Config {
-        let page =
-            |name: &str, folder: bool| Page { name: name.into(), keys: Keys::default(), folder, apps: Vec::new() };
+        let page = |name: &str, folder: bool| Page { name: name.into(), keys: Keys::default(), folder, apps: Vec::new() };
         let pages = vec![page("Work", false), page("Music", false), page("Chat", false), page("F", true)];
         Config { pages, ..Config::default() }
     }
@@ -404,18 +488,18 @@ mod tests {
 **Check:** `cargo test -p omadeckd follow:: && cargo clippy --all-targets -- -D warnings`
 → `test result: ok. 6 passed`, no clippy warnings. Then the first three hardware checks.
 
-## Task 3: GUI "Follow apps", docs (~260 lines)
+## Task 3: GUI "Follow apps", docs (~250 lines)
 
 **Files:** `crates/omadeck-gui/src/main.rs`, `crates/omadeck-gui/src/app.rs`, new
-`crates/omadeck-gui/src/pages.rs`, `README.md`, `examples/config.toml`, `CHANGELOG.md`.
+`crates/omadeck-gui/src/pages.rs` (`mod pages;` in `main.rs`), `README.md`,
+`examples/config.toml`, `CHANGELOG.md`.
 
 - `main.rs`: `pub const APP_ID: &str = omadeck_core::follow::CONFIGURATOR_CLASS;` so the
   two can't drift.
-- **Page settings button.** In `App::new`, a third button in `page_actions` (shown only
-  for a page, never Home): icon `emblem-system-symbolic`, tooltip "Page settings", opens
-  `pages::show(&app, &name)` for `current_page()`. If fix/review already added a page
-  settings dialog for the Folder switch (`grep -n '"Folder' crates/omadeck-gui/src/app.rs`),
-  add the group below to that dialog instead of making a second one.
+- **Follow apps button.** In `App::build`, a button in `page_actions` after
+  `folder_toggle` (so it shows only for a page, never Home): icon
+  `emblem-system-symbolic`, tooltip "Follow apps", its handler holding a `Weak<App>`
+  like the others: `if let Some(name) = app.current_page() { pages::show(&app, &name) }`.
 - New `App` method, the one way the dialog edits:
 
 ```rust
@@ -448,17 +532,18 @@ pub fn edit_page_apps(self: &Rc<Self>, name: &str, f: impl FnOnce(&mut Vec<Strin
     and most Electron apps (case-insensitive matching covers `Spotify`/`spotify`).
   - `adw::ButtonRow` **Add open window…** → runs `hyprctl -j clients` off the UI thread:
     `gio::spawn_blocking(|| omadeck_core::proc::output_timeout(Command::new("hyprctl").args(["-j", "clients"]), Duration::from_secs(2)))`,
-    awaited in `glib::spawn_future_local`, parsed with `follow::parse_clients`, shown as an
-    `adw::AlertDialog` with a `boxed-list` of `adw::ActionRow`s (title = class, subtitle =
-    title). Activating a row adds the class and closes it. An empty list toasts "No open
-    windows found". This is the reliable path for web apps and anything whose desktop
-    entry doesn't name its class. (A one-off read when the user asks, like `apps::pick`
-    reading desktop files; D2's "only the daemon polls" is about live state.)
+    awaited in `glib::spawn_future_local`, parsed with `omadeck_core::follow::parse_clients`,
+    shown as an `adw::AlertDialog` with a `boxed-list` of `adw::ActionRow`s (title =
+    class, subtitle = title). Activating a row adds the class and closes it. An empty list
+    toasts "No open windows found". This is the reliable path for web apps and anything
+    whose desktop entry doesn't name its class. (A one-off read when the user asks, like
+    `apps::pick` reading desktop files; "only the daemon reads system state" is about
+    live state.)
   - `adw::EntryRow` **Window class** with `show_apply_button(true)`; `connect_apply` adds
     the trimmed text. Its hint: "find it with `hyprctl activewindow`".
   - After each add or remove, rebuild the rows. Ignore a pattern already in the list.
-- `sync_page_list`: a page with `apps` gets ` · follows apps` after its label (PR 13 made
-  the labels `page_path(..).join(" › ")`).
+- `sync_page_list`: a page with `apps` gets ` · follows apps` after its label (PR 13's
+  `page_path(..).join(" › ")`).
 - **Traps:** the rows-rebuild function is called from the row buttons it creates, so it's
   an `Rc<dyn Fn()>` (built once, cloned into each handler), not an `impl Fn`. And
   `edit_page_apps` must not run while anything holds `app.config.borrow()`: read the
@@ -468,8 +553,12 @@ pub fn edit_page_apps(self: &Rc<Self>, name: &str, f: impl FnOnce(&mut Vec<Strin
   `examples/config.toml`, with the `hyprctl activewindow` hint and a glob; CHANGELOG under
   Unreleased → Added.
 
-**Check:** `cargo test && cargo clippy --all-targets -- -D warnings` → all tests pass
-(`example_parses` covers the example), no warnings. Then the GUI hardware checks.
+Test: GUI code has no unit tests. If you add a pure helper to `pages.rs` (say, the class
+from an app id), test it in core's style, after Task 1's `class_matches_globs`.
+
+**Check:** `cargo fmt && cargo test && cargo clippy --all-targets -- -D warnings` → all
+tests pass (`example_parses` covers the example), no warnings. Then the GUI hardware
+checks.
 
 ## Capture on the machine first
 
@@ -484,7 +573,8 @@ assumed:
   add a `parse_clients` test on it.
 - Whether Walker (or any layer-shell launcher) sends focus events:
   `socat -U - UNIX-CONNECT:$XDG_RUNTIME_DIR/hypr/$HYPRLAND_INSTANCE_SIGNATURE/.socket2.sock | grep activewindow`,
-  then open and close Walker.
+  then open and close Walker. (PR 9's socket2 capture may already show this; if so, copy
+  the answer here.)
 
 ## Hardware checks (Stream Deck +, 0fd9:0084, Omarchy)
 
@@ -530,6 +620,3 @@ assumed:
 - The app's icon in the page switcher, as Elgato shows it next to the profile.
 - `omadeckd follow on|off` (PR 11's ctl) to pause following.
 - Per-deck links, once multiple decks exist.
-
-**Size:** about 650 lines: core ~170 with tests, daemon ~230 with tests, GUI ~220, docs
-~30.

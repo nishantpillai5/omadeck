@@ -4,8 +4,12 @@ Personal working notes, next to [PLAN.md](PLAN.md). Bugs found in the code on `d
 with where they are, what goes wrong, and which branch should fix them. Bugs 1–21 are
 closed (see the bug pass under Rebase outcomes), except that 18's fix didn't work (see
 29, now closed). The 2026-10-17 code review added 22–49: 22–43 are fixed on
-`fix/review` (review-fixes.md, 2026-10-17); 44–49 go to `feat/groundwork`
-(groundwork.md), because their proper fix is that branch's structure.
+`fix/review` (review-fixes.md, 2026-10-17); 44–49 were fixed on `feat/groundwork`
+(groundwork.md), because their proper fix is that branch's structure. The second review
+(`d7bd448..55d0d62`, groundwork and PR 8) added 50–72 and found 25 regressed and 31, 38,
+45 and 48 only partly fixed; all of that goes to `fix/review-2`
+([review-fixes-2.md](review-fixes-2.md)), except 65, which PR 13
+([pr13-folders.md](pr13-folders.md)) fixes.
 
 Each entry: **status** (open / fixed in `<commit>`), **found** (date, how), the file and
 line on `daily`, what goes wrong, and the fix.
@@ -396,7 +400,10 @@ numbers). 22–43 are fixed on `fix/review` ([review-fixes.md](review-fixes.md))
 
 #### 25. Renaming or deleting a page misses dial actions that open it
 
-- **Status:** fixed in `6622480` (core) and `25fb9a1` (GUI). **Found:** 2026-10-17, review follow-up (checked in the code).
+- **Status:** fixed in `6622480` (core) and `25fb9a1` (GUI) for keys and dials; **regressed
+  by PR 8**: `all_actions(_mut)` don't walk a toggle's `on.action`, which can be Open page
+  (review 2). Fixed again on `fix/review-2` (task 1, one recursive action walker).
+  **Found:** 2026-10-17, review follow-up (checked in the code).
 - **Where:** `config.rs` `Config::rename_page`, `remove_page` (through `all_keys_mut`) and
   `links_to`: keys only.
 - **What goes wrong:** a dial press "Open page Media" keeps pointing at "Media" after a
@@ -463,7 +470,11 @@ numbers). 22–43 are fixed on `fix/review` ([review-fixes.md](review-fixes.md))
 
 #### 31. A Hyprland dial turn runs up to eight `hyprctl` calls on the deck loop
 
-- **Status:** fixed in `6622480`. **Found:** 2026-10-17, code review.
+- **Status:** partly fixed in `6622480`: more than one step runs on a thread, but a single
+  step (every key press) still blocks the loop up to 2 s (4 s on Lua config), and the
+  multi-step threads are unbounded and unordered across reports (review 2). The rest is
+  `fix/review-2` task 6: every dispatch on one ordered worker. **Found:** 2026-10-17, code
+  review.
 - **Where:** `action.rs` `run_steps` → `run` → `hypr_dispatch` → `hyprctl_dispatch`
   (waits for the answer; two runs per step on Lua-config Hyprland).
 - **What goes wrong:** a dial on `workspace e+1`, spun hard, blocks the loop for up to 8
@@ -526,7 +537,9 @@ numbers). 22–43 are fixed on `fix/review` ([review-fixes.md](review-fixes.md))
 
 #### 38. A dial picker result lands in memory while config.toml is broken
 
-- **Status:** fixed in `c71b21c`. **Found:** 2026-10-17, code review.
+- **Status:** fixed in `c71b21c` for dials; `App::set_strip_background` still has no
+  `locked` check, so a strip background picked while config.toml is broken is lost the same
+  way (review 2). The rest is `fix/review-2` task 8. **Found:** 2026-10-17, code review.
 - **Where:** `app.rs` `App::edit_dial` (no `locked` check, unlike `edit_ref`).
 - **What goes wrong:** the file breaks while a dial's file dialog is open: the pick shows
   in the preview but is never saved, and vanishes on the next reload.
@@ -564,8 +577,8 @@ numbers). 22–43 are fixed on `fix/review` ([review-fixes.md](review-fixes.md))
 
 #### 42. The default mic glyph is "volume low", and the example's "right arrow" isn't one
 
-- **Status:** open, to confirm on the machine first (see review-fixes.md). **Found:**
-  2026-10-17, code review.
+- **Status:** fixed in `485a6ca` (the machine's cmap check is in the commit message;
+  `volume_glyph_defaults` pins `INPUT_GLYPH = "f036c"`). **Found:** 2026-10-17, code review.
 - **Where:** `render.rs` `INPUT_GLYPH = "f057f"` ("microphone"); `examples/config.toml`
   (`a mic ("f057f")`, `glyph = "f004e" # right arrow`).
 - **What goes wrong:** in Material Design Icons U+F057F is volume-low (the mic is U+F036C)
@@ -600,7 +613,12 @@ numbers). 22–43 are fixed on `fix/review` ([review-fixes.md](review-fixes.md))
 
 #### 45. Brightness can revert on a quick replug
 
-- **Status:** fixed in `87e08c7` + `0badd8e` (brightness in `Runtime`, which outlives the deck). **Found:** 2026-10-17, code review.
+- **Status:** fixed in `87e08c7` + `0badd8e` for the replug (brightness in `Runtime`, which
+  outlives the deck). **Partly regressed at start** by `d9644be`'s rule "the config wins
+  when its mtime is newer than the state file's": the configurator rewrites config.toml on
+  every edit with the old `brightness`, so after any GUI edit a restart goes back to it
+  (review 2). The rest is `fix/review-2` task 4 (compare values: `State.config_brightness`).
+  **Found:** 2026-10-17, code review.
 - **Where:** `main.rs` `Deck.brightness`, re-read in `connect()` from `state.toml`.
 - **What goes wrong:** turn the dial, and the USB link drops within the saver's 200 ms:
   the new `Deck` reads the old value from the file.
@@ -619,7 +637,7 @@ numbers). 22–43 are fixed on `fix/review` ([review-fixes.md](review-fixes.md))
 
 #### 47. A stale volume read can overwrite the optimistic bar
 
-- **Status:** fixed in `edc4bdb` (the read happens after the change on the same thread) and the in-flight follow-up (the bar shows confirmed + in-flight, so a late read-back can't pull it back — see the note at the end of groundwork.md). **Found:** 2026-10-17, code review.
+- **Status:** fixed in `edc4bdb` (the read happens after the change on the same thread) and the in-flight follow-up (the bar shows confirmed + in-flight, so a late read-back can't pull it back — see the note at the end of groundwork.md). The in-flight total can drift for good on four paths; that's 54. **Found:** 2026-10-17, code review.
 - **Where:** `main.rs` `after_volume` + `AUDIO_REFRESH_DELAY` + the worker's `Refresh`.
 - **What goes wrong:** when the volume command takes longer than 150 ms (Omarchy 4's
   script, Omarchy 3's `hyprctl`), or a 1 s poll is already running, the read returns the
@@ -629,7 +647,12 @@ numbers). 22–43 are fixed on `fix/review` ([review-fixes.md](review-fixes.md))
 
 #### 48. A hung `pactl` or `wpctl` freezes the bars for good
 
-- **Status:** fixed in `66373ff` + `edc4bdb` (`proc::output_timeout` on the watcher's reads and changes). **Found:** 2026-10-17, code review.
+- **Status:** partly fixed in `66373ff` + `edc4bdb` (`proc::output_timeout` on the watcher's
+  reads and changes). Review 2: on timeout `output_timeout` kills only the direct child, so
+  a script's children (and the pipes they hold) survive; and after a normal exit it waits
+  up to the rest of the deadline for a pipe a background grandchild holds, on the watcher
+  thread. The rest is `fix/review-2` task 4 (own process group, `killpg`, `GRACE`).
+  **Found:** 2026-10-17, code review.
 - **Where:** `audio.rs` `capture` (`Command::output()`, no timeout).
 - **What goes wrong:** while PipeWire restarts, a read can hang; the worker stops, the
   bars freeze, and a `Refresh` per turn piles up in the unbounded channel.
@@ -637,7 +660,7 @@ numbers). 22–43 are fixed on `fix/review` ([review-fixes.md](review-fixes.md))
 
 #### 49. A slow configurator stalls the deck loop and is then dropped
 
-- **Status:** fixed in `75738f8` (per-client bounded queue + writer thread; the loop never writes to a socket). Verified with a frozen GUI: the deck stayed responsive. **Found:** 2026-10-17, code review.
+- **Status:** fixed in `75738f8` (per-client bounded queue + writer thread; the loop never writes to a socket). Verified with a frozen GUI: the deck stayed responsive. The `Disconnected` published every 2 s with no deck is 55. **Found:** 2026-10-17, code review.
 - **Where:** `hub.rs` `Hub::publish` (upstream): `write_all` to every client on the loop,
   200 ms write timeout. We added per-report events (`DialTurn`, `StripSwipe`, …).
 - **What goes wrong:** the GUI busy for a moment (rebuilding the editor) while a dial
@@ -664,3 +687,282 @@ Not bugs; they're restructuring the later PRs need. See the review summary for d
 - Smaller, for later: two `Level` types; `run_steps`' folding untestable; images decoded
   on the GTK thread; a 2:1 thumbnail of the 8:1 strip; the strip preview blurry on HiDPI;
   `PageStep` from a nested folder steps from Home (PR 13).
+
+## Review 2 (2026-10-17, d7bd448..55d0d62)
+
+A second review, of what `fix/review`, `feat/groundwork` and PR 8 (`feat/toggle-keys`)
+added on top of `d7bd448`, in the same four parts. Each finding below was re-checked
+against the code at `55d0d62`; the ones marked *(proto)* were also fixed and tested in a
+scratch build. The summary is in [review-2026-10-17b.md](review-2026-10-17b.md). File and
+symbol are on `55d0d62`. All go to `fix/review-2` ([review-fixes-2.md](review-fixes-2.md),
+base `feat/toggle-keys`), task in brackets, except 65 (PR 13, as decided).
+
+### `fix/review-2`: high
+
+#### 50. The configurator aborts when a key is drawn "on" without an on face
+
+- **Status:** open. **Found:** 2026-10-17, review 2 (core, render and GUI parts; panic
+  reproduced). *(proto)*
+- **Where:** core `config.rs` `KeyConfig::face_for` (`.expect("a key is on only with an on
+  face")`), reached from `Renderer::render` and `editor.rs` `appearance_rows`; GUI `app.rs`
+  `App::select` (never resets `face_tab`), `App::preview_status`, `App::refresh_key` (draws
+  the mirrored `key_states` against the GUI's own config).
+- **What goes wrong:** the daemon never asks for On without `[key.on]`, but the GUI does.
+  Select a toggle key, click the **On** tab, then click a plain key (or press one on the
+  deck): `build_key` draws the stale On tab on a key with no on face and the app aborts.
+  Same with "Two faces" switched off on the On tab, the trash button, switching it off
+  while a mic key is muted (the mirror says On), dragging an "on" key onto a plain key,
+  or removing `[key.on]` by hand while the key is on.
+- **Fix:** (R1) `face_for(On)` with no on face returns the off face. Core gets
+  `KeyConfig::face_tabs()`/`clamp_face_tab()`; `App::select` resets `face_tab` to Off when
+  the selection changes, `build_key` clamps it, and a drag swaps the two keys' mirrored
+  states. [tasks 1, 7]
+
+#### 51. The Service… preset moves the key to index 0
+
+- **Status:** open. **Found:** 2026-10-17, review 2 (core and GUI parts).
+- **Where:** `editor.rs` `service_dialog`: `let mut k = KeyConfig::new(0); apply_service(&mut k, …);
+  a2.edit(i, |k2| *k2 = k)`.
+- **What goes wrong:** the whole key is replaced by one with `index = 0`. Apply it to key
+  5: key 5 goes empty and the page has two `index = 0` keys (the old key 0 wins `get(0)`;
+  both are saved). The key's background and colours are wiped too. The dialog is async and
+  writes through `edit(i)`, so a page change on the deck meanwhile puts it on another
+  page's key. The dialog also has no Cancel, and `d.unparent()` in the response handler
+  pulls an `AdwAlertDialog` out of its host.
+- **Fix:** apply in place through a `KeyRef` captured before presenting
+  (`edit_ref(&at, |k| apply_service(k, …))`; `apply_service` validates before it changes
+  anything). Presets that set a glyph clear `icon` (an icon beats the glyph). Cancel and
+  Create responses, no `unparent`. [tasks 2, 7]
+
+#### 52. The Service preset puts the health URL into the shell unquoted
+
+- **Status:** open. **Found:** 2026-10-17, review 2 (reproduced with a mocked `curl`). *(proto)*
+- **Where:** `presets.rs` `apply_service`: `curl -sf -o /dev/null -m 2 {url}`. PR 8's plan
+  said it's quoted with `shell_words::quote`.
+- **What goes wrong:** `http://127.0.0.1:8000/h?a=1&b=2`: `&` puts `curl` in the
+  background, so the state command exits 0 and the key shows **on** while the service is
+  still loading. `?` and `*` glob; a pasted URL can run any shell.
+- **Fix:** `shell_words::quote(url)`; refuse a URL with a control character. Test with
+  `sh -n`. [task 2]
+
+#### 53. A slow toggle whose state never moves stays busy for good
+
+- **Status:** open. **Found:** 2026-10-17, review 2 (confirmed with a `Poller` test). *(proto)*
+- **Where:** `watch.rs` `Poller::record` (the `Leave` window); `daemon.rs`
+  `after_toggle_press` (slow arm) and `Settle::Leaving`.
+- **What goes wrong:** a slow press shows `Busy("")` and sends `Leave`. Every read that
+  still says the old state equals the watcher's `last`, so nothing is sent, including the
+  read after the 15 s window ends. The daemon's settle only expires when a value arrives,
+  and none does. `slow = true` on a service that fails to start shows busy until the page
+  is left. PR 8's plan says it "shows its true state after 15 s".
+- **Fix:** a window that runs out forces its read to be sent, changed or not. [task 5]
+
+#### 54. The volume in-flight total can drift for good
+
+- **Status:** open. **Found:** 2026-10-17, review 2. *(proto)*
+- **Where:** `daemon.rs` `in_flight`, `guess_volume`, `apply_value`/`settle_volume`,
+  `detach`, `watch`; `watch.rs` `Poller::handle` (`WatchCmd::Volume`), `coalesce`.
+- **What goes wrong:** only a read-back takes a change off the total, and four paths
+  have none or a different one: the read after a change fails (a hung `wpctl`); the
+  device isn't watched (a "Vol +5" key with no volume dial), and is watched later; an
+  unplug mid-spin clears the total and the queued read-backs then drive it negative; and
+  the daemon clamps the running total to ±100 while the watcher clamps each batch
+  (`change = 10`, two fast 8-detent events: 100 sent, 160 confirmed). The bar then sits a
+  fixed amount off the real level until a restart, and `settle_volume` shows a muted
+  device as unmuted while anything is "in flight".
+- **Fix:** (R5) every `WatchCmd::Volume` is acknowledged exactly once with the unclamped
+  sum it applied, read or not; no clamp on the total; `detach` and `watch` leave it alone;
+  the shown level keeps the read's mute. [task 5]
+
+### `fix/review-2`: medium
+
+#### 55. After a replug the configurators lose every toggle's state
+
+- **Status:** open. **Found:** 2026-10-17, review 2 (daemon and GUI parts). *(proto)*
+- **Where:** `daemon.rs` `Daemon::attach`/`detach` (clear `published`, not
+  `published_keys`); `hub.rs` `Replay::remember` and the GUI's `Event::Disconnected`
+  handler (both clear key states); `main.rs` `run()`, the no-deck branch.
+- **What goes wrong:** after a replug `publish_keys` compares with the old
+  `published_keys` and sends nothing for keys that didn't change, while the GUI and the
+  hub's replay forgot them: a muted mic key shows off in the configurator until it
+  changes. With no deck, `run()` publishes `Disconnected` on every 2 s scan, so the GUI
+  clears and repaints everything every 2 s and drops a job's state published meanwhile.
+- **Fix:** clear `published_keys` in `attach` and `detach`; publish `Disconnected` only
+  from `detach` (the hub's replay starts with it). [task 5]
+
+#### 56. A probe dropped and watched again mid-run gets two runs
+
+- **Status:** open. **Found:** 2026-10-17, review 2 (confirmed with a `Poller` test). *(proto)*
+- **Where:** `watch.rs` `Poller::handle` (`Watch` cancels and forgets; `Done` matches by
+  probe only).
+- **What goes wrong:** page A → B → A while A's state command runs: run 1 is cancelled,
+  run 2 starts, and run 1's late `Done` (timed out) ends run 2's slot. A spurious "state
+  command timed out" is logged, a third run can start while run 2 is going, and a stale
+  result can land over a fresh one.
+- **Fix:** (R5) a run id: `in_flight` holds `(u64, cancel)`, `Done { probe, run, result }`
+  is ignored unless `run` matches. [task 5]
+
+#### 57. The "State from" combo shows nothing for a mute key
+
+- **Status:** open. **Found:** 2026-10-17, review 2 (GUI part; PR 8's unverified "Follows
+  mute" check).
+- **Where:** `editor.rs` `build_key`: `state_row.set_selected(key.state_choice() as usize as u32)`.
+- **What goes wrong:** the enum's discriminant is used as the row: `Mute` is 2, but a mute
+  key's list is `[Mute, Command]`, so nothing is selected. The handler indexes
+  `choices[sel]`, which panics on `INVALID_LIST_POSITION`. Each rebuild also leaks the
+  label `Vec` (`.leak()`).
+- **Fix:** select by position in `state_choices()`; ignore an invalid selection; build the
+  `StringList` from a local `Vec`. [task 7]
+
+#### 58. The state command runs while you type it
+
+- **Status:** open. **Found:** 2026-10-17, review 2 (GUI part).
+- **Where:** `editor.rs` `build_key`, the "State command" `EntryRow::connect_changed`.
+- **What goes wrong:** each pause while typing saves (250 ms), the daemon reloads, and the
+  watcher runs the half-typed command every `interval`: `systemctl --user stop` before the
+  unit name is typed, and a 126/127 warning per prefix.
+- **Fix:** commit on apply (`show_apply_button(true)`, `connect_apply`: Enter or ✓) and on
+  focus-out (`EventControllerFocus` `leave`), never per keystroke. [task 7]
+
+#### 59. Toggle rows don't follow their own switches; jobs can't get a progress bar
+
+- **Status:** open. **Found:** 2026-10-17, review 2 (GUI part).
+- **Where:** `editor.rs` `build_key`: the "Busy while running" and "Slow" switches; the
+  "Progress bar" row inside `if let Some(on) = &key.on`.
+- **What goes wrong:** the two switches don't rebuild the editor, so the Busy tab and the
+  Progress bar row don't appear or go until something else rebuilds. A plain
+  `busy_while_running` key (no `[key.on]`) never gets the bar row, though PR 8's plan
+  shows it for those keys.
+- **Fix:** `rebuild_editor()` in both handlers; the bar row moves out of the `on` block,
+  shown when `key.face_tabs()` has Busy. [task 7]
+
+#### 60. Busy bars appear for numbers that aren't percentages
+
+- **Status:** open. **Found:** 2026-10-17, review 2 (render part; measured). *(proto)*
+- **Where:** `probe.rs` `progress` (also reads the part after the last `%`).
+- **What goes wrong:** `"1/4"` → 4, `"Downloading 3 of 7"` → 7, `"Loading 43% step 5"` → 5.
+  A job printing `1/4`…`4/4` with `bar = true` shows a bar stuck at 4%.
+- **Fix:** (R7) only the first number a `%` follows. [task 2]
+
+#### 61. Pressing a `$B1` dial recolours the value and the whole bar
+
+- **Status:** open. **Found:** 2026-10-17, review 2 (render part). *(proto)*
+- **Where:** `render.rs` `Renderer::render_strip_panel`: `fg` is the accent when pressed,
+  then `B1Colors { title: fg, value: fg, fill: fg, … }`.
+- **What goes wrong:** the comment, PR 3's decision and PR 10/14's plans say a press turns
+  the title accent only; the value, fill and track turn accent too.
+- **Fix:** (R8) a separate `title` colour; value and bar keep theirs. The goldens are
+  unpressed and don't change. [task 3]
+
+#### 62. The example's Backup key is never busy, and the toggle docs contradict the code
+
+- **Status:** open. **Found:** 2026-10-17, review 2 (core part; the TOML placement tested).
+- **Where:** `examples/config.toml` (the index-12 Backup block), README "Toggle keys",
+  CHANGELOG.
+- **What goes wrong:** `busy_while_running = true` sits after `[key.on]`, so TOML puts it in
+  the on table, where serde ignores it. README and example say a state command's **last**
+  output line is the progress; it's the **first** (`run_state`), and the last only for a
+  running job. "Every 1–60 s" is the GUI's limit, not the config's. `[key.on] action`
+  isn't documented anywhere. "The command keeps running if the daemon stops" holds only
+  for programs that ignore a closed stdout, and the key isn't busy any more after a
+  restart. The bar's "last `NN%`" changes to "first" with 60.
+- **Fix:** move the line above `[key.action]`; reword the rest. [task 9]
+
+### `fix/review-2`: low
+
+#### 63. Clearing a look field on the On or Busy tab creates that face
+
+- **Status:** open. **Found:** 2026-10-17, review 2 (core part; tested). *(proto)*
+- **Where:** `config.rs` `KeyConfig::set_look`: the blank branch calls `get_or_insert_with`.
+- **What goes wrong:** clearing an On field on a plain key gives it `[key.on]`, which makes
+  it a press toggle; clearing a Busy field leaves an empty `[key.busy]`. Reachable through
+  50's stale tab once 50 no longer panics.
+- **Fix:** clear only an existing face; drop a busy face equal to its default. [task 2]
+
+#### 64. State commands of keys the deck doesn't have are polled
+
+- **Status:** open. **Found:** 2026-10-17, review 2 (core and daemon parts). *(proto)*
+- **Where:** `probe.rs` `watched_probes` (every key on the page); `daemon.rs` `watch`
+  (called from `reload` and `show_page` with no deck too).
+- **What goes wrong:** the example's key 10 on a Plus (8 keys), or a config from an XL,
+  runs its command every 2 s. With no deck, the next save or GUI page change starts
+  polling the page's commands again, though `detach` stopped them.
+- **Fix:** (R9) `watched_probes` takes `n_keys: u8`; with no deck both counts are 0. [task 2]
+
+#### 65. A held key is repainted as released
+
+- **Status:** open, **for PR 13** ([pr13-folders.md](pr13-folders.md), task 2; decided:
+  its Back hold adds held-key state to `Deck`).
+  **Found:** 2026-10-17, review 2 (daemon part).
+- **Where:** `daemon.rs` `Daemon::key_states` (`pressed: false`), used by
+  `deck::flush_dirty`.
+- **What goes wrong:** pressing a toggle key paints it pressed, `press_key` marks it dirty,
+  and the end-of-pass flush paints the new state unpressed while the key is still down.
+- **Fix:** `Deck.key_pressed: Vec<bool>` set on `ButtonDown`/`ButtonUp`, read by
+  `key_states` through `Deck::key_held` (PR 13, task 2).
+
+#### 66. A runner thread that fails to start silences its probe
+
+- **Status:** open. **Found:** 2026-10-17, review 2 (daemon part). *(proto)*
+- **Where:** `watch.rs` `run`, `if let Err(e) = spawned`.
+- **What goes wrong:** the probe stays in `in_flight`, `next_due` skips it, and it is
+  never polled again until the next `Watch`.
+- **Fix:** on `Err`, take it out of `in_flight` and schedule it an interval later. [task 5]
+
+#### 67. The face tab buttons aren't a group
+
+- **Status:** open. **Found:** 2026-10-17, review 2 (GUI part).
+- **Where:** `editor.rs` `appearance_tabs`: plain `ToggleButton`s, no `set_group`.
+- **What goes wrong:** clicking the active tab un-toggles it (no tab shown active);
+  clicking another leaves two active until the idle rebuild.
+- **Fix:** `set_group(Some(&first))`. [task 7]
+
+#### 68. The configurator repaints everything every 2 s while the daemon is down
+
+- **Status:** open. **Found:** 2026-10-17, review 2 (GUI part).
+- **Where:** `app.rs` `App::handle`, `Msg::DaemonDown` (sent after every failed connect).
+- **What goes wrong:** every 2 s: `sync_slider`, `refresh_strip`, then `refresh_all`
+  (which draws the strip again): every key at 192 px, forever, while the daemon is
+  stopped.
+- **Fix:** do the clearing only when `daemon_up` was true; drop the extra
+  `refresh_strip`. [task 8]
+
+#### 69. The starter layout's night light ignores that it needs `jq`
+
+- **Status:** open. **Found:** 2026-10-17, review 2 (GUI part).
+- **Where:** `starter.rs` `layout`: `PRESETS[1]` and `PRESETS[2]` by index.
+- **What goes wrong:** without `jq` the night light key's state command fails (127) on
+  every poll after one warning, and the key never shows on. Indexing breaks silently if
+  the preset list is reordered.
+- **Fix:** look presets up by name; without the binary, a plain night light key. [task 8]
+
+#### 70. An action editor overwrites its group's description
+
+- **Status:** open. **Found:** 2026-10-17, review 2 (GUI part).
+- **Where:** `editor.rs` `action_rows`: `group.set_description(..)` for Volume, Brightness
+  and Hyprland.
+- **What goes wrong:** a key whose action is Volume loses "Home · Row 1 · Column 2"; the
+  on-action editor rewrites the Toggle group's; PR 12's nested editors would all fight
+  over one description.
+- **Fix:** (R9) `action_rows` adds its own hint row instead. [task 8]
+
+#### 71. Some render tests depend on the machine's font and theme
+
+- **Status:** open. **Found:** 2026-10-17, review 2 (render part). *(proto)*
+- **Where:** `render.rs` tests built with `Renderer::new` (`strip_panel_isolation`,
+  `panel_isolation_with_strip_image`, `busy_face_uses_accent_label_by_default` and 16
+  others): `fc-match` and `Theme::load_omarchy()`.
+- **What goes wrong:** with no system font the isolation tests fail; `busy_face_…` fails on
+  a theme whose accent is `#ff0000`. This is why CI still needs `ttf-dejavu`.
+- **Fix:** every render test uses the bundled font and `Theme::default()` (R9's
+  `with_font_bytes` + `TEST_FONT`). [task 3]
+
+#### 72. "New page" on a toggle's on action restyles the key's off face
+
+- **Status:** open. **Found:** 2026-10-17, review 2 (GUI part).
+- **Where:** `editor.rs` `build_key`, `on_slot.on_new_page` → `new_folder(a, i)`.
+- **What goes wrong:** `new_folder` gives the key a folder glyph (and the page name as its
+  label) when it has none: right for a key that opens a folder, wrong when only its on
+  action does.
+- **Fix:** the on slot makes the folder page without touching the key
+  (`App::add_page(&name, true)` with the key's label as the base). [task 8]

@@ -1,18 +1,7 @@
 # PR 14: `feat/media-dial`: media dial and media keys
 
 Part of [PLAN.md](PLAN.md). Base: `feat/folders` (PR 13), the last branch in the chain
-`feat/groundwork` → PR 8 → … → PR 13. Nothing here uses PR 13's code.
-
-Uses, and doesn't change the shape of:
-- the **state watcher** (groundwork + PR 8): `Probe`, `Value`, `Values`, `dial_status`,
-  `WatchCmd`, `Watcher`, `proc::output_timeout`;
-- **toggle keys** (PR 8): the play/pause key's two faces are an ordinary `[key.on]`;
-- the **strip layers** (PR 7) and `Backdrop::tone_in` (PR 10);
-- **GUI mirroring** (groundwork, D2): `Event::DialStatus` and its `PanelStatus`, which this
-  PR widens with `media`.
-
-PR 10's app volume shows up only in an example (turn = the player's app volume). No code
-depends on it.
+`fix/review-2` → PR 9 → … → PR 13. Nothing here uses PR 13's code.
 
 **Outcome:** a `media` action for keys and dials: play/pause, next, previous, stop, and
 seek ± N seconds. A **media dial** (turn = scrub, press = play/pause) shows the playing
@@ -56,9 +45,10 @@ mirrors the deck. Existing configs load and save byte-identical.
 
 ## Capture on the machine first
 
-Do these on the Omarchy box (Stream Deck + `0fd9:0084`, Omarchy 4.0.4) before Task 2, with
-Spotify **and** a browser tab (YouTube) open. Paste each output into the named file or into
-this plan. Don't invent output: the parser tests are only as good as these samples.
+Nothing for PR 14 is captured yet. Do these on the Omarchy box (Stream Deck +
+`0fd9:0084`, Omarchy 4.0.4) before Task 2, with Spotify **and** a browser tab (YouTube)
+open. Paste each output into the named file or into this plan. Don't invent output: the
+parser tests are only as good as these samples.
 
 1. What's installed, and what `audio::backend()` will pick:
    ```bash
@@ -117,25 +107,27 @@ this plan. Don't invent output: the parser tests are only as good as these sampl
 
 ## Ask before building
 
-1. **`playerctl` for seeking and the panel** (planned): users without it get keys and
-   play/pause through Omarchy, and a panel that says "Needs playerctl". The other way is a
-   `busctl --user` (systemd) backend that needs nothing installed, about 150 more lines.
-2. **Album art from local `file://` only** (planned): Spotify's `https://` art shows the
-   play/pause glyph instead. Fetching would put an HTTP client in the daemon.
-3. **A media action wins the panel** (planned): a dial with a media press and a volume turn
-   (PR 10's app volume on the player) shows the track, not the volume. Omarchy's own
-   pop-up still shows the volume.
+None; all settled 2026-10-17.
 
 ## Decided
 
+- **Decided: require `playerctl` for seeking and the panel.** Users without it get keys
+  and play/pause through Omarchy, and a panel that says "Needs playerctl". A `busctl
+  --user` backend that needs nothing installed is about 150 more lines; it's under Later.
+- **Decided: album art from local `file://` only.** Spotify's `https://` art shows the
+  play/pause glyph instead. Fetching would put an HTTP client in the daemon; `https://`
+  art is under Later.
+- **Decided: a media action wins the panel over volume.** A dial with a media press and a
+  volume turn (PR 10's app volume on the player) shows the track: a dial that controls
+  the player shows the player. Omarchy's own pop-up still shows the volume.
 - **Decided: poll `playerctl` once a second, read inline on the watcher thread through
   `proc::output_timeout`.** One `playerctl -a metadata --format …` per second reads every
-  player (one process, one line each), next to groundwork's inline volume read in the
-  `Poller`. No `playerctl --follow` child: the watcher would need a second thread to read
-  its pipe, the child would have to be restarted when it dies and kept across reloads,
-  and `--follow` doesn't print the position on every tick anyway, so the bar would still
-  be moved locally. Not PR 8's runner threads either: those are for user shell commands
-  that may take seconds; `playerctl` answers in a few ms, like `wpctl`, and
+  player (one process, one line each), next to the inline volume read in
+  `Poller::run_due`. No `playerctl --follow` child: the watcher would need a second thread
+  to read its pipe, the child would have to be restarted when it dies and kept across
+  reloads, and `--follow` doesn't print the position on every tick anyway, so the bar would
+  still be moved locally. Not PR 8's runner threads either: those are for user shell
+  commands that may take seconds; `playerctl` answers in a few ms, like `wpctl`, and
   `COMMAND_TIMEOUT` (2 s) caps a hung one. It runs only while a media dial or a play/pause
   toggle is on screen. Nothing runs on the deck loop. `--follow` is under Later.
 - **Decided: a read that only confirms the prediction is not a change.** A `Track` carries
@@ -144,50 +136,51 @@ this plan. Don't invent output: the parser tests are only as good as these sampl
   status, title, artist, length and art, and the position within **1.5 s** of
   `old.show().position_at(new.read_ms)`; every other value with `==`. Three places use it
   instead of `==`: the watcher's `Poller::record` (send only on change), PR 8's
-  `Settle::accepts` and PR 8's equality skip in `Daemon::apply_value`. On "same" the old
-  value stays (the anchor), so nothing is sent or repainted while a track simply plays. A
-  seek from elsewhere, a pause or a track change is sent.
+  `Settle::accepts` (its `Expect` arm) and PR 8's equality skip in `Daemon::apply_value`.
+  On "same" the old value stays (the anchor), so nothing is sent or repainted while a
+  track simply plays. A seek from elsewhere, a pause or a track change is sent.
 - **Decided: `dial_status` stays pure; painting advances the position.** `dial_status`
   puts the anchored `MediaShow` (`as_of_ms = read_ms`) in `PanelStatus.media`, so the
-  groundwork's `published` comparison in `Daemon::flush` only sees a change when the
-  anchor changes, and `Event::DialStatus` goes out on a new value or a guess, never once a
-  second. `deck::panel_status` (it has `now`) advances it with `MediaShow::at(now_ms)`
-  before drawing; the GUI does the same in `refresh_strip`. A replayed event (D8) isn't
-  stale, because `as_of_ms` is a wall-clock time.
+  `published` comparison in `Daemon::flush` only sees a change when the anchor changes,
+  and `Event::DialStatus` goes out on a new value or a guess, never once a second.
+  `deck::panel_status` (it has `now`) advances it with `MediaShow::at(now_ms)` before
+  drawing; the GUI does the same in `refresh_strip`. A replayed event isn't stale, because
+  `as_of_ms` is a wall-clock time.
 - **Decided: the deck repaints a playing panel once per second, on a deadline.**
   `Daemon.media_due: Option<Instant>` is the next moment a playing panel's shown second
-  changes; `next_deadline()` includes it (D4). When it passes, the playing panels are
-  marked dirty; it is recomputed after each flush. One 200 × 100 write per second per
-  playing panel, nothing while paused.
+  changes; `next_deadline()` includes it. When it passes, the media panels are marked
+  dirty; it is recomputed after each flush. One 200 × 100 write per second per playing
+  panel, nothing while paused.
 - **Decided: `PanelStatus` gains `media: Option<MediaShow>`** (next to PR 9's `live` and
   PR 10's `app`; left out on the wire when `None`). `Event::DialStatus { index, status }`
   is unchanged. `level` stays `None` for media panels.
 - **Decided: media commands from the deck run on the watcher, in order, then re-read**
-  (`WatchCmd::Media`), as volume does (D5). `dispatch` sends it; nothing waits on the
-  loop. The GUI's *Try it now* and `omadeckd press`/`dial` with no daemon use
-  `action::run`, which spawns the commands detached (`spawn_seq`).
+  (`WatchCmd::Media`), as volume does. `dispatch` sends it; nothing waits on the loop.
+  The GUI's *Try it now* and `omadeckd press`/`dial` with no daemon use `action::run`,
+  which runs the commands on a `media` thread, as `run_volume` does for volume.
 - **Decided: one function builds the commands**, `player::media_argv(backend, cmd, seek,
-  target, monitor) -> Vec<Vec<String>>`. Callers: the watcher (`WatchCmd::Media`) and
-  `action::run_media` (detached). `seek` is the event's total in seconds, folded once by
-  `player::fold_seek(seek, steps)` (clamped ±600).
+  target, monitor) -> Vec<Vec<String>>`, and one runs each, `player::run_argv`. Callers:
+  the watcher (`WatchCmd::Media`) and `action::run_media`. `seek` is the event's total in
+  seconds, folded once by `player::fold_seek(seek, steps)` (clamped ±600).
 - **Decided: reuse `audio::backend()`.** `Omarchy4` → `omarchy-shell media
   playPause|next|previous`; `Omarchy3` → `swayosd-client [--monitor M] --playerctl
-  play-pause|next|previous` (the monitor exactly as `volume_command`'s `swayosd` arm does
-  it); `Plain` → `playerctl play-pause|next|previous`. Stop and seek are always `playerctl`.
-  A **target** sends everything, play/pause included, to `playerctl --player=<instance>
-  …`, because Omarchy's commands can't target a player.
+  play-pause|next|previous` (the monitor exactly as `action::apply_volume` gets it:
+  `audio::focused_monitor()` only for `Omarchy3`); `Plain` → `playerctl
+  play-pause|next|previous`. Stop and seek are always `playerctl`. A **target** sends
+  everything, play/pause included, to `playerctl --player=<instance> …`, because
+  Omarchy's commands can't target a player.
 - **Decided: the target is the shown player.** `probe::media_target(values, wanted)` is the
   instance of the track in `values.probes[&Probe::Player(wanted)]`, else `wanted`. With no
   `player` set and no track known, play/pause/next/previous go untargeted through Omarchy
   (its pop-up shows); a seek with nothing known to scrub does nothing.
 - **Decided: guess, then let the real state confirm it**, as PR 8's fast toggles do. A seek
   moves the stored track's position, play/pause flips its status, both re-anchored at now,
-  stored the way PR 8's `after_toggle_press` stores a guess (then `mark_probe`, so the
-  panel and the toggle keys repaint at once), with a `Settle::Expect` until `now + SETTLE`
-  (PR 8's 1 s). `Probe::Player.refresh_after()` is
-  `[MEDIA_REFRESH_DELAY, 1500 ms]` (600 ms; Capture 8 sets it): the first read usually
-  confirms the guess, the second is outside the settle window, so a failed command shows
-  the truth within 1.5 s. Next/previous/stop don't guess.
+  stored the way `after_toggle_press`'s fast arm stores a guess (insert into
+  `rt.values.probes`, a `Settle::Expect { value, until: now + SETTLE }` in `rt.settle`,
+  then `mark_probe`). `Probe::Player.refresh_after()` is `[MEDIA_REFRESH_DELAY, 1500 ms]`
+  (600 ms; Capture 8 sets it): the first read usually confirms the guess, the second is
+  outside the settle window, so a failed command shows the truth within 1.5 s.
+  Next/previous/stop don't guess.
 - **Decided: art is decoded on the watcher, never on the deck loop.** The watcher loads a
   new `art` path with `render::load_icon(path, 48)` into `Track::art_img:
   Option<Arc<RgbaImage>>`, reusing the previous image when the path is unchanged. A file
@@ -195,29 +188,33 @@ this plan. Don't invent output: the parser tests are only as good as these sampl
   event brings a new one. The renderer only draws `art_img`; no new cache in `Renderer`.
 - **Decided: `LevelSource::Player` is a unit variant**, so `LevelSource` stays `Copy`. The
   wanted player comes from the dial: `DialConfig::media_player() -> Option<&str>`.
-- **Decided: `level_source()` checks for a `Media` action first** (Ask 3).
+- **Decided: `level_source()` checks for a `Media` action right after PR 9's `live`
+  check** (a media action wins the panel), before PR 10's Volume/AppVolume step.
 - **Decided: play/pause keys are PR 8 toggles.** `KeyConfig::state_probe()` maps a
   play/pause `Media` action to `Probe::Player(player)`, the way it maps a volume mute to
   `Probe::Volume`; `probe::key_status` reads a playing track as `Toggle::On`. A key
-  without `[key.on]` keeps one static face. The *Play/Pause* preset (PR 8's `PRESETS`)
-  writes both faces: off = play glyph "Play", on = pause glyph "Pause". Faces show **what
-  a press will do**, as every player UI does. No key rendering changes. Next and previous
-  get no preset: they're one combo pick away, and `PRESETS` is for toggles.
+  without `[key.on]` keeps one static face. The configurator's *State from* combo gets a
+  `StateChoice::Player` ("Follows the player") for such keys, as a mute key has
+  `StateChoice::Mute`. The *Play/Pause* preset (in `PRESETS`) writes both faces: off =
+  play glyph "Play", on = pause glyph "Pause". Faces show **what a press will do**, as
+  every player UI does. No key rendering changes. Next and previous get no preset:
+  they're one combo pick away, and `PRESETS` is for toggles.
 - **Decided: no Omarchy `media status` fallback.** Without `playerctl` the panel reads
   "Needs playerctl" (`Value::Player(Err(..))`), and a seek or stop fails with
   "playerctl not found (install playerctl)", shown as a toast or `DialActionFailed`.
 - **Decided: a custom layout on the `$B1` grid** (Elgato lets plugins define layouts):
   `$B1`'s title row, icon and bar, with the value row split into artist and time. The
   title is 168 wide, as nothing sits to its right.
+- **Decided: a press recolours the title only** (R8, as every `$B1` panel after
+  fix/review-2): artist, time, bar and the state glyph keep their colours.
 - **Decided: idle and unknown panels keep the layout.** No daemon or no read yet
   (`media: None`): the dial's label, artist `–`, time `–`, empty bar. Nothing playing:
   the label, "Nothing playing", `–`, empty bar. No switch back to `$X1`.
-- **Decided: kind 14 "Media"** (D14), appended to `KINDS`, `KEY_KINDS` and `STEP_KINDS`
+- **Decided: kind 14 "Media"**, appended to `KINDS`, `KEY_KINDS` and `STEP_KINDS`
   (PR 12), so a multi-action step can be a media command. `is_deck_owned()` is false for
-  it (D11), so *Try it now* works.
-- **Decided: the old-config test uses `examples/config.toml` as it is on this PR's base**
-  (save → load → save gives the same bytes); this PR then adds a media dial to the
-  example and the test still passes.
+  it, so *Try it now* works.
+- **Decided: PR 9's `old_config_saves_byte_identical` is the old-config test.** This PR
+  adds a media dial to the example and that test still passes.
 
 ## Config
 
@@ -244,7 +241,7 @@ impl MediaCommand {
     }
 }
 
-// in `enum Action`, after the PR 12 variants:
+// in `enum Action`, after PR 12's `Multi` and `Delay`:
     /// Control the media player (MPRIS), like the Elgato app's Multimedia actions.
     Media {
         /// Play/pause (default), next, previous or stop. Ignored when `seek` is set.
@@ -259,8 +256,9 @@ impl MediaCommand {
         player: Option<String>,
     },
 
-fn is_zero_i16(n: &i16) -> bool {
-    *n == 0
+// next to `is_zero_i8`:
+fn is_zero_i16(v: &i16) -> bool {
+    *v == 0
 }
 
 // in `enum LevelSource`:
@@ -301,63 +299,237 @@ command = "next"
 player = "spotify"   # optional
 ```
 
-## Earlier PRs this builds on
+## What this PR builds on
 
-As planned in [groundwork.md](groundwork.md), [pr8](pr8-toggle-keys.md),
-[pr9](pr9-live-keys.md), [pr10](pr10-app-volume.md) and [pr12](pr12-multi-actions.md).
-Before Task 1, check each against the merged code; where a name differs, use the merged
-name and fix this list.
+### Code as merged (`daily` = `feat/toggle-keys`, `55d0d62`), verbatim
 
-- **Groundwork, core `probe.rs`:** `enum Probe { Volume(AudioDevice), … }` (`Debug, Clone,
-  PartialEq, Eq, Hash`) with `fn interval(&self) -> Duration` and `fn refresh_after(&self)
-  -> &'static [Duration]`; `enum Value { Level(Level), … }` (`Debug, Clone, PartialEq,
-  Serialize, Deserialize`); `struct Values { pub probes: HashMap<Probe, Value>, pub
-  brightness: u8 }`; `pub fn dial_status(dial: Option<&DialConfig>, values: &Values,
-  pressed: bool) -> DialStatus`; `pub fn shows(dial: Option<&DialConfig>, probe: &Probe)
-  -> bool`; `pub fn watched_probes(cfg: &Config, page: Option<&str>, n_dials: usize) ->
-  Vec<Probe>`.
-- **Groundwork, `render.rs`:** `pub struct DialStatus { pub pressed: bool, pub panel:
-  PanelStatus }`; `pub struct PanelStatus { pub level: Option<Level>, … }` (`Debug, Clone,
-  Default, PartialEq, Serialize, Deserialize`); `struct B1Colors { title, value, fill,
-  track }`; `fn draw_bar(img: &mut RgbaImage, rect: (u32, u32, u32, u32), value: f32,
-  fill: Rgb, track: Rgb)` (clamps). fix/review's test helper `renderer_with_font() ->
-  Renderer` (the bundled `tests/fixtures/test-font.ttf`, ASCII plus `% … –`).
-- **Groundwork, `proc.rs`:** `pub const COMMAND_TIMEOUT: Duration` (2 s), `pub fn
-  output_timeout(cmd: &mut Command, timeout: Duration) -> Option<Output>`.
-- **Groundwork, `ipc.rs`:** `Event::DialStatus { index: u8, status: PanelStatus }`,
-  published by `Daemon::flush` when `dial_status(..).panel` differs from `published`, and
-  replayed to new clients.
-- **Groundwork, daemon:** `watch.rs` `enum WatchCmd { Watch(Vec<Probe>), Refresh(Probe),
-  Volume { device, change: i32, mute }, Stop, … }`; `deck.rs` `pub fn panel_status(d:
-  &Deck, cfg: &Config, values: &Values, i: u8, now: Instant) -> DialStatus`,
-  `Deck::dirty_where(&mut self, cfg, pred)`, `Deck::mark_dirty(i)`; `daemon.rs` `struct
-  Daemon { cfg, renderer, nav, hub, watcher, saver, rt: Runtime, deck, published, … }`,
-  `Daemon::apply_value(probe, value)`, `Daemon::next_deadline()`, `Daemon::flush()`,
-  `fn dispatch(&mut self, act: &Action, steps: u8) -> Result<bool>` with its
-  `Action::Volume` arm (guess, then `WatchCmd::Volume`).
-- **Groundwork / fix/review, config and GUI:** `enum Direction { Left, Right, Press }`,
-  `Action::default_for(kind: usize, dir: Direction) -> Action` (a match on
-  `(Self::empty_of_kind(kind), dir)`), `DialConfig::action(dir)`; GUI `struct ActionSlot {
-  target, dir, get: Rc<dyn Fn(&Rc<App>) -> Action>, set: Rc<dyn Fn(&Rc<App>, Action)>, …
-  }`, `action_rows(app, group, slot)`, `App::edit(i, f)`, `App::edit_dial(i, f)`, and
-  `App.panel_status: RefCell<HashMap<u8, PanelStatus>>` with its `Event::DialStatus`
-  arm in `App::handle`.
-- **PR 8:** the watcher's `Poller { watched, last, next_due, forced, read_volume,
-  change_volume, refresh_at, … }` (groundwork's struct, PR 8's fields) with `run_due`
-  (inline reads next to `Probe::Volume`, runners for `Probe::Command` and PR 9's
-  `Probe::CommandOutput`, returned to the thread loop) and
-  `record(p, v, now, out)` (`if forced || self.last.get(&p) != Some(&v)`); `enum Settle {
-  Expect { value, until }, Leaving { .. } }` with `fn accepts`; `const SETTLE` (1 s);
-  `Daemon::apply_value` with the settle check and `if self.rt.values.probes.get(&probe)
-  == Some(&value) { return; }`; `Daemon::mark_probe`; `KeyConfig::state_probe() ->
-  Option<Probe>`; `probe::key_status(key, values, pressed) -> KeyStatus` with `Toggle {
-  Off, On, Busy(String) }`; `Daemon::after_toggle_press`; core `presets.rs` with `struct
-  Preset { name, needs, apply: fn(&mut KeyConfig) }` and `PRESETS`.
-- **PR 9:** `PanelStatus.live: Option<LiveShow>` (this PR's `media` sits beside it).
-- **PR 10:** `Backdrop::tone_in(&self, rect) -> Rgb`; `render_strip_panel` takes the tones
-  it needs before `backdrop.img` is moved; `PanelStatus.app: Option<AppShow>`.
-- **PR 12:** `KINDS: [&str; 14]` (… 11 App volume, 12 Multi action, 13 Delay),
-  `KEY_KINDS`, `STEP_KINDS`, `kind_position`, `ActionSlot.kinds`.
+Lines marked "fix/review-2" are as that branch leaves them (see the names at the end of
+[review-fixes-2.md](review-fixes-2.md)); everything else is as merged.
+
+Core `config.rs`:
+
+```rust
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Direction { Left, Right, Press }
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LevelSource { Volume(AudioDevice), Brightness }
+impl Action {
+    pub fn is_deck_owned(&self) -> bool;     // Page | Back | PageStep | Brightness
+    pub fn kind_index(&self) -> usize;
+    pub fn empty_of_kind(i: usize) -> Self;
+    pub fn default_for(kind: usize, dir: Direction) -> Self; // match (Self::empty_of_kind(kind), dir) { …, (act, _) => act }
+    pub fn summary(&self) -> String;
+}
+fn is_zero_i8(v: &i8) -> bool;
+impl DialConfig {
+    pub fn new(index: u8) -> Self;
+    pub fn volume_device(&self) -> Option<AudioDevice>;  // match on level_source()
+    pub fn action(&self, dir: Direction) -> &Action;
+    pub fn level_source(&self) -> Option<LevelSource>;   // let actions = [&self.turn_right, &self.turn_left, &self.press]; …
+}
+impl KeyConfig {
+    pub fn state_probe(&self) -> Option<Probe>;  // on.state → Command; else match &self.action { Action::Volume { device, mute: true, .. } => Some(Probe::Volume(*device)), _ => None }
+    pub fn state_choices(&self) -> &'static [StateChoice];
+    pub fn state_choice(&self) -> StateChoice;
+    pub fn set_state_choice(&mut self, c: StateChoice);
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StateChoice { Press, Command, Mute }
+```
+
+Core `probe.rs`:
+
+```rust
+const VOLUME_REFRESH: [Duration; 1] = [Duration::from_millis(150)];
+const COMMAND_REFRESH: [Duration; 2] = [Duration::from_millis(300), Duration::from_millis(1200)];
+pub const SETTLE: Duration = Duration::from_secs(1);
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum Probe { Volume(AudioDevice), Command { command: String, interval_ms: u32 } }
+impl Probe {
+    pub fn interval(&self) -> Duration;
+    pub fn refresh_after(&self) -> &'static [Duration];
+}
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum Value { Level(Level), Toggle(Toggle) }      // snake_case on the wire after R4
+#[derive(Debug, Clone, Default)]
+pub struct Values { pub probes: HashMap<Probe, Value>, pub brightness: u8 }
+impl Values { pub fn level(&self, device: AudioDevice) -> Option<&Level>; }
+pub fn dial_status(dial: Option<&DialConfig>, values: &Values, pressed: bool) -> DialStatus;
+pub fn shows(dial: Option<&DialConfig>, probe: &Probe) -> bool;
+pub fn key_status(key: Option<&KeyConfig>, values: &Values, pressed: bool) -> KeyStatus;
+    // match values.probes.get(&p) { Some(Value::Toggle(t)) => t.clone(), Some(Value::Level(l)) if l.muted => Toggle::On, _ => Toggle::Off }
+pub fn watched_probes(cfg: &Config, page: Option<&str>, n_dials: usize, n_keys: u8) -> Vec<Probe>; // fix/review-2
+```
+
+Core `render.rs`:
+
+```rust
+#[derive(Debug, Clone, Default)]
+pub struct DialStatus { pub pressed: bool, pub panel: PanelStatus }
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct PanelStatus {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub level: Option<Level>,
+}
+const X1_TITLE: (u32, u32, u32, u32) = (16, 10, 136, 24);
+const X1_ICON: (u32, u32, u32, u32) = (76, 40, 48, 48);
+const B1_ICON: (u32, u32, u32, u32) = (16, 40, 48, 48);
+const B1_VALUE: (u32, u32, u32, u32) = (76, 40, 108, 32);
+const B1_BAR: (u32, u32, u32, u32) = (76, 74, 108, 12);
+const STRIP_ICON_PX: u32 = 48;
+const STRIP_TITLE_PX: f32 = 16.0;
+pub fn render_strip_panel(&mut self, cfg: &Config, i: u8, panels: u32, st: DialStatus) -> RgbaImage;
+fn icon(&mut self, path: &Path, box_px: u32) -> Option<RgbaImage>;
+fn glyph(&self, text: &str, box_px: u32, color: Rgb) -> Option<RgbaImage>;
+fn draw_text_in(&self, img: &mut RgbaImage, rect: (u32, u32, u32, u32), px: f32, align: Align, text: &str, color: Rgb, shadow: bool);
+fn draw_bar(img: &mut RgbaImage, rect: (u32, u32, u32, u32), value: f32, fill: Rgb, track: Rgb); // clamps
+pub fn label_color(&self, face: Option<&Face>, style: &Style, bg: Rgb) -> Rgb;
+pub struct Backdrop { pub img: RgbaImage, pub tone: Rgb, pub has_image: bool }
+pub fn load_icon(path: &Path, box_px: u32) -> Option<RgbaImage>;
+// tests: fn test_style() -> Style; fn renderer_with_font() -> Renderer (the bundled test font)
+```
+
+In `render_strip_panel`, `backdrop.img` is moved into `img` near the top, and the icon
+colour is `let glyph_color = face.label_color.and_then(Rgb::parse).unwrap_or(if
+style.follow_theme { self.theme.accent } else { … });`. The level panels sit in `if let
+Some(src) = dial.and_then(|d| d.level_source()) { let icon = match src { … }; …;
+self.draw_b1(..); return img; }`.
+
+Core `action.rs` and `audio.rs`:
+
+```rust
+pub fn run(action: &Action) -> Result<()>;               // bails on is_deck_owned(); one arm per kind
+pub fn run_steps(action: &Action, steps: u8) -> Result<()>; // folds Volume; Hyprland steps > 1 on a thread; else `run` × steps
+fn run_volume(device: AudioDevice, change: i8, mute: bool) -> Result<()>; // thread "volume" → apply_volume
+pub(crate) fn which(bin: &str) -> bool;
+// audio.rs
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Backend { Omarchy4, Omarchy3, Plain }
+pub fn backend() -> Backend;
+pub fn focused_monitor() -> Option<String>;
+// proc.rs
+pub const COMMAND_TIMEOUT: Duration = Duration::from_secs(2);
+pub fn output_timeout(cmd: &mut Command, timeout: Duration) -> Option<Output>;
+// presets.rs
+pub struct Preset { pub name: &'static str, pub needs: Option<&'static str>, pub apply: fn(&mut KeyConfig) }
+pub const PRESETS: &[Preset];   // test: every_preset_makes_a_toggle_that_roundtrips
+```
+
+Daemon `watch.rs`:
+
+```rust
+#[derive(Debug, Clone, PartialEq)]
+pub enum WatchCmd { Watch(Vec<Probe>), Refresh(Probe), Volume { device: AudioDevice, change: i32, mute: bool },
+                    Leave { probe: Probe, from: Toggle }, Done { probe: Probe, run: u64, result: RunResult }, Stop }
+                    // fix/review-2: `Done` carries the run id; every `Volume` is acknowledged
+struct Poller {
+    watched: Vec<Probe>, last: HashMap<Probe, Value>, next_due: HashMap<Probe, Instant>,
+    forced: HashSet<Probe>, refresh_at: Vec<(Instant, Probe)>,
+    in_flight: HashMap<Probe, (u64, Arc<AtomicBool>)>, next_run: u64,   // fix/review-2
+    fast_until: HashMap<Probe, (Toggle, Instant)>, failing: HashSet<Probe>,
+    read_volume: fn(AudioDevice) -> Option<Value>, change_volume: fn(AudioDevice, i32, bool),
+}
+impl Poller {   // fix/review-2: `out` carries `Option<Value>` (`None`: a volume change acknowledged without a read)
+    fn handle(&mut self, cmd: WatchCmd, now: Instant, out: &mut Vec<(Probe, Option<Value>, i32)>);
+    fn run_due(&mut self, now: Instant, out: &mut Vec<(Probe, Option<Value>, i32)>) -> Vec<(Probe, u64, Arc<AtomicBool>)>;
+    fn record(&mut self, p: Probe, v: Value, now: Instant, out: &mut Vec<(Probe, Option<Value>, i32)>, applied: i32);
+        // … if forced || self.last.get(&p) != Some(&v) { self.last.insert(..); out.push((p, Some(v), applied)); }
+}
+// Watcher.values: mpsc::Receiver<(Probe, Option<Value>, i32)> (fix/review-2)
+```
+
+`run_due`'s `match &p` has a `Probe::Volume(dev)` arm that reads inline and calls
+`self.record(p, v, now, out, 0)`, and a `Probe::Command { .. }` arm that hands the probe to
+a runner. `Poller` implements `Default` by hand (it sets `read_volume` and
+`change_volume`).
+
+Daemon `daemon.rs` and `deck.rs`:
+
+```rust
+enum Settle { Expect { value: Value, until: Instant }, Leaving { from: Toggle, until: Instant } }
+impl Settle { fn accepts(&self, v: &Value, now: Instant) -> bool; }
+    // Settle::Expect { value, until } => now >= *until || v == value,
+pub struct Runtime { pub values: Values, pub state: State, pub flipped: HashSet<KeyId>, settle: HashMap<Probe, Settle>, pub jobs: HashMap<KeyId, Running> }
+fn finish_job(rt: &mut Runtime, cfg: &Config, id: &KeyId, status: ExitStatus) -> JobEnd;
+    // match k.state_probe() { Some(p @ Probe::Command { .. }) => Some(p), Some(Probe::Volume(_)) => None, None => { … } }
+impl Daemon {
+    fn watch(&mut self);   // fix/review-2 removed its `kept`/`in_flight.retain` block: no `match` on `Probe` left in it
+    pub fn apply_value(&mut self, probe: Probe, value: Option<Value>, applied: i32);   // fix/review-2
+        // settles `in_flight`, then `let Some(mut value) = value else { return };` …
+        // … if self.rt.values.probes.get(&probe) == Some(&value) { return; } self.store_value(probe, value);
+    fn mark_probe(&mut self, probe: &Probe);
+    pub fn next_deadline(&self) -> Option<Instant>;
+    pub fn pass(&mut self) -> Result<(), StreamDeckError>;
+    fn after_toggle_press(&mut self, id: &KeyId, k: &KeyConfig, before: Toggle);
+        // match k.state_probe() { None => flip, Some(Probe::Volume(_)) => {}, Some(p) if busy => Refresh,
+        //                         Some(p) if k.is_slow_toggle() => …, Some(p) => fast guess }
+    fn dispatch(&mut self, src: Source, act: &Action, steps: u8) -> Result<bool>;  // fix/review-2 adds `src`; … Action::Volume { .. } => { guess_volume; WatchCmd::Volume }, a => action::run_steps(a, steps).map(|_| false)
+    fn guess_volume(&mut self, device: AudioDevice, change: i32, mute: bool);
+    pub fn flush(&mut self);  // publish_keys; let Some(d) = &mut self.deck else { return }; flush_dirty; DialStatus by comparison with `published`
+}
+fn config_probes(cfg: &Config, n_dials: usize) -> Vec<Probe>;  // dials' Volume probes + every key's state_probe, any page
+// deck.rs
+pub fn panel_status(d: &Deck, cfg: &Config, values: &Values, i: u8, now: Instant) -> DialStatus;
+    // probe::dial_status(cfg.dial(i), values, d.pressed(i, now))
+impl Deck { pub fn dirty_where(&mut self, cfg: &Config, pred: impl Fn(Option<&DialConfig>) -> bool); }
+```
+
+GUI (`app.rs`, `editor.rs`):
+
+```rust
+// App fields
+pub config: RefCell<Config>,
+panel_status: RefCell<std::collections::HashMap<u8, PanelStatus>>,
+// App::handle
+Msg::Event(Event::DialStatus { index, status }) => {
+    self.panel_status.borrow_mut().insert(index, status);
+    self.refresh_strip();
+}
+pub fn refresh_strip(&self);   // mirrored.get(&i) → DialStatus { pressed: false, panel: panel.clone() }, else probe::dial_status(..)
+pub fn edit_dial(self: &Rc<Self>, i: u8, f: impl FnOnce(&mut DialConfig));
+pub fn rebuild_editor(self: &Rc<Self>);
+// editor.rs
+pub fn build_dial(app: &Rc<App>, i: u8) -> gtk::Widget;  // header presets: "Volume dial", "Brightness dial" buttons in `presets` (a gtk::Box)
+fn action_rows(app: &Rc<App>, group: &adw::PreferencesGroup, slot: &ActionSlot);
+pub(crate) struct ActionSlot { pub target, pub dir: Option<Direction>, pub get: Rc<dyn Fn(&Rc<App>) -> Action>, pub set: Rc<dyn Fn(&Rc<App>, Action)>, … }
+// The "State from" combo in build_key maps each StateChoice to a label:
+//   StateChoice::Press => "Flips on each press", StateChoice::Command => "Shell command", StateChoice::Mute => "Follows mute"
+```
+
+The `Action::Volume` arm of `action_rows` is the pattern for each row: read with `(get)(&a)`,
+change one field, write with `(set)(&a, act)`.
+
+### From the plans before this one
+
+- **fix/review-2:** R4 (`Value` and every wire enum `rename_all = "snake_case"`); R5
+  (the `watch.rs` and `apply_value` forms above); R6 (`dispatch` takes `src: Source`;
+  Hyprland goes to `Daemon.hypr: HyprWorker`); R8 (`render_strip_panel` computes `fg`
+  and a separate `title`, the accent while pressed: a `$B1` press recolours the title
+  only); R9 (`watched_probes(cfg, page, n_dials, n_keys: u8)`; `action_rows` never calls
+  `set_description`, it adds `hint_row(text) -> adw::ActionRow` to the group; the core
+  feature `test-support` and `render::TEST_FONT`, which `renderer_with_font()` uses).
+- **PR 9:** `PanelStatus.live: Option<LiveShow>`; `DialConfig::level_source()` returns
+  `None` first thing when `live` is set; new `Probe`/`Value` variants (so some `match`es
+  on them are already `_ =>`); `old_config_saves_byte_identical` in `config.rs`.
+- **PR 10:** `PanelStatus.app: Option<AppShow>`; `LevelSource::App`;
+  `DialConfig::app_query()`; `Backdrop::tone_in(&self, rect: (u32, u32, u32, u32)) -> Rgb`;
+  `render_strip_panel` takes `title_tone = backdrop.tone_in(X1_TITLE)`, `value_tone =
+  backdrop.tone_in(B1_VALUE)` and `bar_tone = backdrop.tone_in(B1_BAR)` before
+  `backdrop.img` is moved, and every `$B1` panel gets its colours from `fn
+  b1_colors(&self, face: &Face, style: &Style, tones: (Rgb, Rgb, Rgb), pressed: bool,
+  dimmed: bool) -> B1Colors` (title to the accent when pressed, `fill: value`, `track:
+  bar_tone.mix(value, 0.22)`). `config_probes`' dial loop matches `watched_probes`'.
+- **PR 12:** `Action::KINDS: [&'static str; 14]` (12 Multi action, 13 Delay),
+  `Action::KEY_KINDS`, `Action::STEP_KINDS`, `kind_position`, `ActionSlot.kinds`;
+  `Action::Multi { steps }` and `Action::Delay { ms }`.
+
+Check these on `feat/folders` before Task 1; if a name differs, the branch wins:
+
+```bash
+grep -n "KINDS\|KEY_KINDS\|STEP_KINDS\|fn tone_in\|pub live\|pub app\b\|LevelSource::App\|fn old_config_saves_byte_identical" crates/omadeck-core/src/*.rs
+grep -n "pub fn watched_probes" crates/omadeck-core/src/probe.rs
+grep -n "fn hint_row\|fn run_refuses_exactly_the_deck_owned_kinds" -A6 crates/omadeck-gui/src/editor.rs crates/omadeck-core/src/action.rs
+```
 
 ## Tasks
 
@@ -366,14 +538,15 @@ green on `cargo clippy --all-targets -- -D warnings` too.
 
 ### Task 1: config (`config.rs`), ~170 lines
 
-**Files:** `crates/omadeck-core/src/config.rs`, `crates/omadeck-core/src/lib.rs`.
+**Files:** `crates/omadeck-core/src/config.rs`, `crates/omadeck-core/src/lib.rs`, and the
+compile fixes `cargo build --workspace` lists.
 
 - `MediaCommand`, `Action::Media`, `is_zero_i16` exactly as under Config.
-- `KINDS` grows to `[&'static str; 15]`: `"Media", // 14 Media (PR 14)`. Append `14` to
-  PR 12's `KEY_KINDS` and `STEP_KINDS`. `kind_index`: `Action::Media { .. } => 14`.
-  `empty_of_kind(14) => Action::Media { command: MediaCommand::PlayPause, seek: 0, player:
-  None }`.
-- `Action::default_for`, two arms before the catch-all:
+- `KINDS` grows to `[&'static str; 15]`: `"Media", // 14 (PR 14)`. Append `14` to
+  `KEY_KINDS` and `STEP_KINDS`. `kind_index`: `Action::Media { .. } => 14`.
+  `empty_of_kind`: `14 => Action::Media { command: MediaCommand::PlayPause, seek: 0,
+  player: None }`.
+- `Action::default_for`, two arms before the catch-all `(act, _) => act`:
   ```rust
   (Action::Media { player, .. }, Direction::Left) => Action::Media { command: MediaCommand::PlayPause, seek: -5, player },
   (Action::Media { player, .. }, Direction::Right) => Action::Media { command: MediaCommand::PlayPause, seek: 5, player },
@@ -398,20 +571,36 @@ green on `cargo clippy --all-targets -- -D warnings` too.
       }
   }
   ```
-- `LevelSource::Player`. `level_source()` gets a step right after PR 9's `live` check
-  (a dial with `live` still shows its live value), before PR 10's `Volume`/`AppVolume`
-  step:
+- `LevelSource::Player`. `level_source()` gets a step right after PR 9's `live` check (a
+  dial with `live` still shows its live value), before PR 10's Volume/AppVolume step:
   ```rust
   if actions.iter().any(|a| matches!(a, Action::Media { .. })) {
       return Some(LevelSource::Player);
   }
   ```
-- `pub fn media_player(&self) -> Option<&str>` on `DialConfig`: the first `Media` action's
-  `player` among `[turn_right, turn_left, press]`, trimmed, `None` when blank.
-- Re-export `MediaCommand` from `lib.rs` next to `Action`.
-- Any `match` on `LevelSource` elsewhere (`render_strip_panel`, `probe::dial_status`,
-  `probe::shows`, `probe::watched_probes`) gets a `LevelSource::Player => None` / no-op arm
-  for now, so this task compiles alone; Tasks 3 and 4 fill them in.
+  (`actions` is the `[&self.turn_right, &self.turn_left, &self.press]` list the method
+  already builds; move its `let` above this check if PR 9's check sits before it.)
+- New on `DialConfig`:
+  ```rust
+  /// The player a media dial follows: the first `Media` action's `player` among turn
+  /// right, turn left and press, trimmed; `None` when blank or there's no media action.
+  pub fn media_player(&self) -> Option<&str> {
+      [&self.turn_right, &self.turn_left, &self.press]
+          .into_iter()
+          .find_map(|a| match a {
+              Action::Media { player, .. } => Some(player.as_deref().map(str::trim).filter(|p| !p.is_empty())),
+              _ => None,
+          })
+          .flatten()
+  }
+  ```
+- Re-export `MediaCommand` from `lib.rs` (`pub use config::{…, MediaCommand, …}`).
+- `action::run` needs an arm to compile: `Action::Media { .. } => bail!("media commands
+  come in Task 3")` for now. Every exhaustive `match` on `LevelSource` the compiler lists
+  (`DialConfig::volume_device`, `render_strip_panel`'s `match src`, `probe::dial_status`,
+  the GUI's) gets a `LevelSource::Player => None` (or no-op) arm for now; Tasks 3 and 4
+  fill them in. The GUI's `action_rows` gets an empty `Action::Media { .. } => {}` arm
+  until Task 7.
 
 **Test to copy** (in `config.rs`'s tests):
 
@@ -455,34 +644,16 @@ player = "spotify"
 ```
 
 Also write: `media_summary` (each command, `Seek +5 s`, `Seek -5 s`, ` (spotify)`),
-`level_source_media_wins` (media press + volume turn → `Player`), `media_player_from_dial`,
-`media_kind_index_and_empty` (`kind_index` of `empty_of_kind(14)` is 14, `KINDS[14] ==
-"Media"`), and `example_config_saves_byte_identical`:
-
-```rust
-#[test]
-fn example_config_saves_byte_identical() {
-    let src = include_str!("../../../examples/config.toml");
-    let dir = std::env::temp_dir().join(format!("omadeck-example-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
-    let path = dir.join("config.toml");
-    let cfg = Config::parse(src).unwrap();
-    cfg.save_to(&path).unwrap();
-    let again = Config::load_from(&path).unwrap();
-    let first = std::fs::read_to_string(&path).unwrap();
-    again.save_to(&path).unwrap();
-    assert_eq!(std::fs::read_to_string(&path).unwrap(), first, "a second save must not change the file");
-    let _ = std::fs::remove_dir_all(&dir);
-}
-```
-
-(Comments in the example don't survive a save, so this compares save → load → save. If the
-groundwork already added such a test, extend that one instead.)
+`level_source_media_wins` (media press + volume turn → `Player`), `media_player_from_dial`
+(`player = " spotify "` → `Some("spotify")`, blank → `None`), `media_kind_index_and_empty`
+(`kind_index` of `empty_of_kind(14)` is 14, `KINDS[14] == "Media"`, `KEY_KINDS` and
+`STEP_KINDS` end with 14).
 
 **Check:** `cargo test -p omadeck-core config::tests` ends with `test result: ok.` and
-`0 failed`, and lists the six new tests as `ok`: `media_roundtrip_and_defaults`,
+`0 failed`, and lists the five new tests as `ok`: `media_roundtrip_and_defaults`,
 `media_summary`, `level_source_media_wins`, `media_player_from_dial`,
-`media_kind_index_and_empty`, `example_config_saves_byte_identical`.
+`media_kind_index_and_empty` (and PR 9's `old_config_saves_byte_identical` still `ok`).
+`cargo build --workspace` builds.
 
 **Traps:** `seek` is `i16` (a hand-edited `seek = 200` must not fail the whole config the way
 an `i8` would). Don't add `Copy`-breaking data to `LevelSource`.
@@ -499,7 +670,7 @@ Named `player.rs`, not `media.rs`: the GUI already has a `media.rs` (icon import
 ```rust
 // render.rs, next to `Level`. Serde, because it rides in `PanelStatus` on `Event::DialStatus`.
 /// The media panel's display model. `position_ms` was true at `as_of_ms` (Unix ms).
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct MediaShow {
     pub title: String,
     pub artist: String,
@@ -536,17 +707,25 @@ impl MediaShow {
 }
 ```
 
+Re-export `MediaShow` from `lib.rs` beside `PanelStatus`.
+
 ```rust
 // player.rs
+//! The media player (MPRIS through `playerctl`): reading it, and the commands that drive it.
+
 use std::path::PathBuf;
+use std::process::{Command, Stdio};
 use std::sync::Arc;
+
 use image::RgbaImage;
+use serde::{Deserialize, Serialize};
+
 use crate::audio::Backend;
 use crate::config::MediaCommand;
 use crate::render::MediaShow;
-use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum PlayStatus { Playing, Paused, Stopped }
 
 /// One player's state, as read by `playerctl`. Serde because `probe::Value` has it.
@@ -587,7 +766,12 @@ pub fn art_path(url: &str) -> Option<PathBuf>;                   // file:// only
 pub fn same(old: Option<&Track>, new: Option<&Track>) -> bool;
 pub fn fmt_time(ms: u64) -> String;                              // 0:07, 1:23, 12:05, 1:02:03
 pub fn fold_seek(seek: i16, steps: u8) -> i32;                   // (seek * steps).clamp(±MAX_SEEK_S)
+/// Whether this command needs `playerctl` (seek, stop, a target, or no Omarchy backend).
+pub fn needs_playerctl(backend: Backend, cmd: MediaCommand, seek: i32, targeted: bool) -> bool;
 pub fn media_argv(backend: Backend, cmd: MediaCommand, seek: i32, target: Option<&str>, monitor: Option<&str>) -> Vec<Vec<String>>;
+/// Run one command and wait for it (bounded by COMMAND_TIMEOUT), output discarded.
+/// Returns whether it exited 0. Blocking: the watcher and the `media` thread only.
+pub fn run_argv(argv: &[String]) -> bool;
 pub fn read(wanted: Option<&str>) -> PlayerRead;                 // runs playerctl via proc::output_timeout
 impl Track { pub fn show(&self) -> MediaShow }                   // playing = status == Playing; as_of_ms = read_ms; art_img cloned (Arc)
 ```
@@ -604,6 +788,8 @@ impl Track { pub fn show(&self) -> MediaShow }                   // playing = st
 - `same`: `(None, None)` true; `(Some(a), Some(b))` true when `player`, `status`, `title`,
   `artist`, `length_ms` and `art` are equal **and** `b.position_ms.abs_diff(a.show()
   .position_at(b.read_ms)) <= DRIFT_MS`; anything else false.
+- `needs_playerctl`: `seek != 0 || cmd == MediaCommand::Stop || targeted || backend ==
+  Backend::Plain`.
 - `media_argv`, with `pc(target)` = `["playerctl"]` plus `--player=<t>` when targeted:
 
 | `seek` / `cmd` | Targeted | `Omarchy4` | `Omarchy3` | `Plain` |
@@ -617,13 +803,18 @@ impl Track { pub fn show(&self) -> MediaShow }                   // playing = st
 | any of the three | yes | `pc play-pause` / `pc next` / `pc previous` | same | same |
 
   A seek with `target == None` is `pc position …` untargeted (playerctl's own choice).
-  Replace the Omarchy 4 names with what Capture 3 shows.
+  `Omarchy3` with `monitor == None` leaves out `--monitor`. Replace the Omarchy 4 names
+  with what Capture 3 shows.
+- `run_argv`: `Command::new(&argv[0])`, `.args(&argv[1..])`, stdin null, through
+  `crate::proc::output_timeout(&mut c, crate::proc::COMMAND_TIMEOUT)`. Exit 0 → `true`; a
+  non-zero exit → `log::warn!("{argv:?} exited with {}", out.status)`, `false`; `None` →
+  `log::warn!("{argv:?} could not run or timed out")`, `false`.
 - `read(wanted)`: `Command::new("playerctl")` with `["-a", "metadata", "--format", FORMAT]`,
   `LC_ALL=C`, stdin null, through `proc::output_timeout(&mut cmd, COMMAND_TIMEOUT)`.
   `None` from it (not installed, or timed out): `Err("Needs playerctl".into())` when
-  `playerctl` isn't on `PATH`, else `Ok(None)`. A non-zero exit (no players, Capture 6) is
-  `Ok(None)`. Else `Ok(pick(parse_playerctl(&stdout, now_ms()), wanted))`. Art is **not**
-  decoded here (the watcher does it, Task 5).
+  `!crate::action::which("playerctl")`, else `Ok(None)`. A non-zero exit (no players,
+  Capture 6) is `Ok(None)`. Else `Ok(pick(parse_playerctl(&stdout, now_ms()), wanted))`.
+  Art is **not** decoded here (the watcher does it, Task 5).
 
 **Test to copy:**
 
@@ -669,21 +860,21 @@ two tracks, the right instances, positions in ms, Spotify's art `None`),
 `1:02:03`), `panel_moves_while_playing` and `panel_frozen_while_paused` and
 `panel_clamps_to_length` (on `MediaShow::position_at`), `fold_seek_clamps` (`5 × 3 = 15`,
 `-120 × 8 = -600`), `media_argv_rows` (every row of the table, `--player` when targeted,
-`5+`/`5-`).
+`5+`/`5-`), `needs_playerctl_rows`.
 
 Put the three `panel_*` tests in `player.rs`'s tests too, so one filter finds them all.
 
-**Check:** `cargo test -p omadeck-core player::tests` shows `test result: ok. 15 passed; 0 failed`.
+**Check:** `cargo test -p omadeck-core player::tests` shows `test result: ok. 16 passed; 0 failed`.
 
 **Traps:** the fixtures contain `\x1f`; don't let an editor strip it (check with `cat -v`).
-`{{position}}` is microseconds, not ms. `read` must never call `Command::output()`
-directly: a hung `playerctl` would stall every probe (D5).
+`{{position}}` is microseconds, not ms. `read` and `run_argv` must never call
+`Command::output()` directly: a hung `playerctl` would stall every probe.
 
-### Task 3: probe, panel status and the detached run (`probe.rs`, `render.rs`, `action.rs`), ~200 lines
+### Task 3: probe, panel status and the detached run (`probe.rs`, `render.rs`, `config.rs`, `action.rs`), ~220 lines
 
 **Files:** `crates/omadeck-core/src/probe.rs`, `crates/omadeck-core/src/render.rs`
-(`PanelStatus.media` only), `crates/omadeck-core/src/config.rs` (`state_probe` arm),
-`crates/omadeck-core/src/action.rs`, and every `PanelStatus { .. }` literal
+(`PanelStatus.media` only), `crates/omadeck-core/src/config.rs` (`state_probe`,
+`StateChoice`), `crates/omadeck-core/src/action.rs`, and every `PanelStatus { .. }` literal
 (`grep -rn "PanelStatus {" crates`).
 
 ```rust
@@ -691,11 +882,11 @@ directly: a hung `playerctl` would stall every probe (D5).
 pub enum Probe { …, Player(Option<String>) }        // the wanted player; None = whichever plays
 pub enum Value  { …, Player(PlayerRead) }
 
-/// After a media command: the first read usually confirms the guess; the second lands
-/// after PR 8's `SETTLE`, so a failed command shows the truth.
-const PLAYER_REFRESH: [Duration; 2] = [MEDIA_REFRESH_DELAY, Duration::from_millis(1500)];
 /// How long a player takes to report a new status after a command (Capture 8).
 pub const MEDIA_REFRESH_DELAY: Duration = Duration::from_millis(600);
+/// After a media command: the first read usually confirms the guess; the second lands
+/// after `SETTLE`, so a failed command shows the truth.
+const PLAYER_REFRESH: [Duration; 2] = [MEDIA_REFRESH_DELAY, Duration::from_millis(1500)];
 
 impl Value {
     /// Whether `newer` says the same as `self`, for "send / store only on change".
@@ -709,57 +900,78 @@ impl Value {
     }
 }
 
+/// What a media dial's panel shows: the track the dial's player probe last read, a
+/// "nothing playing" or a note, or `None` before the first read.
+pub fn media_show(dial: Option<&DialConfig>, values: &Values) -> Option<MediaShow> {
+    let wanted = Probe::Player(dial.and_then(DialConfig::media_player).map(str::to_string));
+    match values.probes.get(&wanted) {
+        Some(Value::Player(Ok(Some(t)))) => Some(t.show()),
+        Some(Value::Player(Ok(None))) => Some(MediaShow::default()),
+        Some(Value::Player(Err(note))) => Some(MediaShow { note: note.clone(), ..MediaShow::default() }),
+        _ => None,
+    }
+}
+
 /// The player a media action should go to: the one its panel or key shows, else `wanted`.
 pub fn media_target(values: &Values, wanted: Option<&str>) -> Option<String>;
 ```
 
 - `Probe::interval`: `Player(_)` → 1 s. `Probe::refresh_after`: `Player(_)` → `&PLAYER_REFRESH`.
+- Any other exhaustive `match` on `Value` (`Values::level`, after PR 9 and 10 maybe
+  already `_ => None`): `Value::Player(_) => None`.
 - `render::PanelStatus` gains, after PR 10's `app`:
   ```rust
   /// The track on a media panel (PR 14); `None` before the first read or with no daemon.
   #[serde(default, skip_serializing_if = "Option::is_none")]
   pub media: Option<MediaShow>,
   ```
-- `dial_status`: a `LevelSource::Player` arm sets `media` (and leaves `level` `None`):
-  ```rust
-  let wanted = Probe::Player(dial.and_then(DialConfig::media_player).map(str::to_string));
-  let media = match values.probes.get(&wanted) {
-      Some(Value::Player(Ok(Some(t)))) => Some(t.show()),
-      Some(Value::Player(Ok(None))) => Some(MediaShow::default()),
-      Some(Value::Player(Err(note))) => Some(MediaShow { note: note.clone(), ..MediaShow::default() }),
-      _ => None,
-  };
-  ```
-  `t.show()` is anchored at `read_ms`. **No clock here**: `dial_status` stays pure, so the
-  daemon's `published` comparison only changes when the value does.
-- `shows`: `(Some(LevelSource::Player), Probe::Player(w)) => dial.and_then(DialConfig::media_player) == w.as_deref()`.
+- `dial_status`: for a dial whose `level_source()` is `Some(LevelSource::Player)`, `level`
+  is `None` and `media` is `media_show(dial, values)`; for every other dial `media` is
+  `None`. Fill in the Task 1 placeholder arm. `t.show()` is anchored at `read_ms`. **No
+  clock here**: `dial_status` stays pure, so the daemon's `published` comparison only
+  changes when the value does.
+- `shows`: `(Some(LevelSource::Player), Probe::Player(w)) =>
+  dial.and_then(DialConfig::media_player) == w.as_deref()`.
 - `watched_probes`: each dial whose `level_source()` is `Player` adds
   `Probe::Player(dial.media_player().map(str::to_string))` (once each, in dial order, as
   for volume).
-- `KeyConfig::state_probe` (PR 8), in its `match &self.action`:
-  `Action::Media { command: MediaCommand::PlayPause, seek: 0, player } => Some(Probe::Player(player.clone()))`.
-- `key_status` (PR 8), in its value match: `Some(Value::Player(Ok(Some(t)))) if t.status == PlayStatus::Playing => Toggle::On`
-  (anything else falls through to `Off`).
+- `KeyConfig::state_probe`, in its `match &self.action`:
+  `Action::Media { command: MediaCommand::PlayPause, seek: 0, player } =>
+  Some(Probe::Player(player.clone()))`.
+- `key_status`, in its value match: `Some(Value::Player(Ok(Some(t)))) if t.status ==
+  PlayStatus::Playing => Toggle::On` (anything else falls through to `Off`).
+- `StateChoice` gains `Player` ("Follows the player"). `state_choices`: a play/pause
+  `Media` action (`command: PlayPause, seek: 0`) → `&[StateChoice::Player,
+  StateChoice::Command]`. `state_choice`: `StateChoice::Player` for that action when
+  `on.state` is `None`. `set_state_choice`: `Player` behaves like `Press` and `Mute`
+  (clears `state` and `slow`).
 - `action.rs`: `run` gets `Action::Media { command, seek, player } => run_media(*command,
-  player::fold_seek(*seek, 1), player.as_deref())`, and `run_steps` folds a spin into
-  **one** seek: `if let Action::Media { command, seek, player } = action && *seek != 0 {
-  return run_media(*command, player::fold_seek(*seek, steps), player.as_deref()); }`.
-  Next/previous on a turn run once per detent through the existing loop.
+  player::fold_seek(*seek, 1), player.as_deref())` (replacing Task 1's placeholder), and
+  `run_steps` folds a spin into **one** seek, before the Hyprland branch:
+  `if let Action::Media { command, seek, player } = action && *seek != 0 { return
+  run_media(*command, player::fold_seek(*seek, steps), player.as_deref()); }`. Next and
+  previous on a turn run once per detent through the existing loop.
   ```rust
-  /// Detached media command (GUI *Try it now*, `omadeckd press`/`dial` with no daemon).
+  /// Run a media command without waiting (GUI *Try it now*, `omadeckd press`/`dial` with
+  /// no daemon). The daemon sends `WatchCmd::Media` to its watcher instead.
   fn run_media(cmd: MediaCommand, seek: i32, target: Option<&str>) -> Result<()> {
       let backend = audio::backend();
-      let needs_pc = seek != 0 || cmd == MediaCommand::Stop || target.is_some() || backend == audio::Backend::Plain;
-      if needs_pc && !which("playerctl") {
+      if player::needs_playerctl(backend, cmd, seek, target.is_some()) && !which("playerctl") {
           bail!("playerctl not found (install playerctl)");
       }
       let target = target.map(str::to_string);
-      spawn_seq(move || {
+      thread::Builder::new().name("media".into()).spawn(move || {
           let monitor = (backend == audio::Backend::Omarchy3).then(audio::focused_monitor).flatten();
-          player::media_argv(backend, cmd, seek, target.as_deref(), monitor.as_deref())
-      })
+          for argv in player::media_argv(backend, cmd, seek, target.as_deref(), monitor.as_deref()) {
+              player::run_argv(&argv);
+          }
+      })?;
+      Ok(())
   }
   ```
+- `action.rs` tests, `run_refuses_exactly_the_deck_owned_kinds`: add `14` to the kinds it
+  skips (8, Volume, and PR 10's 11, App volume). `run_media` really sends play/pause to
+  the player, so the test must never run an empty `Media`.
 
 **Test to copy** (in `probe.rs`):
 
@@ -801,18 +1013,20 @@ Also write, in `probe.rs`: `value_same_as_player_and_others` (a `Level` change i
 a playing tick is not), `media_target_prefers_shown_player`,
 `watched_probes_include_media_dials`, `play_pause_key_follows_player` (a key with `[key.on]`
 and a play/pause action: `state_probe() == Some(Probe::Player(None))`, `key_status` is On
-for a playing track and Off for a paused one); in `ipc.rs`:
-`dial_status_media_on_the_wire` (an `Event::DialStatus` whose `status.media` is set
-round-trips without `art_img`, and `PanelStatus::default()` still serialises without a
-`media` key); in `action.rs`: `fold_seek_is_used_for_spins` on a pure helper if you
-extract one (no spawning in tests).
+for a playing track and Off for a paused one); in `config.rs`:
+`play_pause_key_state_choice_is_player`; in `ipc.rs`: `dial_status_media_on_the_wire` (an
+`Event::DialStatus` whose `status.media` is set round-trips without `art_img`, and
+`PanelStatus::default()` still serialises without a `media` key).
 
-**Check:** `cargo test -p omadeck-core -- probe:: ipc:: action::` ends with `0 failed` and
-lists the new tests as `ok`; `cargo build --workspace` builds (the daemon and the GUI
-compile with the new field).
+**Check:** `cargo test -p omadeck-core -- probe:: ipc:: config:: action::` ends with
+`0 failed` and lists the new tests as `ok` (and `run_refuses_exactly_the_deck_owned_kinds`,
+with no player starting or pausing); `cargo build --workspace` builds (the daemon and the GUI
+compile with the new field and variants; the GUI's `StateChoice` label `match` gets
+`StateChoice::Player => "Follows the player"`).
 
 **Traps:** `Value` derives `PartialEq`, and `Track` has `read_ms`, so `==` is almost never
-true for players. Anything that asks "did it change?" must use `same_as`.
+true for players. Anything that asks "did it change?" must use `same_as`. No spawning in
+tests: test `needs_playerctl` and `fold_seek`, never `run_media`.
 
 ### Task 4: render (`render.rs`), ~230 lines
 
@@ -820,9 +1034,9 @@ true for players. Anything that asks "did it change?" must use `same_as`.
 
 | Item | Rect (x, y, w, h) | Style |
 |------|-------------------|-------|
-| title | `M1_TITLE = (16, 10, 168, 24)` | `STRIP_TITLE_PX` (16), left, ellipsis, shadow; the track title, else the dial's label |
+| title | `M1_TITLE = (16, 10, 168, 24)` | `STRIP_TITLE_PX` (16), left, ellipsis, shadow; the track title, else the dial's label (when shown) |
 | icon | `B1_ICON = (16, 40, 48, 48)` | `art_img`, else the user's icon or glyph, else the state glyph |
-| artist | `M1_ARTIST = (76, 40, 108, 18)` | 14 px, left, ellipsis; the value colour mixed 35% toward the tone |
+| artist | `M1_ARTIST = (76, 40, 108, 18)` | 14 px, left, ellipsis; its colour mixed 35% toward its tone |
 | time | `M1_TIME = (76, 58, 108, 16)` | 13 px, right; `1:23 / 3:45`, `1:23` for a stream, `–` idle |
 | progress | `B1_BAR = (76, 74, 108, 12)` | the `$B1` bar, `position / length`; empty for a stream or idle |
 
@@ -848,27 +1062,42 @@ fn media_texts(m: Option<&MediaShow>) -> (String, String);
 #[derive(Debug, Clone, Copy)]
 struct M1Colors { title: Rgb, artist: Rgb, time: Rgb, fill: Rgb, track: Rgb }
 
+/// Draw the media layout. `art` wins over `icon` in the icon box.
 fn draw_media(&self, img: &mut RgbaImage, face: &Face, colors: M1Colors, want_label: bool,
-              icon: Option<RgbaImage>, media: Option<&MediaShow>);
+              art: Option<&RgbaImage>, icon: Option<RgbaImage>, media: Option<&MediaShow>);
 ```
 
-- `render_strip_panel` gets a `LevelSource::Player` arm before the `$B1` arm. Take the
-  tones **before** `backdrop.img` is moved into `img`: `tone_in(M1_TITLE)`,
-  `tone_in(M1_ARTIST)`, `tone_in(M1_TIME)`. Colours: `title` = the accent while pressed,
-  else `label_color(Some(&face), style, title_tone)` (a press recolours the title only,
-  D9); `time` = `label_color(.., time_tone)`; `artist` = `label_color(.., artist_tone)
-  .mix(artist_tone, 0.35)`; `fill` and `track` exactly as the `$B1` arm builds its
-  `B1Colors` (PR 10). **Paused:** `fill = track.mix(fill, 0.5)` (dimmed, not empty: empty
-  means idle).
+- In `render_strip_panel`, before `backdrop.img` is moved into `img` (where PR 10 takes
+  `title_tone`, `value_tone` and `bar_tone`), take the media panel's own tones, only for
+  a media dial:
+  ```rust
+  let is_media = dial.and_then(DialConfig::level_source) == Some(LevelSource::Player);
+  let media_tones = is_media.then(|| (backdrop.tone_in(M1_TITLE), backdrop.tone_in(M1_ARTIST), backdrop.tone_in(M1_TIME)));
+  ```
+- Then, before the `if let Some(src) = dial.and_then(|d| d.level_source())` block, a media
+  block that ends in `return img;`. Colours, built like PR 10's `b1_colors` (R8: a press
+  recolours the title only):
+  - `title` = `self.theme.accent` while `st.pressed`, else `self.label_color(Some(&face),
+    style, m_title_tone)`;
+  - `artist` = `self.label_color(Some(&face), style, artist_tone).mix(artist_tone, 0.35)`;
+  - `time` = `self.label_color(Some(&face), style, time_tone)`;
+  - `fill` = `time` (as `b1_colors` uses its value colour), `track` =
+    `bar_tone.mix(fill, 0.22)` with PR 10's `bar_tone`. **Paused:** `fill =
+    track.mix(fill, 0.5)` (dimmed, not empty: empty means idle).
+  - The state glyph uses the same unpressed glyph colour the `$B1` arm uses.
+- The existing `match src` gets `LevelSource::Player => None` (drawn by the block above),
+  replacing Task 1's placeholder.
 - The bar: `draw_bar(img, B1_BAR, value, colors.fill, colors.track)` with `value =
   position_ms as f32 / length_ms as f32` for a track with a length, else 0 (`draw_bar`
   clamps).
-- Icon order: `media.art_img` (scaled into `B1_ICON`, centred), else `face.icon`, else a
-  non-blank `face.glyph`, else `media_glyph`.
+- Icon order: `media.art_img` (drawn as given, centred in `B1_ICON`), else `face.icon`
+  (`self.icon(&paths::resolve(p), STRIP_ICON_PX)`), else a non-blank `face.glyph`, else
+  `media_glyph`.
 - No clock here: the renderer draws `position_ms` as given (`deck::panel_status` and the
   GUI advance it, Tasks 6 and 7).
 
-**Test to copy** (fix/review's fixed-font `renderer_with_font()`, D9, and glyph "A"):
+**Test to copy** (the bundled-font `renderer_with_font()` and `test_style()` in
+`render.rs`'s tests, and glyph "A" so the test font draws it):
 
 ```rust
 fn media_dial() -> DialConfig {
@@ -907,7 +1136,7 @@ fn media_bar_fills_to_progress() {
     let start = r.render_strip_panel(&cfg, 0, 4, media(0, true));
     let end = r.render_strip_panel(&cfg, 0, 4, media(200_000, true));
     assert_ne!(start.get_pixel(x, y), end.get_pixel(x, y), "the fill should follow the position");
-    // The artist and time rows have ink; the $X1 centre icon does not.
+    // The title, artist and time rows have ink.
     let ink = |img: &RgbaImage, rect: (u32, u32, u32, u32)| {
         let bg = *img.get_pixel(5, 95);
         let (x0, y0, w, h) = rect;
@@ -924,24 +1153,32 @@ Also write: `media_paused_dims_fill` (paused and playing differ in the fill colo
 same position), `media_idle_keeps_layout` (`media: None` and `Some(default)` both draw the
 bar's track and nothing in `X1_ICON`'s centre), `media_texts_forms` (pure: each row of the
 `media_texts` comment), `media_glyph_follows_state`, `media_art_wins_over_glyph` (an
-`art_img` of solid red shows red at the centre of `B1_ICON`).
+`art_img` of solid red shows red at the centre of `B1_ICON`), `media_press_recolours_title_only`
+(pressed and unpressed panels are equal outside `M1_TITLE`).
 
-**Check:** `cargo test -p omadeck-core render::tests::media` shows `test result: ok. 6
-passed; 0 failed`; `CI=1 cargo test -p omadeck-core render` passes in full (no silent font
-skips, D9).
+**Check:** `cargo test -p omadeck-core render::tests::media` shows `test result: ok. 7
+passed; 0 failed`; `CI=1 cargo test -p omadeck-core render` passes in full (the goldens
+don't change).
 
 **Traps:** the art image is drawn as given; don't resize it on every paint (it's already
-48 × 48 at most). Don't add another image cache to `Renderer`.
+48 × 48 at most). Don't add another image cache to `Renderer`. Take every tone before
+`backdrop.img` is moved, or the borrow checker stops you.
 
 ### Task 5: the watcher (`watch.rs`), ~180 lines
 
 **Files:** `crates/omadeckd/src/watch.rs`.
 
-- **Reading**, in `Poller::run_due` next to the inline `Probe::Volume` read:
+- `Poller` gains two I/O fields beside `read_volume`/`change_volume` (tests replace them),
+  set in its `Default`:
+  ```rust
+  read_player: fn(Option<&str>) -> PlayerRead,   // player::read
+  run_media: fn(&[String]) -> bool,              // player::run_argv
+  ```
+- **Reading**, in `Poller::run_due`'s `match &p`, next to the inline `Probe::Volume` arm:
   ```rust
   Probe::Player(wanted) => {
-      let v = with_art(self.last.get(&p), Value::Player(player::read(wanted.as_deref())));
-      self.record(p, v, now, out);
+      let v = with_art(self.last.get(&p), Value::Player((self.read_player)(wanted.as_deref())));
+      self.record(p, v, now, out, 0);
   }
   ```
   `player::read` goes through `proc::output_timeout`, so this is bounded by
@@ -970,7 +1207,7 @@ skips, D9).
   value is sent, so on "same" the old anchor stays. Don't move the `insert` above the test.
 - **A new command:**
   ```rust
-  /// Run a media command here, in order with other commands, then re-read `probe`
+  /// Run a media command here, in order with the other changes, then re-read `probe`
   /// after `probe.refresh_after()` and send those reads even if unchanged.
   Media { command: MediaCommand, seek: i32, target: Option<String>, probe: Probe },
   ```
@@ -983,21 +1220,9 @@ skips, D9).
           (self.run_media)(&argv);
       }
       if self.watched.contains(&probe) {
-          for d in probe.refresh_after() { self.refresh_at.push((now + *d, probe.clone())); }
-      }
-  }
-  ```
-  `run_media: fn(&[String])` is a `Poller` field like groundwork's `change_volume`, set to
-  `run_argv` in `Default` (tests replace it):
-  ```rust
-  /// One command, waited for (bounded by COMMAND_TIMEOUT), output discarded.
-  fn run_argv(argv: &[String]) {
-      let mut c = Command::new(&argv[0]);
-      c.args(&argv[1..]).stdin(Stdio::null());
-      match proc::output_timeout(&mut c, proc::COMMAND_TIMEOUT) {
-          Some(out) if out.status.success() => {}
-          Some(out) => log::warn!("{argv:?} exited with {}", out.status),
-          None => log::warn!("{argv:?} could not run or timed out"),
+          for d in probe.refresh_after() {
+              self.refresh_at.push((now + *d, probe.clone()));
+          }
       }
   }
   ```
@@ -1039,12 +1264,15 @@ fn with_art_keeps_decoded_image_for_same_path() {
 }
 ```
 
-Also write `record_ignores_a_playing_tick` with PR 8's `Poller` test pattern: record a
+(`image` is a dependency of `omadeckd` already: `deck.rs` uses `image::DynamicImage`.)
+
+Also write `record_ignores_a_playing_tick` with the existing `Poller` test pattern
+(`Poller::default()`, `handle(WatchCmd::Watch(..))`, then `record(.., 0)`): record a
 playing track, then the same track one second later and one second further (nothing
 sent), then one 60 s further (sent). And `media_cmd_runs_then_refreshes`: a `Poller` with
-`run_media` set to a function that pushes into a `thread_local!` `RefCell<Vec<Vec<String>>>`,
-`handle(WatchCmd::Media { .. })` on a watched probe records one argv and two `refresh_at`
-entries.
+`run_media` set to a function that pushes into a `thread_local!`
+`RefCell<Vec<Vec<String>>>` and returns `true`; `handle(WatchCmd::Media { .. })` on a
+watched `Probe::Player(None)` records one argv and two `refresh_at` entries.
 
 **Check:** `cargo test -p omadeckd -- with_art record_ignores media_cmd` shows `test
 result: ok. 3 passed; 0 failed`, and `cargo test -p omadeckd` passes in full. Then by
@@ -1058,8 +1286,7 @@ runner path; `RunResult` has no place for it.
 
 ### Task 6: the daemon (`daemon.rs`, `deck.rs`), ~200 lines
 
-**Files:** `crates/omadeckd/src/daemon.rs`, `crates/omadeckd/src/deck.rs` (groundwork's
-split of `main.rs`).
+**Files:** `crates/omadeckd/src/daemon.rs`, `crates/omadeckd/src/deck.rs`.
 
 - **Dispatch**, next to the `Action::Volume` arm:
   ```rust
@@ -1067,6 +1294,9 @@ split of `main.rs`).
       let probe = Probe::Player(player.clone());
       let target = probe::media_target(&self.rt.values, player.as_deref());
       let seek = player::fold_seek(*seek, steps);
+      if player::needs_playerctl(audio::backend(), *command, seek, target.is_some()) && !omadeck_core::on_path("playerctl") {
+          anyhow::bail!("playerctl not found (install playerctl)");
+      }
       if seek != 0 && target.is_none() {
           return Ok(false); // nothing known to scrub
       }
@@ -1086,11 +1316,11 @@ split of `main.rs`).
   /// Move the shown track at once (seek, or play/pause flipped), and hold the guess
   /// against stale reads for `SETTLE`, as PR 8's fast toggles do.
   fn guess_media(&mut self, probe: &Probe, cmd: MediaCommand, seek: i32) {
-      // Clone out: apply_value takes &mut self (BUGS.md 4).
+      // Clone out: everything below takes &mut self (BUGS.md 4).
       let Some(Value::Player(Ok(Some(mut t)))) = self.rt.values.probes.get(probe).cloned() else { return };
       guess_track(&mut t, cmd, seek, player::now_ms());
       let guess = Value::Player(Ok(Some(t)));
-      // As PR 8's `after_toggle_press`: store directly, then settle, then mark.
+      // As after_toggle_press's fast arm: store directly, then settle, then mark.
       self.rt.values.probes.insert(probe.clone(), guess.clone());
       self.rt.settle.insert(probe.clone(), Settle::Expect { value: guess, until: Instant::now() + SETTLE });
       self.mark_probe(probe);
@@ -1102,12 +1332,19 @@ split of `main.rs`).
   ```
   Don't route the guess through `apply_value`: its settle check would accept the guess
   (it is the same as itself) and remove the settle at once.
-- **PR 8's code, three small changes:** `Settle::accepts`' `Expect` arm becomes
-  `now >= *until || value.same_as(v)`; `apply_value`'s skip becomes `if
-  self.rt.values.probes.get(&probe).is_some_and(|old| old.same_as(&value)) { return; }`;
-  `after_toggle_press` gets `Some(Probe::Player(_)) => {}` next to `Some(Probe::Volume(_))
-  => {}` (dispatch already guessed; without this arm the generic arm would store a
-  `Value::Toggle` under a player probe).
+- **PR 8's code, the changes `same_as` needs:**
+  - `Settle::accepts`' `Expect` arm becomes `now >= *until || value.same_as(v)`.
+  - `apply_value`'s skip becomes `if self.rt.values.probes.get(&probe).is_some_and(|old|
+    old.same_as(&value)) { return; }`.
+  - `after_toggle_press` gets `Some(Probe::Player(_)) => {}` next to
+    `Some(Probe::Volume(_)) => {}` (dispatch already guessed; without this arm the
+    generic fast arm would store a `Value::Toggle` under a player probe).
+  - Every other exhaustive `match` on `Probe` the compiler lists: `finish_job`'s
+    `match k.state_probe()` → `Some(Probe::Player(_)) => None`. (`Daemon::watch` has
+    none left after fix/review-2.)
+- **`config_probes`:** a dial whose `level_source()` is `Some(LevelSource::Player)` adds
+  `Probe::Player(dial.media_player().map(str::to_string))`, as it adds volume probes, so a
+  reload keeps the track instead of blanking the panel.
 - **Painting advances the position.** `deck::panel_status`:
   ```rust
   pub fn panel_status(d: &Deck, cfg: &Config, values: &Values, i: u8, now: Instant) -> DialStatus {
@@ -1120,17 +1357,21 @@ split of `main.rs`).
   ```
   `Daemon::flush` keeps publishing from `probe::dial_status` (not `panel_status`), so the
   once-a-second repaints publish nothing.
-- **Once-a-second repaint:** `Daemon` gains `media_due: Option<Instant>`.
+- **Once-a-second repaint:** `Daemon` gains `media_due: Option<Instant>` (`None` in
+  `Daemon::new`).
   ```rust
   /// When the shown second of a playing media panel next changes, if any is playing.
   fn next_media_tick(&self, now: Instant) -> Option<Instant>;
   ```
-  It takes, over the dials `0..d.info.dials` whose `dial_status(..).panel.media` is
-  playing, the minimum of `now + Duration::from_millis(ms_to_next_second(&m, player::now_ms())?)`.
-  In `pass`, before the read: `if self.media_due.is_some_and(|t| now >= t)`, mark those
-  dials dirty (`d.dirty_where(&self.cfg, |dial| matches!(dial.and_then(DialConfig::level_source), Some(LevelSource::Player)))`).
-  At the end of `flush`: `self.media_due = self.next_media_tick(Instant::now());`.
-  `next_deadline()` adds `self.media_due` to its list.
+  It takes, over the dials `0..d.info.dials` (none without a deck), the minimum of `now +
+  Duration::from_millis(ms_to_next_second(&m, player::now_ms())?)` for each
+  `probe::dial_status(self.cfg.dial(i), &self.rt.values, false).panel.media` that is
+  `Some`. In `pass`, after the `repaint_at` block: `if self.media_due.is_some_and(|t| now
+  >= t)`, mark the media panels dirty (`d.dirty_where(&self.cfg, |dial|
+  dial.and_then(DialConfig::level_source) == Some(LevelSource::Player))`). At the end of
+  `flush`, after the `DialStatus` loop: `self.media_due =
+  self.next_media_tick(Instant::now());`. `next_deadline()` adds `self.media_due` to its
+  list.
 - **Snapshot:** nothing to do: no player values, so `media: None` and the dashes.
 
 **Test to copy:**
@@ -1153,14 +1394,18 @@ fn media_tick_waits_for_the_next_second() {
 
 Also write `guess_track_seeks_and_flips` (playing at 10 s read 2 s ago: a +5 s seek gives
 17 s anchored at now; −60 s gives 0; past the length gives the length; play/pause gives
-`Paused` at the re-anchored position; `Next` changes nothing).
+`Paused` at the re-anchored position; `Next` changes nothing) and
+`settle_expect_accepts_a_playing_tick` (a `Settle::Expect` holding a playing track
+accepts the same track read 1 s later and 1 s further, inside the window).
 
-**Check:** `cargo test -p omadeckd -- media_tick guess_track` shows `test result: ok. 2
-passed; 0 failed`; `cargo clippy --all-targets -- -D warnings` is clean. On the deck: the
-bar moves once a second while playing and stops when paused (Hardware checks).
+**Check:** `cargo test -p omadeckd -- media_tick guess_track settle_expect` shows `test
+result: ok. 4 passed; 0 failed` (with PR 8's `settle_expect_ignores_contradiction_until_expiry`);
+`cargo clippy --all-targets -- -D warnings` is clean. On the deck: the bar moves once a
+second while playing and stops when paused (Hardware checks).
 
 **Traps:**
-- Nothing here may wait on a process. `dispatch` only sends `WatchCmd::Media`.
+- Nothing here may wait on a process. `dispatch` only sends `WatchCmd::Media`;
+  `on_path` is a few `stat` calls.
 - The clock is read in `panel_status`, `guess_media` and `next_media_tick` only. Never
   in `dial_status`, or every pass publishes an event.
 - BUGS.md 4: don't hold a borrow of `self.rt.values` across a `&mut self` call. Clone the
@@ -1169,16 +1414,19 @@ bar moves once a second while playing and stops when paused (Hardware checks).
 ### Task 7: GUI, preset, docs and example, ~240 lines
 
 **Files:** `crates/omadeck-gui/src/editor.rs`, `crates/omadeck-gui/src/app.rs`,
-`crates/omadeck-core/src/presets.rs` (PR 8), `README.md`, `examples/config.toml`,
-`CHANGELOG.md`.
+`crates/omadeck-core/src/presets.rs`, `crates/omadeck-core/src/config.rs` (the
+`example_dial_parses` counts), `README.md`, `examples/config.toml`, `CHANGELOG.md`.
 
-- **Action rows** (`action_rows`, kind 14): a *Command* combo (Play/Pause, Next track,
-  Previous track, Stop, Seek). With Seek, a *Seconds* spin (−60…60, step 1; 0 snaps back to
-  the slot's default, 5 or −5 by `slot.dir`) and the action's `command` reset to
-  play/pause. A *Player* entry (placeholder "Any player", subtitle "e.g. spotify; empty =
-  the one playing"); blank saves as `None`. Every row reads with `(slot.get)(app)` and
-  writes with `(slot.set)(app, act)`; build the new action from a fresh `get`, never from
-  one captured when the row was made.
+- **Action rows** (`action_rows`, the `Action::Media` arm from Task 1): a *Command* combo
+  (Play/Pause, Next track, Previous track, Stop, Seek). With Seek, a *Seconds* spin
+  (−60…60, step 1; 0 snaps back to the slot's default, 5 or −5 by `slot.dir`) and the
+  action's `command` reset to play/pause. A *Player* entry (placeholder "Any player",
+  subtitle "e.g. spotify; empty = the one playing"); blank saves as `None`. Every row
+  reads with `(slot.get)(&a)` and writes with `(slot.set)(&a, act)`, as the Volume arm
+  does; build the new action from a fresh `get`, never from one captured when the row
+  was made. Its explanation is a hint row, as the Volume arm's is:
+  `group.add(&hint_row("Seeking and the strip need playerctl."));` (never
+  `group.set_description`).
 - **Dial preset**, next to Volume dial and Brightness dial in `build_dial`'s header:
   ```rust
   let preset = gtk::Button::builder()
@@ -1200,18 +1448,16 @@ bar moves once a second while playing and stops when paused (Hardware checks).
   });
   presets.append(&preset);
   ```
-- **Key preset** in PR 8's `PRESETS`, so its menu and its round-trip test pick it up:
+- **Key preset** in `PRESETS`, so its menu and its round-trip test pick it up:
   ```rust
-  Preset {
-      name: "Play/Pause",
-      needs: None, // works through Omarchy's commands without playerctl
-      apply: |k| {
-          k.label = "Play".into();
-          k.glyph = Some("f040a".into());
-          k.action = Action::Media { command: MediaCommand::PlayPause, seek: 0, player: None };
-          k.on = Some(OnFace { label: Some("Pause".into()), glyph: Some("f03e4".into()), ..OnFace::default() });
-      },
-  },
+  Preset { name: "Play/Pause", needs: None, apply: play_pause }, // works through Omarchy's commands without playerctl
+
+  fn play_pause(k: &mut KeyConfig) {
+      k.label = "Play".into();
+      k.glyph = Some("f040a".into());
+      k.action = Action::Media { command: MediaCommand::PlayPause, seek: 0, player: None };
+      k.on = Some(on_face("Pause", Some("f03e4"), None));
+  }
   ```
 - **Mirroring:** in `App::handle`'s `Event::DialStatus` arm, before the insert, give the
   new status its cover: if `status.media` has an `art` path, reuse the `art_img` of the
@@ -1221,17 +1467,20 @@ bar moves once a second while playing and stops when paused (Hardware checks).
 - **`refresh_strip`:** for a mirrored panel, advance its media before drawing:
   `let mut panel = panel.clone(); if let Some(m) = &mut panel.media { *m = m.at(player::now_ms()); }`.
 - **Tick:** one `glib::timeout_add_local(Duration::from_secs(1), …)` started in
-  `App::build`, holding a `Weak<App>`: it returns `ControlFlow::Break` once the app is
-  gone, and calls `refresh_strip()` only when some mirrored `PanelStatus` has
+  `App::build`, holding a `Weak<App>`: it returns `glib::ControlFlow::Break` once the app
+  is gone, and calls `refresh_strip()` only when some mirrored `PanelStatus` has
   `media.as_ref().is_some_and(|m| m.playing)`.
-- **No daemon:** `dial_status` with empty `Values` gives `media: None` (dashes), as D2 says.
+- **No daemon:** `dial_status` with empty `Values` gives `media: None` (dashes).
 - **Docs:** README Features: "Media: play/pause, next, previous and seek from keys or a
   dial; the strip shows the track, artist, cover and a moving progress bar. Seeking and
   the strip need `playerctl` (`sudo pacman -S playerctl`)." Roadmap line: "value layouts
-  on the strip: volume, brightness and media". `examples/config.toml`: the media dial, the
-  play/pause key with `[key.on]` and the next-track key from Config, plus a commented
-  variant with turn = the player's app volume (PR 10's `type = "app_volume"`, `app =
-  "spotify"`). CHANGELOG line under Unreleased.
+  on the strip: volume, brightness and media". `examples/config.toml`: a commented
+  `# [[dial]]` media dial block, the play/pause key with `[key.on]` and the next-track
+  key from Config, plus a commented variant with turn = the player's app volume (PR 10's
+  `type = "app_volume"`, `app = "spotify"`). CHANGELOG line under Unreleased.
+- **`example_dial_parses`** counts the commented `# [[dial]]` blocks (`assert_eq!(blocks.len(),
+  N)` and `assert_eq!(c.dials.len(), N)`). The media block adds one: raise both counts by
+  one and assert the new dial's `press` is `Action::Media { .. }`.
 
 **Test to copy** (core; GUI code has no unit tests. Put it in `player.rs`'s tests):
 
@@ -1248,14 +1497,16 @@ fn media_show_advances_from_as_of() {
 
 **Check:** `cargo fmt && cargo clippy --all-targets -- -D warnings && cargo test` is green,
 including `presets::tests::every_preset_makes_a_toggle_that_roundtrips` (now with
-Play/Pause) and `config::tests::example_config_saves_byte_identical` with the new example.
-Then by hand: the Media dial preset fills the dial; the preview shows dashes with the
-daemon stopped, and the playing track (moving once a second) with it running.
+Play/Pause), `config::tests::example_dial_parses` and
+`config::tests::old_config_saves_byte_identical` with the new example. Then by hand: the
+Media dial preset fills the dial; the preview shows dashes with the daemon stopped, and
+the playing track (moving once a second) with it running; a play/pause key's *State from*
+reads "Follows the player".
 
-**Traps:** recursive editors take `Rc<dyn Fn…>` (D10), not `impl Fn`. In the presets and
-the event arm, never hold `app.config.borrow()` or `panel_status.borrow()` across
+**Traps:** recursive editors take `Rc<dyn Fn…>`, not `impl Fn`. In the presets and the
+event arm, never hold `app.config.borrow()` or `panel_status.borrow()` across
 `edit_dial`, `edit` or `refresh_strip` (BUGS.md 4: clone, drop the borrow, then edit).
-The tick must not run a process: the GUI only mirrors (D2).
+The tick must not run a process: the GUI only mirrors.
 
 ## Hardware checks
 
@@ -1274,6 +1525,7 @@ On the Stream Deck + (0fd9:0084), Omarchy 4.0.4, Spotify and a browser playing.
 - [ ] `player = "spotify"` pins the dial to Spotify while YouTube plays.
 - [ ] The play/pause key's face follows the keyboard's play/pause within ~1 s, and doesn't
       flicker after a press on the deck.
+- [ ] Holding the media dial down turns only its title to the accent colour.
 - [ ] Without `playerctl` (rename it off `PATH`): keys and press still work through
       `omarchy-shell`, the panel says "Needs playerctl", and a turn shows the "install
       playerctl" toast.
@@ -1314,7 +1566,7 @@ On the Stream Deck + (0fd9:0084), Omarchy 4.0.4, Spotify and a browser playing.
 
 - Event-driven updates (`playerctl --follow`, or a D-Bus `PropertiesChanged` listener) if
   the 1 s track-change lag bothers.
-- A `busctl --user` backend for seek and position (Ask 1), so Omarchy 4 needs nothing extra.
+- A `busctl --user` backend for seek and position, so Omarchy 4 needs nothing extra.
 - Album art from `https://`, fetched by the GUI or behind an opt-in, cached on disk.
 - Marquee titles; a "now playing" key; shuffle/repeat keys, like Elgato's Spotify keys.
 - Touch on the panel to seek to that spot of the bar; long press = next track (PR 16).

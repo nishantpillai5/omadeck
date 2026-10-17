@@ -22,7 +22,8 @@ Stream Deck + support and pages, all on `daily`, each on its own `feat/*` branch
 | 6 | `feat/brightness` | `brightness` action, live level on the strip, persisted in the state file | [pr6](pr6-brightness.md) |
 | 7 | `feat/strip-backgrounds` | Background images: one across the strip, one per dial | [pr7](pr7-strip-backgrounds.md) |
 
-Known bugs are in [BUGS.md](BUGS.md); 22–49 are open (from the 2026-10-17 review).
+Known bugs are in [BUGS.md](BUGS.md); 50–72 are open (from the second review), plus
+the parts of 25, 31, 38, 45 and 48 that review 2 found not fully fixed.
 
 Shared facts and the decisions to explain for PRs 1–4 are in
 [dials-and-strip.md](dials-and-strip.md). Hardware checks still open on PRs 1–4 and 6 are
@@ -47,7 +48,7 @@ were rewritten against `d7bd448` and the two new steps below.
 **Done (2026-10-17): `fix/review`.** All of BUGS.md 22–43 fixed on `fix/review`
 (`87be396`, eight task commits), which is now `daily`. CI runs on the fork
 (`workflow_dispatch`); the goldens use a bundled OFL font subset. One plan typo fixed
-along the way: the Arch font package is `fonts-dejavu`.
+along the way: the Arch font package is `ttf-dejavu`.
 
 **Done (2026-10-17): PR 8, `feat/toggle-keys`.** Eleven task commits (A–K) on
 `feat/groundwork`: probe/proc + `Job`, `[key.on]`/`[key.busy]`/`busy_while_running`,
@@ -59,8 +60,23 @@ hardware checks passed (mute-follow, command state, optimistic press, busy jobs)
 checks were partly verified and the rest skipped at the user's request — see the
 verification notes at the end of [pr8-toggle-keys.md](pr8-toggle-keys.md).
 
-Next: **PR 9, `feat/live-keys`** (base `feat/toggle-keys`), then the remaining features,
-each based on the previous branch.
+**Done (2026-10-17): second code review** of `d7bd448..55d0d62` (fix/review, groundwork,
+PR 8). Summary in [review-2026-10-17b.md](review-2026-10-17b.md); bugs are BUGS.md 50–72.
+Config compatibility holds. The worst: the configurator aborts when a key is drawn "on"
+without an on face (50), the Service… preset moves the key to index 0 (51), a slow toggle
+can stay busy for good (53), the volume in-flight total can drift (54), brightness reverts
+at start after any GUI save (45), and CI fails on clippy 1.95 at `daily`. Plans 9–16 were
+rewritten against the merged code and `fix/review-2`.
+
+Next, in this order:
+
+1. **`fix/review-2`** ([review-fixes-2.md](review-fixes-2.md), base `feat/toggle-keys`):
+   BUGS.md 50–72 except 65, plus small API fixes PRs 9–16 rely on: one action walker
+   that includes `on.action`, start brightness by value (`State.config_brightness`), one
+   ordered Hyprland worker, run ids on watcher results, the `test-support` feature,
+   exhaustive `ActionTarget` matches.
+2. **PR 9, `feat/live-keys`** (base `fix/review-2`), then the remaining features, each
+   based on the previous branch.
 
 `feat/groundwork` is **done** (ten task commits on `fix/review`, plus the in-flight
 volume fix and the start-time brightness precedence found on the hardware pass — see
@@ -75,6 +91,7 @@ order; the order is mine, not upstream's roadmap order.
 | – | `fix/review` | Bugs from the 2026-10-17 review — **done** (`87be396`) | [review-fixes](review-fixes.md) |
 | – | `feat/groundwork` | Daemon split, watcher, ordered volume, non-blocking hub, GUI mirrors the daemon, `ActionSlot` — **done** (2026-10-17) | [groundwork](groundwork.md) |
 | 8 | `feat/toggle-keys` | Keys with on/off faces that follow real state, plus a busy state with progress for slow toggles (e.g. a model server starting up) and for any key while its command runs — **done** (2026-10-17) | [pr8](pr8-toggle-keys.md) |
+| – | `fix/review-2` | Bugs from the second review (50–72) and the API fixes PRs 9–16 rely on | [review-fixes-2](review-fixes-2.md) |
 | 9 | `feat/live-keys` | Keys that show a clock, CPU, workspace, … and update themselves; the Hyprland event listener | [pr9](pr9-live-keys.md) |
 | 10 | `feat/app-volume` | Per-app volume: a dial for a chosen app, or for the focused app | [pr10](pr10-app-volume.md) |
 | 11 | `feat/ctl` | Drive the running daemon from the shell (`omadeckd page next`, `brightness 30`, …) | [pr11](pr11-ctl.md) |
@@ -87,7 +104,8 @@ order; the order is mine, not upstream's roadmap order.
 ### Shared building blocks
 
 Several features need the same machinery. Build each piece once, in the first PR that
-needs it, and have the later PRs reuse it rather than grow a second copy:
+needs it, and have the later PRs reuse it rather than grow a second copy. Groundwork's and
+PR 8's pieces are now built; take their names from the code, not from this list.
 
 - **Daemon structure** (groundwork). `Daemon` owns config, renderer, nav, hub, watcher,
   saver and a `Runtime { values, state }` that survives a replug; `Deck` holds only
@@ -111,7 +129,16 @@ needs it, and have the later PRs reuse it rather than grow a second copy:
   `StateSaver`, which is joined at shutdown. Later PRs that persist something add a field.
 - **Action editors** (groundwork). `action_editor(ActionSlot)` with `Rc<dyn Fn>` closures
   and an `ActionTarget` saying which action it edits. PR 8 (on-action), PR 12 (steps) and
-  PR 16 (long press) add targets; recursion works.
+  PR 16 (long press) add targets; recursion works. From `fix/review-2`, `action_at` and
+  `set_action_at` match exhaustively, so a new target won't compile until it's handled.
+- **One action walker** (`fix/review-2`). Every action in the config, `on.action`
+  included, is reached by one walker; page rename/delete and link counting use it.
+  PR 12 adds multi steps to it and PR 16 the long press. Any new action field must too.
+- **Hyprland worker** (`fix/review-2`). Every Hyprland dispatch goes to one ordered
+  background worker, never the deck loop. PR 12's Hyprland steps are queued on it in order.
+- **Test support** (`fix/review-2`). Core's `test-support` feature gives daemon and GUI
+  tests the bundled font and `Renderer::with_font_bytes`, so no test depends on the
+  machine's fonts.
 - **Hyprland event listener** (PR 9, reused by 10 and 15). One thread on Hyprland's
   `.socket2.sock` that turns `workspace>>`, `activewindow>>`, … into messages for the main
   loop. Live keys need it for the active workspace, per-app volume for the focused app,
@@ -162,9 +189,10 @@ reconcile contradictions, so a plan is ready only when:
 Work the model can't do well: the rebase itself (conflict resolution), and GUI layout
 judgement. Do those yourself, or with a stronger model.
 
-The 2026-10-17 rewrite settled every open decision as "Decided: …". What's genuinely my
-call is in each plan's **Ask before building** list (at most three); hardware facts still
-to collect are in **Capture on the machine first**, with exact commands. Each plan opens
+The 2026-10-17 rewrite settled every open decision as "Decided: …". What was genuinely my
+call went in each plan's **Ask before building** list; for review-fixes-2 and PRs 9–16
+those were settled on 2026-10-17 too and moved to "Decided". Hardware facts still to
+collect are in **Capture on the machine first**, with exact commands. Each plan opens
 with what it takes from the plan before it. Plans after groundwork were written before
 their base exists, so check those names against the branch first (each plan says how);
 the branch wins.

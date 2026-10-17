@@ -1,25 +1,28 @@
 # PR 13: `feat/folders`: folder gestures
 
-Part of [PLAN.md](PLAN.md). Base: `feat/multi-actions` (PR 12). It needs `feat/groundwork`
-(the `Daemon` struct, `Daemon::run_input`, `next_deadline`, D3/D4), upstream's pages
-(D12), fix/review's `Config::is_folder`, and PR 11's `key_down` (the `ButtonDown` arm calls
-it). Nothing else from PRs 8–12 is used.
+Part of [PLAN.md](PLAN.md). Base: `feat/multi-actions` (PR 12).
 
 **Rescoped (2026-10-17).** The old plan built folders from scratch: a `folder` string on
 `KeyConfig`, `key_at`, `Location`, `Action::Folder`, a fixed Back tile. Upstream's
 `pages-and-folders` (`d4e458f`, `fb9052f`) already does most of it, so all of that is
 gone. This PR adds only the parts of Elgato's folder behaviour that upstream's model is
-missing, plus one nested-folder fix.
+missing, plus one nested-folder fix and the held-key fix the Back hold needs (BUGS.md
+65, a held key repainted as released).
 
 **Outcome:** holding a Back key for half a second goes straight Home, as in the Elgato
 app. A flick or page step from inside a folder that was opened from another folder steps
-from the page the folders hang off, not from Home. In the configurator you double-click a
-folder key to open it and double-click a Back key to go up, and the page switcher shows
-folders with their path (`Music › Media › Spotify`).
+from the page the folders hang off, not from Home. A key you hold stays drawn pressed
+while its face changes underneath (today the end-of-pass paint draws it released: BUGS.md
+65). In
+the configurator you double-click a folder key to open it and double-click a Back key to
+go up, and the page switcher shows folders with their path (`Music › Media › Spotify`).
+
+**Size:** about 450 lines over three tasks: core and nav ~150, daemon ~180, GUI and docs
+~120.
 
 ## What's already there, and what's left
 
-| Elgato | Upstream / ours as merged (`d7bd448`) | This PR |
+| Elgato | omadeck as merged (`55d0d62`) | This PR |
 |---|---|---|
 | A folder opens from a key | `Action::Page` (kind 6) + `[[page]] folder = true` | — |
 | Back goes up one level | `Action::Back` (kind 7), `Nav::go`/`Nav::back` breadcrumb | — |
@@ -28,9 +31,10 @@ folders with their path (`Music › Media › Spotify`).
 | A default folder face | GUI `new_folder()`: glyph `f024b` if the key is plain | — |
 | Configurator follows the deck | `Event::PageChanged`, hub replays `page` | — |
 | **Hold Back → main layout** | Back acts on key-down; no hold | **Task 2** |
-| Page step from a nested folder | `dispatch` uses `nav.parent()`: one level only (2026-10-17 review) | **Task 1** |
-| **Open a folder by double-clicking it** in the editor | Only via the page dropdown or the Open-page row | **Task 2** |
-| Breadcrumb in the editor | Flat dropdown of page names | **Task 2** (path in the dropdown labels) |
+| A held key looks held | `flush` paints dirty keys with `pressed: false` (BUGS.md 65) | **Task 2** |
+| Page step from a nested folder | `dispatch` uses `nav.parent()`: one level only | **Task 1** |
+| **Open a folder by double-clicking it** in the editor | Only via the page dropdown or the Open-page row | **Task 3** |
+| Breadcrumb in the editor | Flat dropdown of page names | **Task 3** (path in the dropdown labels) |
 | Back fixed top-left, not editable | Back is an ordinary key: movable, deletable | Not done, on purpose (below) |
 | Auto Exit (6.5) | — | Later |
 
@@ -42,8 +46,8 @@ folders with their path (`Music › Media › Spotify`).
 - **Leaving a folder:** Back goes up one level at a time, and **holding** the Back key goes
   straight to the main layout
   ([folders guide](https://www.elgato.com/explorer/products/stream-deck/how-to-use-folders-stream-deck/)).
-  The hold time is not documented (unconfirmed). Whether Back acts on press or on release
-  is unconfirmed too.
+  The hold time is not documented (unconfirmed). Whether Back acts on press or
+  release is unconfirmed: check in the Elgato app.
 - **Nesting:** "Folders can live inside other folders" (folders guide). No depth limit is
   documented.
 - **Editing:** in the editor you double-click a folder to open it, and a breadcrumb above
@@ -57,26 +61,43 @@ folders with their path (`Music › Media › Spotify`).
 
 - **Decided: rescope, don't retire.** Hold-Back-for-Home is the one Elgato folder gesture
   upstream lacks, and the nested-folder page step is a real (small) bug in our PR 5 code.
-  Together with the configurator's double-click that is about 350 lines in two tasks:
-  small, but a feature someone coming from Elgato will reach for. Folding it into other
-  plans would split one user-visible behaviour across three PRs.
+  With the configurator's double-click it is small, but it is a feature someone coming
+  from Elgato will reach for. Folding it into other plans would split one user-visible
+  behaviour across three PRs.
 - **Decided: Back stays an ordinary key.** Upstream made Back a normal action that the GUI
   places at index 0 of a new page. Forcing it top-left and read-only would fight
   upstream's model (and its `back_key()`), and nobody has asked to move it less. Hold
-  works on **any** key whose action is `Back`, wherever it sits.
-- **Decided: Back acts on release.** A hold has to wait for the release to know it wasn't
-  a hold, so a `Back` key no longer acts on key-down. Every other key still acts on
-  key-down. Held for `BACK_HOLD` (500 ms) it goes Home at once, while still held, and the
-  release then does nothing.
-- **Decided: hold only on keys.** Dial presses, strip taps and ctl (`Source::Ctl`) run
-  `Back` at once, as today. PR 16's long press is a separate action, not a hold.
+  works on **any** key whose press would run `Back`, wherever it sits.
+- **Decided: Back acts on release** (needed to tell a tap from a hold), not a separate "Home"
+  key. A hold has to wait for the release to know it wasn't a hold, so a key whose press would run `Back` no longer acts on key-down. Every other
+  key still acts on key-down. Held for `BACK_HOLD` (500 ms) it goes Home at once, while
+  still held, and the release then does nothing. "Would run Back" is the action
+  `press_key` would pick: `KeyConfig::action_for(on)`, so a toggle whose on action is
+  Back holds only while on. A multi action (PR 12) with a Back step is not a Back key.
+- **Decided: the hold is 500 ms,** one constant, `BACK_HOLD`. Elgato's value is
+  undocumented; 500 ms is long enough not to catch a tap.
+- **Decided: the release runs the press through `press_key`,** the same path a key-down
+  takes, so toggles, jobs and PR 11's error result behave as for any key.
+- **Decided: hold only on hardware keys.** Dial presses, strip taps and ctl presses
+  (`Source::Ctl`, PR 11's `key_down`) run `Back` at once, as today. PR 16's long press is
+  a separate action, not a hold.
+- **Decided: held-key state lives in `Deck`** (BUGS.md 65, review 2's daemon finding 9;
+  decided in the round-2 review): `key_pressed: Vec<bool>`, set on `ButtonDown`, cleared on `ButtonUp`, and
+  `back_held: Option<BackHold>` beside it. A replug resets both, like `dial_pressed`.
+  `Daemon::key_states` draws a key pressed while it is held, or while PR 11's
+  `key_flash` is on, so a held key no longer flips to released when its face repaints.
+- **Decided: a page change forgets held keys.** `show_page` clears `key_pressed` and
+  `back_held`: the key under your finger on the new page is drawn released, and its
+  release only repaints it. That is what the deck shows today after a page key.
 - **Decided: `Nav::nearest` replaces `Nav::parent`.** Page steps start from the nearest
   page on the trail that isn't a folder, however deep the folders go. `parent()` has no
   other caller and would be dead code (the daemon is a binary crate, so clippy fails).
 - **Decided: the configurator's "parent" comes from the config,** not from the deck's
   trail: `Config::opener(name)` is the page holding the first key that opens it (Home
-  first, then file order). The GUI has no trail of its own, and the config answer is the
-  same one a user sees when reading the TOML.
+  first, then file order), looking at every action a key owns (fix/review-2's
+  `KeyConfig::actions()`: its action, its on action, and through PR 12's `Multi` arm in
+  `Action::walk`, a multi's steps). The GUI has no
+  trail of its own, and the config answer is the one a user sees when reading the TOML.
 - **Decided: breadcrumb as dropdown labels,** not a new widget. A folder page's entry in
   the page switcher reads `Music › Media › Spotify` (via `Config::page_path`). No layout
   work, and nested folders are told apart in a flat list.
@@ -84,51 +105,13 @@ folders with their path (`Music › Media › Spotify`).
 
 ## Ask before building
 
-1. Back acting on **release** instead of press (needed for the hold). OK, or keep press
-   and make the hold a separate "Home" key instead?
-2. 500 ms hold. Elgato's value is undocumented; measure it on the Elgato app if you can.
+None; all settled 2026-10-17.
 
-## Before building: check against the base
+## What this PR builds on
 
-The daemon parts are written against `feat/groundwork`'s shapes from D3/D4, which weren't
-merged when this plan was written. Before Task 2, check these on `feat/multi-actions` and
-use the branch's names if they differ:
-
-```bash
-grep -n "struct Daemon\|fn run_input\|fn next_deadline\|enum Source\|struct Deck\|fn show_page\|dial_pressed" crates/omadeckd/src/*.rs
-grep -rn "Action::PageStep { change } =>" crates/omadeckd/src
-```
-
-Expected (groundwork, PRs 8, 11, 12): `deck.rs`: `struct Deck { dev, reader, kind, info,
-dial_pressed, flash_until, dirty_panels, dirty_keys, key_flash }` built in `deck::open`;
-`daemon.rs`: `enum Source { Key(u8), Turn(u8), Press(u8), Tap(u8), Flick, Ctl, Step }`,
-`fn Daemon::try_input(&mut self, src: Source, act: &Action, steps: u8) -> Result<()>`
-(PR 11) with `fn Daemon::run_input(..) -> bool` its wrapper,
-`fn Daemon::next_deadline(&self) -> Option<Instant>`, the `PageStep` arm in
-`fn Daemon::dispatch`, and PR 11's `fn key_down(&mut self, i: u8) -> Result<()>` (paint
-pressed, publish `KeyDown`, then PR 8's `press_key(i)`), which the `ButtonDown` arm and
-ctl's `Press` both call. fix/review already added `Config::is_folder(&self, name) -> bool`.
-
-## Code as merged (verbatim, `d7bd448`)
+### Code as merged (`daily` = `feat/toggle-keys`, `55d0d62`), verbatim
 
 ```rust
-// crates/omadeck-core/src/config.rs
-/// A named page of keys. Pages are flat: a "folder" is just a page with a Back key.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct Page {
-    pub name: String,
-    #[serde(default, rename = "key", skip_serializing_if = "Keys::is_empty")]
-    pub keys: Keys,
-    /// A folder: opened from a key, with a Back key. Folders are skipped by page steps,
-    /// so a flick can't land inside one.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub folder: bool,
-}
-pub fn has_page(&self, name: &str) -> bool;
-pub fn step_page(&self, current: Option<&str>, change: i32) -> Option<Option<String>>;
-    // Home + non-folder pages, wraps; a current that isn't steppable steps from Home
-pub fn links_to(&self, name: &str) -> usize;
-
 // crates/omadeckd/src/nav.rs
 #[derive(Debug, Default)]
 pub struct Nav {
@@ -136,57 +119,147 @@ pub struct Nav {
     current: Option<String>,
     history: Vec<Option<String>>,
 }
-pub fn current(&self) -> Option<&str>;
-pub fn go(&mut self, page: Option<&str>) -> bool;      // Home clears, revisit truncates, else push
-pub fn parent(&self) -> Option<Option<String>>;        // history.last()
-pub fn switch(&mut self, page: Option<&str>) -> bool;  // replace current, clear history
-pub fn back(&mut self) -> bool;                        // pop or Home; false on Home
-pub fn retain_existing(&mut self, cfg: &Config) -> bool;
+impl Nav {
+    pub fn current(&self) -> Option<&str>;
+    pub fn go(&mut self, page: Option<&str>) -> bool;       // home clears, a page on the trail cuts back, else push
+    pub fn parent(&self) -> Option<Option<String>>;         // history.last().cloned(); only dispatch calls it
+    pub fn switch(&mut self, page: Option<&str>) -> bool;   // sideways: replace current, clear the trail
+    pub fn back(&mut self) -> bool;                         // pop, or Home; false on Home
+    pub fn retain_existing(&mut self, cfg: &Config) -> bool;
+}
+// tests: folders, loops_stay_bounded, switch_clears_the_trail, parent_is_where_back_would_go, deleted_pages
+
+// crates/omadeckd/src/deck.rs
+pub const DIAL_FLASH: Duration = Duration::from_millis(150);
+pub struct Deck {
+    pub dev: Arc<StreamDeck>,
+    pub reader: Arc<DeviceStateReader>,
+    pub kind: Kind,
+    pub info: DeckInfo,
+    /// Whether each dial is physically pressed down.
+    pub dial_pressed: Vec<bool>,
+    /// When each dial's panel was tapped (the tap time, not a deadline), while it flashes.
+    pub flash_until: Vec<Option<Instant>>,
+    pub dirty_panels: Vec<bool>,
+    pub dirty_keys: Vec<bool>,
+}
+impl Deck {
+    pub fn pressed(&self, i: u8, now: Instant) -> bool;     // dial held, or tapped < DIAL_FLASH ago
+    pub fn flash_deadline(&self) -> Option<Instant>;
+    pub fn expire_flashes(&mut self, now: Instant);
+    // mark_key_dirty, mark_dirty, dirty_where
+}
+pub fn open(hid: &mut HidApi) -> Option<Deck>;              // builds the struct literal
+
+// crates/omadeckd/src/daemon.rs (Daemon)
+pub fn key_state(cfg: &Config, rt: &Runtime, page: Option<&str>, i: u8, pressed: bool) -> KeyStatus;
+fn key_states(&self, n: u8) -> Vec<KeyStatus>;   // (0..n).map(|i| key_state(.., i, false))
+pub fn next_deadline(&self) -> Option<Instant>;  // [flash, self.repaint_at, self.reload_at].min()
+pub fn pass(&mut self) -> Result<(), StreamDeckError>;
+fn show_page(&mut self);                         // log, paint_all, watch, publish PageChanged
+fn paint_key(&mut self, i: u8, pressed: bool);
+fn dispatch(&mut self, act: &Action, steps: u8) -> Result<bool>;   // fix/review-2 adds `src: Source` first
 ```
 
-The `PageStep` arm of `dispatch` in `d7bd448` (groundwork moved it, unchanged apart
-from `self.`, into `Daemon::dispatch` in `daemon.rs`):
+`pass` begins:
+
+```rust
+let now = Instant::now();
+if self.repaint_at.is_some_and(|t| now >= t) {
+    self.repaint_at = None;
+    self.paint_all();
+}
+let Some(d) = &mut self.deck else { return Ok(()) };
+d.expire_flashes(now);
+```
+
+The `PageStep` arm of `Daemon::dispatch`:
 
 ```rust
 Action::PageStep { change } => {
     // From inside a folder, step from the folder's parent, leaving the folder.
-    let in_folder = cfg.pages.iter().any(|p| p.folder && nav.current().is_some_and(|c| p.name == c));
-    let origin = if in_folder { nav.parent().flatten() } else { nav.current().map(str::to_string) };
+    let in_folder =
+        self.cfg.pages.iter().any(|p| p.folder && self.nav.current().is_some_and(|c| p.name == c));
+    let origin =
+        if in_folder { self.nav.parent().flatten() } else { self.nav.current().map(str::to_string) };
     let by = i32::from(*change) * steps as i32;
-    match cfg.step_page(origin.as_deref(), by) {
-        Some(page) => Ok(nav.switch(page.as_deref())),
-        None => Ok(false),
-    }
+    Ok(match self.cfg.step_page(origin.as_deref(), by) {
+        Some(page) => self.nav.switch(page.as_deref()),
+        None => false,
+    })
 }
 ```
 
-GUI: `App::show_page(self: &Rc<Self>, page: Option<String>, tell_daemon: bool)`,
-`App::key(&self, i: u8) -> Option<KeyConfig>` (a clone, for the page being edited),
-`App::current_page() -> Option<String>`, `fn sync_page_list(&self)` (fills `page_list`
-with `HOME` then `cfg.page_names()`), key buttons built in `fn rebuild_grid` with
-`button.connect_clicked(… app.select(Some(Selection::Key(i))))`.
+Core (`config.rs`): `pub struct Page { pub name: String, pub keys: Keys, pub folder: bool }`,
+`Config::has_page(&self, name: &str) -> bool`, `Config::is_folder(&self, name: &str) ->
+bool` (already there; don't add a second), `Config::step_page`, `Config::page(&self,
+page: Option<&str>) -> Option<&Keys>`, `Keys::iter()`, `KeyConfig::action_for(&self, on:
+bool) -> &Action`.
+
+GUI (`app.rs`): `App::show_page(self: &Rc<Self>, page: Option<String>, tell_daemon:
+bool)`, `App::key(&self, i: u8) -> Option<KeyConfig>` (a clone, for the page being
+edited), `App::current_page(&self) -> Option<String>`, `fn sync_page_list(&self)` (fills
+`page_list` with `HOME` then `cfg.page_names()`, then selects the current one), key
+buttons built in `fn rebuild_grid(self: &Rc<Self>)` with
+`button.connect_clicked(… app.select(Some(Selection::Key(i))))` and `self.add_dnd(..)`.
+The hint under the deck is a `gtk::Label` in `App::build` reading "Click a key to edit it
+· drag keys to rearrange · press a key on your deck to jump to it".
+
+### From the plans before this one
+
+- **fix/review-2 (R2):** `KeyConfig::actions(&self) -> Vec<&Action>`, every action a key
+  owns, nested ones included: its `action`, then its `on.action`, each through
+  `Action::walk` (PR 12 adds the `Multi` arm there, so a multi's steps are in the list
+  too). `Config::opener` uses it.
+- **fix/review-2 (R6):** `fn dispatch(&mut self, src: Source, act: &Action, steps: u8) ->
+  Result<bool>`. Task 1 changes only its `PageStep` arm, whose body doesn't use `src`.
+- **PR 11:** the hardware `ButtonDown(i)` and `ButtonUp(i)` arms clear `key_flash[i]`
+  first; `ButtonDown` then calls `let _ = self.key_down(i, true);`. `fn key_down(&mut
+  self, i: u8, publish: bool) -> Result<()>` paints pressed, publishes `KeyDown` only when
+  `publish`, then calls `fn press_key(&mut self, i: u8) -> Result<()>`. Ctl's `Press` (and
+  the configurator's ▶ on a key) calls `key_down(i, false)`, quiet, then sets
+  `key_flash[i]`. `deck.rs` gains `pub const KEY_FLASH: Duration` (150 ms), `pub
+  key_flash: Vec<Option<Instant>>` on `Deck` (the press time; `vec![None; n_keys]` in
+  `open`), `Deck::expire_key_flashes(&mut self, now)` (clears the ended ones and marks
+  them dirty; no `KeyUp`),
+  and a `#[cfg(test)] mod tests` with `key_flashes_end_after_their_time`.
+  `Deck::flash_deadline` covers `key_flash`. `Daemon::key_states` draws a flashing key
+  pressed: `pressed = deck.key_flash[i].is_some()`.
+- **PR 12:** `next_deadline` also lists `self.seq.next_due()`.
+
+Nothing from PRs 9 and 10 is used.
+
+Check these on `feat/multi-actions` before Task 2; if a name differs, the branch wins:
+
+```bash
+grep -n "fn key_down\|fn press_key\|key_flash\|KEY_FLASH\|fn next_deadline" crates/omadeckd/src/*.rs
+grep -n "pub fn actions\|pub fn walk" crates/omadeck-core/src/config.rs
+grep -n "fn dispatch" crates/omadeckd/src/daemon.rs
+```
 
 ## Task 1: nearest origin and the config helpers (~150 lines)
 
-**Files:** `crates/omadeck-core/src/config.rs`, `crates/omadeckd/src/nav.rs`, the
-`PageStep` arm in `crates/omadeckd/src` (grep above).
+**Files:** `crates/omadeck-core/src/config.rs`, `crates/omadeckd/src/nav.rs`,
+`crates/omadeckd/src/daemon.rs` (the `PageStep` arm of `dispatch`).
 
-New in `impl Config`, next to `has_page` (fix/review's `is_folder` is already there;
-don't add a second):
+New in `impl Config`, after `is_folder`:
 
 ```rust
-/// The page holding the first key that opens `name`: Home first, then the pages in file
-/// order (never `name` itself). `None` when no key opens it.
+/// The page holding the first key that opens `name` (any action the key owns: its
+/// action, its on action, a multi step): Home first, then the pages in file order, never
+/// `name` itself. `Some(None)` is Home; `None` when no key opens it.
 pub fn opener(&self, name: &str) -> Option<Option<&str>> {
-    let opens = |keys: &Keys| keys.iter().any(|k| matches!(&k.action, Action::Page { page } if page == name));
+    let opens = |keys: &Keys| {
+        keys.iter().any(|k| k.actions().into_iter().any(|a| matches!(a, Action::Page { page } if page == name)))
+    };
     if opens(&self.keys) {
         return Some(None);
     }
     self.pages.iter().filter(|p| p.name != name).find(|p| opens(&p.keys)).map(|p| Some(p.name.as_str()))
 }
 
-/// Where `name` sits, for the configurator: the folders it's inside and the page they hang
-/// off, outermost first, ending with `name`. A normal page is just itself.
+/// Where `name` sits, for the configurator: the folders it's inside and the page they
+/// hang off, outermost first, ending with `name`. A normal page is just itself.
 pub fn page_path(&self, name: &str) -> Vec<String> {
     let mut path = vec![name.to_string()];
     let mut cur = name;
@@ -203,6 +276,9 @@ pub fn page_path(&self, name: &str) -> Vec<String> {
 }
 ```
 
+(`k.actions()` is fix/review-2's walker; it returns a `Vec<&Action>`, hence `into_iter()`,
+as in `Config::links_to`.)
+
 New in `impl Nav`, replacing `parent`:
 
 ```rust
@@ -217,30 +293,30 @@ pub fn nearest(&self, keep: impl Fn(&str) -> bool) -> Option<&str> {
 }
 ```
 
-The `PageStep` arm becomes (field names as on the base branch):
+The `PageStep` arm becomes:
 
 ```rust
 Action::PageStep { change } => {
     // From inside a folder (however deep), step from the page the folders hang off.
     let origin = self.nav.nearest(|p| !self.cfg.is_folder(p)).map(str::to_string);
     let by = i32::from(*change) * steps as i32;
-    match self.cfg.step_page(origin.as_deref(), by) {
-        Some(page) => Ok(self.nav.switch(page.as_deref())),
-        None => Ok(false),
-    }
+    Ok(match self.cfg.step_page(origin.as_deref(), by) {
+        Some(page) => self.nav.switch(page.as_deref()),
+        None => false,
+    })
 }
 ```
 
-- Delete `Nav::parent` and its test `parent_is_where_back_would_go`; grep `\.parent()` in
-  `crates/omadeckd` first to be sure nothing else calls it.
+- Delete `Nav::parent` and its test `parent_is_where_back_would_go`. First check nothing
+  else calls it: `grep -rn "\.parent()" crates/omadeckd` must show only the `dispatch`
+  line you are replacing.
 - **Trap:** `.map(str::to_string)` is what ends the borrow of `self.nav` before
-  `self.nav.switch`. Don't keep `origin` as `Option<&str>`.
+  `self.nav.switch`. Don't keep `origin` as an `Option<&str>`.
+- **Trap:** the closure `|p| !self.cfg.is_folder(p)` borrows only `self.cfg` (closures
+  capture fields), so it compiles beside `self.nav.nearest`. Don't move it into a helper
+  that takes `&self`.
 
-Tests: in `nav.rs` (copy this one), and in `config.rs`
-`page_path_follows_folder_openers` (Music opens folder Media, Media opens folder Spotify,
-Spotify opens Media back: `page_path("Spotify") == ["Music", "Media", "Spotify"]`,
-`page_path("Music") == ["Music"]`, a folder nothing opens is just itself,
-`opener("Media") == Some(Some("Music"))`).
+Tests. In `nav.rs` (copy this one):
 
 ```rust
 #[test]
@@ -259,24 +335,48 @@ fn nearest_skips_nested_folders() {
 }
 ```
 
+In `config.rs`, `page_path_follows_folder_openers`, built with `Config::parse`: Home has
+nothing; page Music (normal) has a key opening Media; Media (`folder = true`) has a key
+opening Spotify and a Back key; Spotify (`folder = true`) has a key opening Media. Assert
+`page_path("Spotify") == ["Music", "Media", "Spotify"]`, `page_path("Music") ==
+["Music"]`, `opener("Media") == Some(Some("Music"))`, and a folder page nothing opens is
+just itself. Add one key on Home whose `[key.on]` action opens a page `Lone`
+(`folder = true`): `opener("Lone") == Some(None)` (the on action counts).
+
 **Check:**
-`cargo test -p omadeckd nav:: && cargo test -p omadeck-core page_path && cargo clippy --all-targets -- -D warnings`
-→ `test result: ok. 5 passed` (nav: four kept, one new), `test result: ok. 1 passed`, and
-clippy prints no warnings.
 
-## Task 2: hold Back for Home, double-click in the configurator, docs (~200 lines)
+```bash
+cargo test -p omadeckd nav:: && cargo test -p omadeck-core page_path && cargo clippy --all-targets -- -D warnings
+```
 
-**Files:** `crates/omadeckd/src/nav.rs`, `crates/omadeckd/src/deck.rs` (`Deck`),
-`crates/omadeckd/src/daemon.rs` (the input arms, `next_deadline`, `pass`),
-`crates/omadeck-gui/src/app.rs`, `README.md`, `CHANGELOG.md`.
+→ the `nav::` run ends `test result: ok.` with `0 failed` and lists
+`nav::tests::nearest_skips_nested_folders ... ok` (and no `parent_is_where_back_would_go`);
+the core run shows `test result: ok. 1 passed`; clippy prints no warnings.
+
+## Task 2: held keys and hold Back for Home (~180 lines)
+
+**Files:** `crates/omadeckd/src/nav.rs`, `crates/omadeckd/src/deck.rs`,
+`crates/omadeckd/src/daemon.rs` (`handle_update`'s `ButtonDown`/`ButtonUp` arms,
+`key_states`, `next_deadline`, `pass`, `show_page`).
 
 In `nav.rs`:
 
 ```rust
-use std::time::{Duration, Instant};
+/// Go straight Home and clear the trail (holding Back). Returns whether anything changed.
+pub fn home(&mut self) -> bool {
+    self.go(None)
+}
+```
 
-/// A key with a `Back` action that's down. Back waits for the release, so holding it can
-/// go Home instead, as in the Elgato app.
+In `deck.rs`:
+
+```rust
+/// How long a Back key is held before it goes Home instead (Elgato's "hold to exit";
+/// its time isn't documented).
+pub const BACK_HOLD: Duration = Duration::from_millis(500);
+
+/// A key whose press would run `Back` that's down. Back waits for the release, so
+/// holding it can go Home instead.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BackHold {
     pub key: u8,
@@ -284,115 +384,217 @@ pub struct BackHold {
 }
 
 impl BackHold {
-    pub const HOLD: Duration = Duration::from_millis(500);
-
     /// When holding turns into "go Home".
     pub fn deadline(&self) -> Instant {
-        self.since + Self::HOLD
-    }
-}
-
-impl Nav {
-    /// Go straight Home and clear the trail (holding Back). Returns whether anything changed.
-    pub fn home(&mut self) -> bool {
-        self.go(None)
+        self.since + BACK_HOLD
     }
 }
 ```
 
-Daemon:
-
-- `Deck` gains `back_held: Option<BackHold>` (input state, like `dial_pressed`; a replug
-  resets it). `None` in `deck::open`.
-- **The `ButtonDown(i)` arm** (PR 11 made it `let _ = self.key_down(i);`): if the key's
-  action is `Action::Back`, paint pressed (`self.paint_key(i, true)`), publish `KeyDown`,
-  set `back_held = Some(BackHold { key: i, since: Instant::now() })` the way the
-  `EncoderDown` arm sets `dial_pressed`, and **don't** call `key_down`. Any other action
-  calls `key_down(i)` as now. Only the hardware arm changes: ctl's `Press` still goes
-  through `key_down` → `press_key`, so it runs Back at once ("hold only on keys").
-- **`ButtonUp(i)`:** after the paint and `KeyUp`:
-  `if deck.back_held.take_if(|h| h.key == i).is_some() { self.run_input(Source::Key(i), &Action::Back, 1); }`.
-- **Hold:** `Daemon::next_deadline()` also includes `back_held.map(|h| h.deadline())`
-  (beside the flashes, `repaint_at`, `reload_at` and PR 12's `seq.next_due()`). In
-  `pass`, next to the flash expiry:
-  `if let Some(h) = deck.back_held.take_if(|h| now >= h.deadline())` → log
-  `key {}: held Back, going Home` and, if `self.nav.home()`, repaint and publish the page
-  the way `run_input` does after a page move (groundwork's `show_page`). The release that
-  follows finds `back_held` empty and does nothing.
-- **Trap (BUGS.md 4):** don't call `self.run_input(..)` while holding a borrow of
-  `self.cfg` or `self.deck`. Clone the key's action first
-  (`let act = self.cfg.key(self.nav.current(), i).map(|k| k.action.clone())`), set
-  `back_held` in its own short `if let Some(d) = &mut self.deck` block, then dispatch.
-
-GUI (`app.rs`):
-
-- In `rebuild_grid`, after `button.connect_clicked(…)`, add a double-click gesture. It runs
-  in the capture phase so the button's own click (select) still happens:
+`Deck` gains, after `dial_pressed`:
 
 ```rust
-// Double-click a folder key to open its page, or a Back key to go up, as in the Elgato app.
-let open = gtk::GestureClick::builder().button(1).propagation_phase(gtk::PropagationPhase::Capture).build();
-let weak = Rc::downgrade(self);
-open.connect_pressed(move |_, n_press, _, _| {
-    if n_press == 2
-        && let Some(app) = weak.upgrade()
-    {
-        app.open_from_key(i);
-    }
-});
-button.add_controller(open);
+/// Whether each key is physically held down (ButtonDown to ButtonUp).
+pub key_pressed: Vec<bool>,
+/// The Back key being held, until it's released or goes Home.
+pub back_held: Option<BackHold>,
 ```
 
-- New method:
+`deck::open` sets `key_pressed: vec![false; n_keys]` and `back_held: None`. New method,
+next to `pressed`:
 
 ```rust
-/// Follow key `i`: an Open page key shows its page, a Back key the page that opens this
-/// one (Home if none). The deck follows, as with the page switcher.
-pub fn open_from_key(self: &Rc<Self>, i: u8) {
-    let target = match self.key(i).map(|k| k.action) {
-        Some(Action::Page { page }) if self.config.borrow().has_page(&page) => Some(page),
-        Some(Action::Back) => match self.current_page() {
-            Some(cur) => self.config.borrow().opener(&cur).flatten().map(str::to_string),
-            None => return,
-        },
-        _ => return,
-    };
-    self.show_page(target, true);
+/// Whether key `i` is drawn pressed: held down, or still flashing after a ctl press
+/// (PR 11's `key_flash`; `expire_key_flashes` clears it when it ends).
+pub fn key_held(&self, i: u8) -> bool {
+    let n = i as usize;
+    let flashed = self.key_flash.get(n).is_some_and(Option::is_some);
+    self.key_pressed.get(n).copied().unwrap_or(false) || flashed
 }
 ```
 
-- `sync_page_list`: label each page with `cfg.page_path(name).join(" › ")` instead of the
-  bare name. The order is unchanged, so the dropdown's index → page mapping in
-  `connect_selected_notify` still works.
-- The hint under the deck: add `· double-click a folder to open it`.
-- **Trap:** keep the `self.config.borrow()` calls as temporaries inside the expressions
-  above; `show_page` borrows `config` mutably further down.
+In `daemon.rs`:
 
-Docs: README "Pages and folders": "hold a Back key to go straight Home; double-click a
-folder in the configurator to open it". CHANGELOG under Unreleased → Added (hold Back)
-and Fixed (page steps from nested folders).
+- A pure helper, beside `key_state`:
 
-Test (in `nav.rs`, copy):
+  ```rust
+  /// Whether a press of `key` waits for its release: the action `press_key` would run
+  /// (the on action while on) is `Back`.
+  fn waits_for_release(key: Option<&KeyConfig>, on: bool) -> bool {
+      key.is_some_and(|k| matches!(k.action_for(on), Action::Back))
+  }
+  ```
+
+- `key_states` reads the held state (replacing PR 11's `pressed =
+  deck.key_flash[i].is_some()`, which `key_held` now covers):
+
+  ```rust
+  fn key_states(&self, n: u8) -> Vec<KeyStatus> {
+      (0..n)
+          .map(|i| {
+              let held = self.deck.as_ref().is_some_and(|d| d.key_held(i));
+              key_state(&self.cfg, &self.rt, self.nav.current(), i, held)
+          })
+          .collect()
+  }
+  ```
+
+- New `fn set_key_pressed(&mut self, i: u8, pressed: bool)`, written like
+  `set_dial_pressed` but without `mark_dirty` (the arms paint the key themselves).
+- **`ButtonDown(i)`:** keep PR 11's `key_flash` clear first. Then:
+
+  ```rust
+  self.set_key_pressed(i, true);
+  let page = self.nav.current();
+  let on = key_state(&self.cfg, &self.rt, page, i, false).state == Toggle::On;
+  if waits_for_release(self.cfg.key(page, i), on) {
+      // Back waits for the release (a hold goes Home instead); show the press now.
+      self.paint_key(i, true);
+      self.hub.publish(Event::KeyDown { index: i, page: self.nav.current().map(str::to_string) });
+      if let Some(d) = &mut self.deck {
+          d.back_held = Some(BackHold { key: i, since: Instant::now() });
+      }
+  } else {
+      let _ = self.key_down(i, true);
+  }
+  ```
+
+  `on` is a `bool` and `waits_for_release` returns a `bool`, so no borrow of `self.cfg`
+  or `self.nav` is alive when `paint_key` takes `&mut self`. Only the hardware arm
+  changes: ctl's `Press` still calls `key_down(i, false)`, so it runs Back at once.
+- **`ButtonUp(i)`:** after PR 11's `key_flash` clear, `self.set_key_pressed(i, false)`,
+  then the existing `paint_key(i, false)` and `KeyUp`, then:
+
+  ```rust
+  let held = self.deck.as_mut().and_then(|d| d.back_held.take_if(|h| h.key == i));
+  if held.is_some() {
+      let _ = self.press_key(i); // a tap: Back, through the normal press path
+  }
+  ```
+
+- **Hold:** in `pass`, right after the `repaint_at` block and before `let Some(d) = &mut
+  self.deck`:
+
+  ```rust
+  if let Some(h) = self.deck.as_mut().and_then(|d| d.back_held.take_if(|h| now >= h.deadline())) {
+      log::info!("key {}: held Back, going Home", h.key);
+      if self.nav.home() {
+          self.show_page();
+      }
+  }
+  ```
+
+  The release that follows finds `back_held` empty and only repaints the key.
+- **`next_deadline`:** add `self.deck.as_ref().and_then(|d| d.back_held).map(|h|
+  h.deadline())` to its list (beside the flashes, `repaint_at`, `reload_at` and PR 12's
+  `seq.next_due()`). Without it the loop can sleep 100 ms past the hold.
+- **`show_page`:** first thing, forget held keys:
+
+  ```rust
+  if let Some(d) = &mut self.deck {
+      d.key_pressed.fill(false);
+      d.back_held = None;
+  }
+  ```
+
+Tests (BUGS.md 65's fix is the `key_held`/`key_states` change, checked on the deck) in
+`daemon.rs` (copy this one), plus `back_hold_deadline` in `deck.rs`'s tests (PR
+11 made the module; `BackHold { key: 0, since: t }.deadline() == t + BACK_HOLD`), and
+`home_clears_a_nested_trail` in `nav.rs` (A → F1 → F2, `home()` is true, `current()` is
+`None`, `history` empty, a second `home()` is false).
 
 ```rust
 #[test]
-fn home_clears_a_nested_trail() {
-    let mut n = Nav::default();
-    n.go(Some("A"));
-    n.go(Some("F1"));
-    n.go(Some("F2"));
-    assert!(n.home());
-    assert_eq!(n.current(), None);
-    assert!(n.history.is_empty());
-    assert!(!n.home(), "home from Home does nothing");
-    assert!(!n.back());
-    let t = Instant::now();
-    assert_eq!(BackHold { key: 0, since: t }.deadline(), t + Duration::from_millis(500));
+fn only_a_back_press_waits_for_release() {
+    let cfg = Config::parse(
+        "[[key]]\nindex = 0\n[key.action]\ntype = \"back\"\n\n\
+         [[key]]\nindex = 1\n[key.action]\ntype = \"page\"\npage = \"A\"\n\n\
+         [[key]]\nindex = 2\n[key.action]\ntype = \"app\"\ncommand = \"true\"\n[key.on]\n[key.on.action]\ntype = \"back\"\n",
+    )
+    .unwrap();
+    assert!(waits_for_release(cfg.key(None, 0), false), "a Back key");
+    assert!(!waits_for_release(cfg.key(None, 1), false), "Open page acts on key-down");
+    assert!(!waits_for_release(cfg.key(None, 2), false), "a toggle runs its off action while off");
+    assert!(waits_for_release(cfg.key(None, 2), true), "and its Back on action while on");
+    assert!(!waits_for_release(None, false), "no key");
 }
 ```
 
-**Check:** `cargo test -p omadeckd nav:: && cargo clippy --all-targets -- -D warnings`
-→ `test result: ok. 6 passed`, no clippy warnings. Then the hardware checks.
+**Check:**
+
+```bash
+cargo test -p omadeckd -- waits_for_release back_hold home_clears && cargo clippy --all-targets -- -D warnings
+```
+
+→ `test result: ok. 3 passed; 0 failed`, no clippy warnings. Then `cargo test -p
+omadeckd` passes in full, and the first four hardware checks.
+
+**Traps:**
+- BUGS.md 4: don't call `self.key_down`, `self.press_key` or `self.show_page` while a
+  `&self.cfg` or `&mut self.deck` borrow is alive. The code above takes `bool`s and the
+  `BackHold` (it's `Copy`) out first.
+- Don't call `key_down` for a Back key and then try to undo it: `key_down` runs the
+  action.
+- `key_pressed` is input state. It must not go in `Runtime` (a replug must reset it).
+
+## Task 3: double-click in the configurator, docs (~120 lines)
+
+**Files:** `crates/omadeck-gui/src/app.rs`, `README.md`, `CHANGELOG.md`.
+
+- In `rebuild_grid`, after `button.connect_clicked(…)`, add a double-click gesture. It
+  runs in the capture phase, so the button's own click (select) still happens:
+
+  ```rust
+  // Double-click a folder key to open its page, or a Back key to go up, as in the Elgato app.
+  let open = gtk::GestureClick::builder().button(1).propagation_phase(gtk::PropagationPhase::Capture).build();
+  let weak = Rc::downgrade(self);
+  open.connect_pressed(move |_, n_press, _, _| {
+      if n_press == 2
+          && let Some(app) = weak.upgrade()
+      {
+          app.open_from_key(i);
+      }
+  });
+  button.add_controller(open);
+  ```
+
+- New method, in the `// --- pages` section:
+
+  ```rust
+  /// Follow key `i`: an Open page key shows its page, a Back key the page that opens
+  /// this one (Home if none). The deck follows, as with the page switcher.
+  pub fn open_from_key(self: &Rc<Self>, i: u8) {
+      let target = match self.key(i).map(|k| k.action) {
+          Some(Action::Page { page }) if self.config.borrow().has_page(&page) => Some(page),
+          Some(Action::Back) => match self.current_page() {
+              Some(cur) => self.config.borrow().opener(&cur).flatten().map(str::to_string),
+              None => return,
+          },
+          _ => return,
+      };
+      self.show_page(target, true);
+  }
+  ```
+
+- `sync_page_list`: label each page with `cfg.page_path(name).join(" › ")` instead of the
+  bare name (collect the labels into a `Vec<String>`, then take `&str`s for `splice`).
+  The order is unchanged, so the dropdown's index → page mapping in
+  `connect_selected_notify` (`cfg.pages.get(n - 1)`) still works.
+- The hint under the deck: append ` · double-click a folder to open it`.
+- **Trap:** keep each `self.config.borrow()` a temporary inside its expression, as above.
+  `show_page` borrows `config` again and `sync_page_list` borrows `page` mutably further
+  down; a `let cfg = self.config.borrow();` held across `show_page` panics.
+
+Docs: README "Pages and folders": "hold a Back key to go straight Home; double-click a
+folder in the configurator to open it". CHANGELOG under Unreleased → Added (hold Back,
+double-click a folder) and Fixed (page steps from nested folders; a held key stays drawn
+pressed, BUGS.md 65). After the branch, mark BUGS.md 65 fixed with Task 2's commit.
+
+Test: GUI code has no unit tests; `page_path` and `opener` are covered in Task 1. Copy
+Task 1's `nearest_skips_nested_folders` pattern if you add a core helper.
+
+**Check:** `cargo fmt && cargo clippy --all-targets -- -D warnings && cargo test` → all
+green, no warnings. Then the configurator hardware checks.
 
 ## Capture on the machine first
 
@@ -404,8 +606,11 @@ Nothing: this PR reads no system state.
 - [ ] Hold Back ~0.5 s two folders deep: the deck goes Home while the key is still held;
       releasing does nothing more.
 - [ ] A Back key on a normal page (not a folder) works the same.
+- [ ] Hold a toggle key (e.g. the mic mute): its face flips to the new state and stays
+      drawn pressed until you let go (BUGS.md 65).
 - [ ] Two folders deep (Music → Media → Spotify), flick left: the deck shows the page
       after Music, not the page after Home.
+- [ ] `omadeckd press 0` (PR 11) on a Back key goes back at once.
 - [ ] Double-click a folder key in the configurator: it opens, and the deck follows.
       Double-click its Back key: back to the page that opens it. A single click still
       selects; dragging keys still works.
@@ -428,6 +633,3 @@ Nothing: this PR reads no system state.
 - Auto Exit (Elgato 6.5): `auto_exit` on `[[page]]` for folders.
 - A real breadcrumb widget above the grid, if the dropdown labels aren't enough.
 - Copy a folder as a page and back (Elgato 6.6).
-
-**Size:** about 350 lines: core ~70 with tests, nav ~70 with tests, daemon ~50, GUI ~50,
-docs ~20.
