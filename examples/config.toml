@@ -87,6 +87,73 @@ command = "playerctl play-pause"
 # type = "page_step"
 # change = 1                   # next page; -1 is previous, folders are skipped
 
+# A toggle key: a second face ([key.on]) that follows real state. The state
+# command exits 0 when on, 75 while busy (its first output line is the progress,
+# "NN%" for the bar), anything else off. No state: a volume mute key follows its
+# mute, any other key flips on each press.
+[[key]]
+index = 10
+label = "Mic"
+glyph = "f036c"
+[key.action]
+type = "volume"
+device = "input"
+mute = true                    # the key toggles the mute…
+[key.on]
+label = "Muted"                # …and the on face follows it (no state)
+glyph = "f036d"
+
+# A toggle with a state command: the face follows the command's exit status.
+# [[key]]
+# index = 11
+# label = "Night light"
+# [key.action]
+# type = "app"
+# command = "omarchy-toggle-nightlight"
+# [key.on]
+# label = "Night on"
+# state = "omarchy-toggle-nightlight --status | jq -e .enabled"
+# interval = 2                 # seconds between runs (at least 1; the configurator offers 1–60)
+# action = { type = "app", command = "…" }   # optional: run this instead while on (Elgato's Hotkey Switch)
+#
+# A slow toggle: a press shows busy at once and polls fast until the state moves.
+# [[key]]
+# index = 12
+# label = "Backup"
+# busy_while_running = true    # busy for as long as the key's own command runs
+# [key.action]
+# type = "script"
+# path = "scripts/backup.sh"
+# [key.on]
+# slow = true
+# state = "systemctl --user is-active -q backup.service"
+# [key.busy]
+# bar = true   # draw a progress bar from the first "NN%" in the output
+#
+# A slow toggle for a systemd user service (a model server), with a health check.
+# [[key]]
+# index = 13
+# label = "LLM off"
+# glyph = "f048b"
+# [key.action]
+# type = "app"
+# command = "systemctl --user is-active -q llm.service && systemctl --user stop --no-block llm.service || systemctl --user start --no-block llm.service"
+# [key.on]
+# label = "LLM on"
+# slow = true
+# state = """\ns=$(systemctl --user is-active llm.service)\ncase $s in\n  active) curl -sf -o /dev/null -m 2 http://127.0.0.1:8000/health && exit 0\n          echo Loading; exit 75 ;;\n  activating|deactivating|reloading) echo "$s"; exit 75 ;;\n  *) exit 1 ;;\nesac"""
+#
+# A VPN toggle: on while any active connection is a vpn.
+# [[key]]
+# index = 14
+# label = "VPN"
+# [key.action]
+# type = "app"
+# command = "omarchy vpn toggle"    # whatever turns it on and off
+# [key.on]
+# label = "VPN on"
+# state = "nmcli -t -f TYPE connection show --active | grep -q vpn"
+
 # The touch strip's background image (Stream Deck +): one image across all the
 # panels, under the dial panels. Any size - it fills the strip and is
 # centre-cropped. Relative paths are against this file's folder.

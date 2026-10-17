@@ -39,6 +39,7 @@ Written in Rust: a tiny background daemon drives the hardware, and a GTK4/libadw
   - **Next/previous page:** the next or previous page — for a key, a dial turn, or a flick of the Stream Deck +'s touch strip (left is next, right is previous, wrapping). Folders are skipped.
   - **Volume:** change the output or input (microphone) volume, or toggle mute. It goes through Omarchy's own volume commands when they're installed, so the same on-screen pop-up shows as your volume keys — otherwise it falls back to `wpctl`.
   - **Brightness:** change the panel brightness by ±%, or set it to an exact value. The value is remembered across restarts (in the state file, not your config), as in the Elgato app.
+- **Toggle keys.** A second face (`[key.on]`) that follows real state: a shell command's exit status polled in the background (night light, stay awake, a service, …), the mute a volume mute key already changes, or a flip on each press. A command can report **busy** (exit 75) with a progress line — and a percentage for a bar — for things that take a while. Any key running a command or script can show the busy face for as long as it runs (`busy_while_running`). The configurator mirrors what the deck shows, and has toggle presets (mic mute, output mute, night light, stay awake, do-not-disturb, bluetooth, and a service… dialog).
 - **Icons your way**
   - PNG, JPEG, SVG, WebP or GIF images.
   - App icons from your icon theme.
@@ -241,6 +242,42 @@ type = "volume"
 mute = true
 ```
 
+### Toggle keys
+
+A key with a `[key.on]` table has a second face. Which face shows comes from the
+real system, in this order of precedence:
+
+1. **A state command** (`state = "…"` on `[key.on]`) is run in the background, every
+   `interval` seconds (at least 1, default 2): exit **0** = on, **75** = busy, anything else
+   = off. While busy, the command's first output line is the key's label — put a
+   percentage in it (`echo 43%`) and, with `[key.busy] bar = true`, it becomes a
+   progress bar. A `slow = true` toggle shows busy at once on a press and polls fast
+   until the state moves, for things that take a while to come up or go down.
+2. **The mute** a volume mute key already changes: a mute key with `[key.on]` and no
+   state follows its mute.
+3. **A flip on each press**, as the Elgato app's two-state actions do.
+
+`[key.on] action` runs instead of the key's action while it's on (Elgato's Hotkey
+Switch); unset, a press runs the key's own action.
+
+Separately, any key running a plain command or script can set `busy_while_running =
+true` to look busy — with the command's last output line — for as long as it runs;
+the command keeps running if the daemon restarts (it runs in its own systemd scope),
+but the key stops showing it, and a program that writes progress may end when nothing
+reads it any more.
+
+```toml
+[[key]]
+index = 11
+label = "Night light"
+[key.action]
+type = "app"
+command = "omarchy-toggle-nightlight"
+[key.on]
+label = "Night on"
+state = "omarchy-toggle-nightlight --status | jq -e .enabled"
+```
+
 ## How it works
 
 ```
@@ -271,7 +308,7 @@ Ideas, roughly in order; [docs/ROADMAP.md](docs/ROADMAP.md) has the details. Wan
 - [ ] **Release actions**: keys that act on release too, for push-to-talk dictation
 - [ ] **Omarchy bar widget**: deck status on the bar, one click to the app (can be turned off)
 - [ ] **Templates**: ready-made pages to add in one click, starting with Omarchy Basics (your AI agent, dictation and everyday Omarchy keys); save any page as a template and share it
-- [ ] **Toggle keys** with on/off faces (mute, night light, …) that reflect real state
+- [x] **Toggle keys** with on/off faces (mute, night light, …) that reflect real state
 - [ ] **Multi-actions**: run several actions from one key, with optional delays
 - [x] **Stream Deck +**: value layouts on the strip — volume and brightness — and page switching on swipe
 - [x] **Stream Deck +**: background images on the touch strip — one across the strip, one per dial
