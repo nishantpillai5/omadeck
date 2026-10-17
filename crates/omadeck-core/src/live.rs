@@ -22,12 +22,18 @@ pub fn wall_ms() -> i64 {
     jiff::Timestamp::now().as_millisecond()
 }
 
-/// Whether `format` shows seconds: %S %T %s %r %X %c %+ (not `%%S`).
+/// Whether `format` shows seconds: %S %T %s %r %X %c %+, or fractions (%f %N), with
+/// any of jiff's flags, width or precision (`%-S`, `%02S`, `%.3f`), but not `%%S`.
 pub fn needs_seconds(format: &str) -> bool {
-    let mut chars = format.chars();
+    let mut chars = format.chars().peekable();
     while let Some(c) = chars.next() {
-        // `%%` and every other conversion: skip both characters.
-        if c == '%' && matches!(chars.next(), Some('S' | 'T' | 's' | 'r' | 'X' | 'c' | '+')) {
+        if c != '%' {
+            continue;
+        }
+        // Flags, width, precision and `%:z`'s colon come before the conversion
+        // (BUGS.md 87). `%%` and every other conversion: skip it.
+        while chars.next_if(|c| matches!(c, '-' | '_' | '0'..='9' | '^' | '#' | '.' | ':')).is_some() {}
+        if matches!(chars.next(), Some('S' | 'T' | 's' | 'r' | 'X' | 'c' | '+' | 'f' | 'N')) {
             return true;
         }
     }
@@ -66,6 +72,16 @@ mod tests {
         assert!(needs_seconds("%r"));
         assert!(!needs_seconds("%%S"));
         assert!(!needs_seconds("%a %d %b"));
+        // BUGS.md 87: flags, width and fractions.
+        assert!(needs_seconds("%H:%M:%-S"));
+        assert!(needs_seconds("%_S"));
+        assert!(needs_seconds("%02S"));
+        assert!(needs_seconds("%^r"));
+        assert!(needs_seconds("%T.%f"));
+        assert!(needs_seconds("%.3f"));
+        assert!(needs_seconds("%N"));
+        assert!(!needs_seconds("%-H:%M %:z"));
+        assert!(!needs_seconds("%%-S"));
     }
 
     #[test]
