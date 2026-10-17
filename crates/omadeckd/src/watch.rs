@@ -114,7 +114,22 @@ pub struct Watcher {
     thread: thread::JoinHandle<()>,
 }
 
+/// One value message, as `Watcher::values` carries it.
+#[cfg(test)]
+pub type ValueMsg = (Probe, Option<Value>, i32);
+
 impl Watcher {
+    /// A watcher with no thread behind it, for tests: nothing is read or run, the
+    /// commands sent to it come out of the returned receiver, and values go in through
+    /// the returned sender.
+    #[cfg(test)]
+    pub fn detached() -> (Self, mpsc::Receiver<WatchCmd>, mpsc::Sender<ValueMsg>) {
+        let (cmd, cmds) = mpsc::channel();
+        let (vals, values) = mpsc::channel();
+        let thread = thread::spawn(|| {});
+        (Watcher { cmd, values, thread }, cmds, vals)
+    }
+
     /// Stop the thread and wait for it (shutdown). A volume change in progress finishes
     /// first; anything queued behind `Stop` is dropped.
     pub fn stop(self) {
