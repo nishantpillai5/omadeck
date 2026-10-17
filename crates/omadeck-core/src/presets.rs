@@ -22,7 +22,9 @@ pub const PRESETS: &[Preset] = &[
     Preset { name: "Stay awake", needs: Some("jq"), apply: stay_awake },
     Preset { name: "Do Not Disturb", needs: Some("jq"), apply: do_not_disturb },
     Preset { name: "Bluetooth", needs: None, apply: bluetooth },
-    // Works through Omarchy's media commands without playerctl.
+    // The press works through Omarchy's media commands without playerctl; only the on
+    // face (Pause while playing) needs it. `needs` would grey the item out and block a
+    // working key, so the README says it instead (BUGS.md 89).
     Preset { name: "Play/Pause", needs: None, apply: play_pause },
 ];
 
