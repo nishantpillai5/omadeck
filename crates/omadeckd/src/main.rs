@@ -8,6 +8,9 @@ mod hypr;
 mod hypr_worker;
 mod nav;
 mod saver;
+// Used from task 4 (the daemon runs multis).
+#[allow(dead_code)]
+mod sequence;
 mod watch;
 
 use std::path::Path;
