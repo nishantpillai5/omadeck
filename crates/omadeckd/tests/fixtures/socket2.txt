@@ -1,0 +1,95 @@
+activewindow>>brave-browser,Kapil का Naughty Humour है लाजवाब | Comedy Circus | Most Viewed - YouTube - Brave
+activewindowv2>>55fc9d6222a0
+activewindow>>kitty,omarchy:Work
+activewindowv2>>55fc9d652d80
+activelayout>>hl-virtual-keyboard-fcitx5,English (US)
+activelayout>>hl-virtual-keyboard-fcitx5,English (US)
+createworkspace>>2
+createworkspacev2>>2,2
+activewindow>>,
+activewindowv2>>
+workspace>>2
+workspacev2>>2,2
+activewindow>>kitty,omarchy:Work
+activewindowv2>>55fc9d652d80
+workspace>>1
+workspacev2>>1,1
+destroyworkspace>>2
+destroyworkspacev2>>2,2
+createworkspace>>2
+createworkspacev2>>2,2
+activewindow>>,
+activewindowv2>>
+workspace>>2
+workspacev2>>2,2
+activewindow>>kitty,omarchy:Work
+activewindowv2>>55fc9d652d80
+workspace>>1
+workspacev2>>1,1
+destroyworkspace>>2
+destroyworkspacev2>>2,2
+activewindow>>brave-browser,Kapil का Naughty Humour है लाजवाब | Comedy Circus | Most Viewed - YouTube - Brave
+activewindowv2>>55fc9d6222a0
+activewindow>>kitty,omarchy:Work
+activewindowv2>>55fc9d652d80
+activelayout>>hl-virtual-keyboard-fcitx5,English (US)
+activelayout>>hl-virtual-keyboard-fcitx5,English (US)
+activewindow>>brave-browser,Kapil का Naughty Humour है लाजवाब | Comedy Circus | Most Viewed - YouTube - Brave
+activewindowv2>>55fc9d6222a0
+windowtitle>>55fc9d6222a0
+windowtitlev2>>55fc9d6222a0,The MCU since you stopped watching - YouTube - Brave
+activewindow>>brave-browser,The MCU since you stopped watching - YouTube - Brave
+activewindowv2>>55fc9d6222a0
+windowtitle>>55fc9d6222a0
+windowtitlev2>>55fc9d6222a0,Kapil का Naughty Humour है लाजवाब | Comedy Circus | Most Viewed - YouTube - Brave
+activewindow>>brave-browser,Kapil का Naughty Humour है लाजवाब | Comedy Circus | Most Viewed - YouTube - Brave
+activewindowv2>>55fc9d6222a0
+windowtitle>>55fc9d6222a0
+windowtitlev2>>55fc9d6222a0,Loose Talk Episode 251 [Subtitle Eng] | Moin Akhtar | Anwar Maqsood | ARY Digital - YouTube - Brave
+activewindow>>brave-browser,Loose Talk Episode 251 [Subtitle Eng] | Moin Akhtar | Anwar Maqsood | ARY Digital - YouTube - Brave
+activewindowv2>>55fc9d6222a0
+windowtitle>>55fc9d6222a0
+windowtitlev2>>55fc9d6222a0,Kapil का Naughty Humour है लाजवाब | Comedy Circus | Most Viewed - YouTube - Brave
+activewindow>>brave-browser,Kapil का Naughty Humour है लाजवाब | Comedy Circus | Most Viewed - YouTube - Brave
+activewindowv2>>55fc9d6222a0
+windowtitle>>55fc9d6222a0
+windowtitlev2>>55fc9d6222a0,The MCU since you stopped watching - YouTube - Brave
+activewindow>>brave-browser,The MCU since you stopped watching - YouTube - Brave
+activewindowv2>>55fc9d6222a0
+windowtitle>>55fc9d6222a0
+windowtitlev2>>55fc9d6222a0,Kapil का Naughty Humour है लाजवाब | Comedy Circus | Most Viewed - YouTube - Brave
+activewindow>>brave-browser,Kapil का Naughty Humour है लाजवाब | Comedy Circus | Most Viewed - YouTube - Brave
+activewindowv2>>55fc9d6222a0
+createworkspace>>3
+createworkspacev2>>3,3
+activewindow>>,
+activewindowv2>>
+workspace>>3
+workspacev2>>3,3
+windowtitle>>55fc9d953e20
+windowtitlev2>>55fc9d953e20,kitty
+openwindow>>55fc9d953e20,3,kitty,kitty
+activewindow>>kitty,kitty
+activewindowv2>>55fc9d953e20
+activelayout>>hl-virtual-keyboard-fcitx5,English (US)
+activelayout>>hl-virtual-keyboard-fcitx5,English (US)
+windowtitle>>55fc9d953e20
+windowtitlev2>>55fc9d953e20,bash
+activewindow>>kitty,bash
+activewindowv2>>55fc9d953e20
+windowtitle>>55fc9d953e20
+windowtitlev2>>55fc9d953e20,noobaf@omarchy:~
+activewindow>>kitty,noobaf@omarchy:~
+activewindowv2>>55fc9d953e20
+windowtitle>>55fc9d953e20
+windowtitlev2>>55fc9d953e20,~
+activewindow>>kitty,~
+activewindowv2>>55fc9d953e20
+activewindow>>brave-browser,Kapil का Naughty Humour है लाजवाब | Comedy Circus | Most Viewed - YouTube - Brave
+activewindowv2>>55fc9d6222a0
+workspace>>1
+workspacev2>>1,1
+activewindow>>kitty,omarchy:Work
+activewindowv2>>55fc9d652d80
+activelayout>>hl-virtual-keyboard-fcitx5,English (US)
+activelayout>>hl-virtual-keyboard-fcitx5,English (US)

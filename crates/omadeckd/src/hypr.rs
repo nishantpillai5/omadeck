@@ -401,8 +401,51 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
-    /// The event forms the Hyprland wiki documents, through `parse` and `handle`. The
-    /// captured transcript (`tests/fixtures/socket2.txt`) is still to come.
+    /// A transcript captured on the Omarchy machine (2026-10-17, Hyprland 0.56.2): the
+    /// terminal and the browser, workspaces 1–3, tab changes, and empty workspaces.
+    /// Event addresses have no `0x` prefix; the query answers with the terminal's
+    /// window (with `0x`, as the request socket does), so a focus event comes only on
+    /// the first focus and after each empty workspace, and the browser's title lines
+    /// never match the seen window.
+    #[test]
+    fn committed_transcript_gives_expected_events() {
+        let lines = std::fs::read_to_string("tests/fixtures/socket2.txt").expect("the socket2.txt fixture");
+        let mut seen = Seen::default();
+        let mut query = |c: &str| match c {
+            "j/activewindow" => {
+                Some(r#"{"address":"0x55fc9d652d80","class":"kitty","title":"omarchy:Work","pid":30218}"#.into())
+            }
+            _ => None,
+        };
+        let evs: Vec<HyprEvent> =
+            lines.lines().filter_map(parse).flat_map(|p| handle(p, &mut seen, &mut query)).collect();
+        let w = ActiveWindow {
+            address: "55fc9d652d80".into(),
+            class: "kitty".into(),
+            title: "omarchy:Work".into(),
+            pid: Some(30218),
+        };
+        assert_eq!(
+            evs,
+            vec![
+                HyprEvent::ActiveWindow(Some(w.clone())),
+                HyprEvent::ActiveWindow(None),
+                HyprEvent::Workspace { id: 2, name: "2".into() },
+                HyprEvent::ActiveWindow(Some(w.clone())),
+                HyprEvent::Workspace { id: 1, name: "1".into() },
+                HyprEvent::ActiveWindow(None),
+                HyprEvent::Workspace { id: 2, name: "2".into() },
+                HyprEvent::ActiveWindow(Some(w.clone())),
+                HyprEvent::Workspace { id: 1, name: "1".into() },
+                HyprEvent::ActiveWindow(None),
+                HyprEvent::Workspace { id: 3, name: "3".into() },
+                HyprEvent::ActiveWindow(Some(w.clone())),
+                HyprEvent::Workspace { id: 1, name: "1".into() },
+            ]
+        );
+    }
+
+    /// The event forms the Hyprland wiki documents, through `parse` and `handle`.
     #[test]
     fn documented_lines_give_events() {
         let mut seen = Seen::default();
