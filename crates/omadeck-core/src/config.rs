@@ -848,10 +848,22 @@ pub enum Action {
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         mute: bool,
     },
+    /// Run several actions in order, as Elgato's Multi Action does. `delay` steps wait.
+    /// The daemon times the steps, so a multi never blocks the deck.
+    Multi {
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        steps: Vec<Action>,
+    },
+    /// Wait this many milliseconds before the next step. Only meaningful inside a `multi`;
+    /// on its own it does nothing.
+    Delay {
+        #[serde(default)]
+        ms: u32,
+    },
 }
 
 impl Action {
-    pub const KINDS: [&'static str; 12] = [
+    pub const KINDS: [&'static str; 14] = [
         "Nothing",
         "Launch app",
         "Run script",
@@ -864,13 +876,31 @@ impl Action {
         "Next/previous page",
         "Brightness",
         "App volume",
+        "Multi action",
+        "Delay",
     ];
+
+    /// The kinds a key or dial action can be: everything but Delay.
+    pub const KEY_KINDS: &'static [usize] = &[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
+    /// The kinds a multi's step can be: everything but Multi.
+    pub const STEP_KINDS: &'static [usize] = &[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 13];
+
+    /// The combo row position of `kind` in `kinds`, or `None` when it isn't offered there
+    /// (a hand-edited nested multi). The other way is `kinds[pos]`.
+    pub fn kind_position(kinds: &[usize], kind: usize) -> Option<u32> {
+        kinds.iter().position(|&k| k == kind).map(|p| p as u32)
+    }
 
     /// Run by the daemon itself (page moves and the panel brightness), never by
     /// `action::run`. The one list: `action::run` refuses exactly these, and the
-    /// configurator's "Try it now" is off for them.
+    /// configurator's "Try it now" is off for them. A multi is deck-owned when any of its
+    /// steps is.
     pub fn is_deck_owned(&self) -> bool {
-        matches!(self, Action::Page { .. } | Action::Back | Action::PageStep { .. } | Action::Brightness { .. })
+        match self {
+            Action::Multi { steps } => steps.iter().any(Action::is_deck_owned),
+            Action::Page { .. } | Action::Back | Action::PageStep { .. } | Action::Brightness { .. } => true,
+            _ => false,
+        }
     }
 
     pub fn kind_index(&self) -> usize {
@@ -887,6 +917,8 @@ impl Action {
             Action::PageStep { .. } => 9,
             Action::Brightness { .. } => 10,
             Action::AppVolume { .. } => 11,
+            Action::Multi { .. } => 12,
+            Action::Delay { .. } => 13,
         }
     }
 
@@ -894,16 +926,26 @@ impl Action {
         matches!(self, Action::None)
     }
 
-    /// Visit this action and every action nested in it. The one recursive walk: PR 12
-    /// adds an arm for a multi action's steps here, and every walker built on it
-    /// (`KeyConfig::actions`, `Config::all_actions`, …) follows.
+    /// Visit this action and every action nested in it (a multi action's steps). The one
+    /// recursive walk: every walker built on it (`KeyConfig::actions`,
+    /// `Config::all_actions`, …) follows.
     pub fn walk<'a>(&'a self, f: &mut dyn FnMut(&'a Action)) {
         f(self);
+        if let Action::Multi { steps } = self {
+            for s in steps {
+                s.walk(f);
+            }
+        }
     }
 
     /// `walk`, mutably. `f` sees the outer action first, then what's nested in it.
     pub fn walk_mut(&mut self, f: &mut dyn FnMut(&mut Action)) {
         f(self);
+        if let Action::Multi { steps } = self {
+            for s in steps.iter_mut() {
+                s.walk_mut(f);
+            }
+        }
     }
 
     /// True for actions that run a command we can watch while it runs (`busy_while_running`):
@@ -934,6 +976,8 @@ impl Action {
             10 => Action::Brightness { change: 5, set: None },
             // Focused works without choosing anything.
             11 => Action::AppVolume { app: String::new(), focused: true, change: 5, mute: false },
+            12 => Action::Multi { steps: vec![] },
+            13 => Action::Delay { ms: 500 },
             _ => Action::None,
         }
     }
@@ -979,6 +1023,8 @@ impl Action {
             },
             Action::Brightness { change, set } => brightness_summary(*change, *set),
             Action::AppVolume { app, focused, change, mute } => app_volume_summary(app, *focused, *change, *mute),
+            Action::Multi { steps } => multi_summary(steps),
+            Action::Delay { ms } => delay_summary(*ms),
         }
     }
 
@@ -1000,6 +1046,28 @@ fn volume_summary(device: AudioDevice, change: i8, mute: bool) -> String {
     }
     let sign = if change >= 0 { "+" } else { "" };
     if mic { format!("Mic {sign}{change}%") } else { format!("Volume {sign}{change}%") }
+}
+
+/// `Wait 500 ms` below a second; from a second, seconds with up to two decimals and no
+/// trailing zeros (`Wait 1.5 s`, `Wait 2 s`).
+fn delay_summary(ms: u32) -> String {
+    if ms < 1000 {
+        return format!("Wait {ms} ms");
+    }
+    format!("Wait {} s", (f64::from(ms) / 10.0).round() / 100.0)
+}
+
+/// What a multi does, by its first real step: delays aren't counted.
+fn multi_summary(steps: &[Action]) -> String {
+    if steps.is_empty() {
+        return "Multi action (no steps)".into();
+    }
+    let acts: Vec<&Action> = steps.iter().filter(|s| !matches!(s, Action::Delay { .. })).collect();
+    match acts.as_slice() {
+        [] => "Multi action (only waits)".into(),
+        [one] => format!("1 action: {}", one.summary()),
+        [first, ..] => format!("{} actions: {}, …", acts.len(), first.summary()),
+    }
 }
 
 fn app_volume_summary(app: &str, focused: bool, change: i8, mute: bool) -> String {
@@ -1817,6 +1885,114 @@ slow = true
         };
         assert_eq!(k.actions(), vec![&Action::Back, &Action::PageStep { change: -1 }]);
         assert_eq!(KeyConfig::new(0).actions(), vec![&Action::None], "no on face, no on action");
+    }
+
+    fn meeting_steps() -> Vec<Action> {
+        vec![
+            Action::Volume { device: AudioDevice::Input, change: 0, mute: true },
+            Action::App { command: "zoom.desktop".into() },
+            Action::Delay { ms: 2000 },
+            Action::Page { page: "Meeting".into() },
+        ]
+    }
+
+    #[test]
+    fn multi_roundtrip() {
+        let mut c = Config::default();
+        c.keys.get_mut(5).action = Action::Multi { steps: meeting_steps() };
+        let s = toml::to_string_pretty(&c).unwrap();
+        assert!(s.contains("[[key.action.steps]]"), "steps are tables, not inline arrays:\n{s}");
+        assert!(s.contains("type = \"delay\"\nms = 2000"));
+        let back: Config = toml::from_str(&s).unwrap();
+        assert_eq!(c, back);
+    }
+
+    #[test]
+    fn multi_on_dial_press_roundtrip() {
+        let mut c = Config::default();
+        c.dial_mut(2).press = Action::Multi { steps: meeting_steps() };
+        let s = toml::to_string_pretty(&c).unwrap();
+        assert!(s.contains("[[dial.press.steps]]"), "{s}");
+        let back: Config = toml::from_str(&s).unwrap();
+        assert_eq!(c, back);
+    }
+
+    #[test]
+    fn empty_multi_writes_type_only() {
+        let mut c = Config::default();
+        c.keys.get_mut(1).action = Action::Multi { steps: vec![] };
+        let s = toml::to_string_pretty(&c).unwrap();
+        assert!(s.contains("[key.action]\ntype = \"multi\"\n"), "{s}");
+        assert!(!s.contains("steps"), "{s}");
+        let back: Config = toml::from_str(&s).unwrap();
+        assert_eq!(c, back);
+    }
+
+    #[test]
+    fn delay_roundtrip() {
+        let mut c = Config::default();
+        c.keys.get_mut(1).action = Action::Multi { steps: vec![Action::Delay { ms: 750 }] };
+        let s = toml::to_string_pretty(&c).unwrap();
+        let back: Config = toml::from_str(&s).unwrap();
+        assert_eq!(c, back);
+        let bare: Action = toml::from_str("type = \"delay\"").unwrap();
+        assert_eq!(bare, Action::Delay { ms: 0 });
+    }
+
+    #[test]
+    fn kinds_for_combos() {
+        for k in 0..Action::KINDS.len() {
+            assert_eq!(Action::empty_of_kind(k).kind_index(), k, "{}", Action::KINDS[k]);
+        }
+        assert_eq!(Action::KINDS[12], "Multi action");
+        assert_eq!(Action::KINDS[13], "Delay");
+        assert!(!Action::KEY_KINDS.contains(&13));
+        assert!(!Action::STEP_KINDS.contains(&12));
+        assert_eq!(Action::kind_position(Action::STEP_KINDS, 13), Some(12));
+        assert_eq!(Action::kind_position(Action::STEP_KINDS, 12), None);
+        assert_eq!(Action::STEP_KINDS[12], 13);
+        assert_eq!(Action::kind_position(Action::KEY_KINDS, 12), Some(12));
+    }
+
+    #[test]
+    fn multi_is_deck_owned_by_its_steps() {
+        assert!(!Action::Multi { steps: vec![] }.is_deck_owned());
+        assert!(!Action::Delay { ms: 5 }.is_deck_owned());
+        let plain = Action::Multi { steps: vec![Action::App { command: "a".into() }, Action::Delay { ms: 5 }] };
+        assert!(!plain.is_deck_owned());
+        assert!(Action::Multi { steps: meeting_steps() }.is_deck_owned());
+    }
+
+    #[test]
+    fn delay_and_multi_summaries() {
+        let app = |c: &str| Action::App { command: c.into() };
+        assert_eq!(Action::Delay { ms: 500 }.summary(), "Wait 500 ms");
+        assert_eq!(Action::Delay { ms: 1500 }.summary(), "Wait 1.5 s");
+        assert_eq!(Action::Delay { ms: 2000 }.summary(), "Wait 2 s");
+        assert_eq!(Action::Delay { ms: 1250 }.summary(), "Wait 1.25 s");
+        assert_eq!(Action::Multi { steps: vec![] }.summary(), "Multi action (no steps)");
+        let waits = Action::Multi { steps: vec![Action::Delay { ms: 1 }, Action::Delay { ms: 2 }] };
+        assert_eq!(waits.summary(), "Multi action (only waits)");
+        assert_eq!(Action::Multi { steps: vec![app("a")] }.summary(), "1 action: Launch a");
+        let three = Action::Multi { steps: vec![Action::Delay { ms: 9 }, app("a"), app("b"), app("c")] };
+        assert_eq!(three.summary(), "3 actions: Launch a, …");
+    }
+
+    #[test]
+    fn rename_page_reaches_multi_steps() {
+        let mut c = Config::default();
+        c.add_page("Meeting", false, KeyConfig::new(0));
+        c.keys.get_mut(5).action = Action::Multi { steps: meeting_steps() };
+        assert_eq!(c.links_to("Meeting"), 1);
+        c.rename_page("Meeting", "Call");
+        let steps = |c: &Config| match &c.keys.get(5).unwrap().action {
+            Action::Multi { steps } => steps.clone(),
+            a => panic!("{a:?}"),
+        };
+        assert_eq!(steps(&c)[3], Action::Page { page: "Call".into() });
+        c.remove_page("Call");
+        assert_eq!(steps(&c)[3], Action::None);
+        assert_eq!(c.links_to("Call"), 0);
     }
 
     #[test]
