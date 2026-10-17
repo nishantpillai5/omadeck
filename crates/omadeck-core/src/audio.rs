@@ -2,9 +2,11 @@
 //! installed (so its on-screen pop-up shows) and through `wpctl` otherwise. Also one
 //! app's playback streams (PR 10): read with `pactl`, changed with `wpctl`.
 
-use std::path::PathBuf;
+use std::collections::{HashMap, HashSet};
+use std::os::unix::process::CommandExt;
+use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::OnceLock;
+use std::sync::{Mutex, OnceLock};
 
 use crate::config::AudioDevice;
 
@@ -150,6 +152,333 @@ pub fn parse_pactl_streams(json: &str) -> Option<Vec<Stream>> {
         });
     }
     Some(out)
+}
+
+/// The canonical form of an app as a user may write it: trimmed, lowercased, the last
+/// `/` segment (`/usr/bin/spotify`), without `.desktop`.
+pub fn normalise_app(q: &str) -> String {
+    let q = q.trim().to_lowercase();
+    let last = q.rsplit('/').next().unwrap_or("");
+    last.strip_suffix(".desktop").unwrap_or(last).trim().to_string()
+}
+
+/// A readable name for an app: a few well-known ones, else the normalised form with its
+/// first letter upper-cased.
+pub fn display_app(q: &str) -> String {
+    let n = normalise_app(q);
+    let known = match n.as_str() {
+        "spotify" | "com.spotify.client" => Some("Spotify"),
+        "firefox" => Some("Firefox"),
+        "chromium" => Some("Chromium"),
+        "google-chrome" => Some("Chrome"),
+        "brave" => Some("Brave"),
+        "mpv" => Some("mpv"),
+        "vlc" => Some("VLC"),
+        "discord" => Some("Discord"),
+        _ => None,
+    };
+    if let Some(k) = known {
+        return k.to_string();
+    }
+    let mut c = n.chars();
+    match c.next() {
+        Some(f) => f.to_uppercase().chain(c).collect(),
+        None => String::new(),
+    }
+}
+
+/// The streams of the app named `name` (any form `normalise_app` takes): its binary, its
+/// name or its app id.
+pub fn select_named<'a>(s: &'a [Stream], name: &str) -> Vec<&'a Stream> {
+    let n = normalise_app(name);
+    if n.is_empty() {
+        return vec![];
+    }
+    s.iter().filter(|st| st.binary == n || st.name.to_lowercase() == n || st.app_id.as_deref() == Some(&n)).collect()
+}
+
+/// The streams of the focused window's app. By pid first: the window's process or any
+/// of its children (Chromium and Electron play from a child, a terminal runs `mpv`). By
+/// class only when no pid matched (Flatpak apps, whose pids are in a sandbox).
+pub fn select_window<'a>(s: &'a [Stream], w: &Window, parent: impl Fn(u32) -> Option<u32>) -> Vec<&'a Stream> {
+    if let Some(wpid) = w.pid {
+        let by_pid: Vec<&Stream> =
+            s.iter().filter(|st| st.pid.is_some_and(|p| descends_from(p, wpid, &parent))).collect();
+        if !by_pid.is_empty() {
+            return by_pid;
+        }
+    }
+    let class = w.class.trim().to_lowercase();
+    if class.is_empty() {
+        return vec![];
+    }
+    s.iter()
+        .filter(|st| st.app_id.as_deref() == Some(&class) || st.binary == class || st.name.to_lowercase() == class)
+        .collect()
+}
+
+/// Whether `pid` is `ancestor` or one of its descendants. Stops at pid 1, at a repeat
+/// and after 32 hops.
+fn descends_from(pid: u32, ancestor: u32, parent: &impl Fn(u32) -> Option<u32>) -> bool {
+    let mut seen = HashSet::new();
+    let mut cur = pid;
+    for _ in 0..=32 {
+        if cur == ancestor {
+            return true;
+        }
+        if cur <= 1 || !seen.insert(cur) {
+            return false;
+        }
+        match parent(cur) {
+            Some(p) => cur = p,
+            None => return false,
+        }
+    }
+    false
+}
+
+/// A process's parent, from `/proc/<pid>/stat` (the second field after the `)` that
+/// ends the command name).
+pub fn proc_parent(pid: u32) -> Option<u32> {
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    let rest = &stat[stat.rfind(')')? + 1..];
+    rest.split_whitespace().nth(1)?.parse().ok()
+}
+
+/// A stream name that says nothing about the app.
+fn is_generic_name(n: &str) -> bool {
+    n.is_empty() || n == "audio-src" || n.starts_with("ALSA plug-in")
+}
+
+/// Several streams of one app (a tab each) as one: the loudest percent, muted only when
+/// all are, every id. `None` for no streams. The icon is left for the watcher.
+pub fn app_level(matched: &[&Stream]) -> Option<AppLevel> {
+    let first = matched.first()?;
+    let name = if is_generic_name(first.name.trim()) { display_app(&first.binary) } else { first.name.clone() };
+    let key = if !first.binary.is_empty() {
+        first.binary.clone()
+    } else if let Some(id) = first.app_id.as_ref().filter(|s| !s.is_empty()) {
+        id.clone()
+    } else {
+        first.name.to_lowercase()
+    };
+    let mut icon_names: Vec<String> = Vec::new();
+    for n in [
+        first.icon_name.clone().unwrap_or_default(),
+        key.clone(),
+        first.name.clone(),
+        first.app_id.clone().unwrap_or_default(),
+    ] {
+        if !n.is_empty() && !icon_names.contains(&n) {
+            icon_names.push(n);
+        }
+    }
+    Some(AppLevel {
+        name,
+        key,
+        icon: None,
+        icon_names,
+        level: Some(Level {
+            percent: matched.iter().map(|s| s.level.percent).max().unwrap_or(0),
+            muted: matched.iter().all(|s| s.level.muted),
+        }),
+        ids: matched.iter().map(|s| s.id).collect(),
+    })
+}
+
+/// A chosen app. Not playing: no level, named and iconed after what was chosen, so a
+/// stopped Spotify still shows Spotify.
+pub fn resolve_named(s: &[Stream], name: &str) -> AppLevel {
+    app_level(&select_named(s, name)).unwrap_or_else(|| {
+        let n = normalise_app(name);
+        AppLevel {
+            name: display_app(name),
+            key: String::new(),
+            icon: None,
+            icon_names: if n.is_empty() { vec![] } else { vec![n] },
+            level: None,
+            ids: vec![],
+        }
+    })
+}
+
+/// What a focused dial controls: the window's app if it has a stream, else the sticky
+/// app if it has one, else nothing (a `level: None` AppLevel named after the class).
+/// Updates `sticky`: a window with audio replaces it; a silent one never clears it.
+pub fn resolve_focused(
+    s: &[Stream],
+    w: Option<&Window>,
+    sticky: &mut Option<String>,
+    parent: impl Fn(u32) -> Option<u32>,
+) -> AppLevel {
+    if let Some(lv) = w.and_then(|w| app_level(&select_window(s, w, &parent))) {
+        if !lv.key.is_empty() {
+            *sticky = Some(lv.key.clone());
+        }
+        return lv;
+    }
+    if let Some(k) = sticky.as_deref() {
+        let lv = resolve_named(s, k);
+        if lv.level.is_some() {
+            return lv;
+        }
+    }
+    AppLevel {
+        name: w.map(|w| w.class.clone()).unwrap_or_default(),
+        key: String::new(),
+        icon: None,
+        icon_names: vec![],
+        level: None,
+        ids: vec![],
+    }
+}
+
+/// `resolve_named` or `resolve_focused`, by the query.
+pub fn resolve(
+    s: &[Stream],
+    q: &AppQuery,
+    w: Option<&Window>,
+    sticky: &mut Option<String>,
+    parent: impl Fn(u32) -> Option<u32>,
+) -> AppLevel {
+    match q {
+        AppQuery::Named(n) => resolve_named(s, n),
+        AppQuery::Focused => resolve_focused(s, w, sticky, parent),
+    }
+}
+
+const ICON_DIRS: [&str; 6] = [
+    "icons/hicolor/scalable/apps",
+    "icons/hicolor/256x256/apps",
+    "icons/hicolor/128x128/apps",
+    "icons/hicolor/64x64/apps",
+    "icons/hicolor/48x48/apps",
+    "pixmaps",
+];
+
+/// An app icon file by its icon name, under the data dirs `roots`.
+fn icon_file_in(roots: &[PathBuf], name: &str) -> Option<PathBuf> {
+    if name.is_empty() || name.contains('/') || name.starts_with('.') {
+        return None;
+    }
+    for root in roots {
+        for dir in ICON_DIRS {
+            for ext in ["svg", "png"] {
+                let p = root.join(dir).join(format!("{name}.{ext}"));
+                if p.is_file() {
+                    return Some(p);
+                }
+            }
+        }
+    }
+    None
+}
+
+/// An app's icon without GTK: each name as an icon name (hicolor, then pixmaps, svg
+/// before png), then each name's desktop entry's `Icon=` (an absolute path as is).
+pub fn app_icon_in(roots: &[PathBuf], names: &[String]) -> Option<PathBuf> {
+    if let Some(p) = names.iter().find_map(|n| icon_file_in(roots, n)) {
+        return Some(p);
+    }
+    for name in names.iter().filter(|n| !n.is_empty() && !n.contains('/') && !n.starts_with('.')) {
+        for root in roots {
+            let Ok(text) = std::fs::read_to_string(root.join("applications").join(format!("{name}.desktop"))) else {
+                continue;
+            };
+            let Some(icon) = text.lines().find_map(|l| l.trim().strip_prefix("Icon=")).map(str::trim) else {
+                continue;
+            };
+            let path = Path::new(icon);
+            if path.is_absolute() {
+                if path.is_file() {
+                    return Some(path.to_path_buf());
+                }
+            } else if let Some(p) = icon_file_in(roots, icon) {
+                return Some(p);
+            }
+        }
+    }
+    None
+}
+
+/// `app_icon_in` over the real data dirs, cached (misses too). Blocking file reads: the
+/// watcher thread only.
+pub fn app_icon(names: &[String]) -> Option<PathBuf> {
+    static CACHE: OnceLock<Mutex<HashMap<Vec<String>, Option<PathBuf>>>> = OnceLock::new();
+    let cache = CACHE.get_or_init(Default::default);
+    if let Some(hit) = cache.lock().ok()?.get(names) {
+        return hit.clone();
+    }
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+    let mut roots: Vec<PathBuf> = Vec::new();
+    match std::env::var_os("XDG_DATA_HOME").filter(|v| !v.is_empty()) {
+        Some(d) => roots.push(PathBuf::from(d)),
+        None => roots.extend(home.as_ref().map(|h| h.join(".local/share"))),
+    }
+    let dirs = std::env::var("XDG_DATA_DIRS").ok().filter(|v| !v.is_empty());
+    roots.extend(
+        dirs.as_deref()
+            .unwrap_or("/usr/local/share:/usr/share")
+            .split(':')
+            .filter(|d| !d.is_empty())
+            .map(PathBuf::from),
+    );
+    roots.extend(home.as_ref().map(|h| h.join(".local/share/flatpak/exports/share")));
+    roots.push(PathBuf::from("/var/lib/flatpak/exports/share"));
+    let found = app_icon_in(&roots, names);
+    if let Ok(mut c) = cache.lock() {
+        c.insert(names.to_vec(), found.clone());
+    }
+    found
+}
+
+/// The `wpctl` runs that apply an app volume change to its streams `ids`, in order. A
+/// change is relative per stream (tabs keep their balance) and capped at 100%; a mute
+/// sets one state for all (`mute_to`, which the caller picks). Nothing to do: none.
+pub fn app_volume_commands(ids: &[u32], change: i32, mute_to: Option<bool>) -> Vec<Vec<String>> {
+    if let Some(m) = mute_to {
+        return ids
+            .iter()
+            .map(|id| vec!["wpctl".into(), "set-mute".into(), id.to_string(), if m { "1" } else { "0" }.into()])
+            .collect();
+    }
+    if change == 0 {
+        return vec![];
+    }
+    let step = format!("{}%{}", change.unsigned_abs().min(100), if change > 0 { '+' } else { '-' });
+    ids.iter()
+        .map(|id| vec!["wpctl".into(), "set-volume".into(), "-l".into(), "1.0".into(), id.to_string(), step.clone()])
+        .collect()
+}
+
+/// Run each argv in order, each in its own process group, waiting for each (up to
+/// `COMMAND_TIMEOUT`). Blocking: the watcher and `action::run`'s helper threads only.
+pub fn run_commands(cmds: &[Vec<String>]) {
+    if cmds.is_empty() {
+        return;
+    }
+    log::info!("exec {}", cmds.iter().map(|a| format!("{a:?}")).collect::<Vec<_>>().join(" ; "));
+    for argv in cmds.iter().filter(|a| !a.is_empty()) {
+        let mut c = Command::new(&argv[0]);
+        c.args(&argv[1..]).process_group(0);
+        if crate::proc::output_timeout(&mut c, crate::proc::COMMAND_TIMEOUT).is_none() {
+            log::warn!("{argv:?} failed to start or didn't finish");
+        }
+    }
+}
+
+/// The focused window from `hyprctl -j activewindow`, for `action::run` outside the
+/// daemon (the daemon has the Hyprland listener). Blocking.
+pub fn focused_window() -> Option<Window> {
+    parse_hyprctl_window(&capture(&["hyprctl", "-j", "activewindow"])?)
+}
+
+/// Parse `hyprctl -j activewindow`: `{}` (nothing focused) or no `class` gives `None`.
+pub fn parse_hyprctl_window(json: &str) -> Option<Window> {
+    let v: serde_json::Value = serde_json::from_str(json).ok()?;
+    let class = v.get("class")?.as_str()?.to_string();
+    let pid = v.get("pid").and_then(|p| p.as_i64()).filter(|p| *p > 0).and_then(|p| u32::try_from(p).ok());
+    Some(Window { pid, class })
 }
 
 /// A stream for tests (here and in the daemon's): 40%, unmuted, named after `binary`.
@@ -350,6 +679,164 @@ mod tests {
                        {"properties":{"object.id":"5","application.name":"C"}}]"#;
         let s = parse_pactl_streams(json).unwrap();
         assert_eq!(s.iter().map(|s| s.name.as_str()).collect::<Vec<_>>(), vec!["C"]);
+    }
+
+    fn st(id: u32, pid: u32, binary: &str) -> Stream {
+        test_stream(id, pid, binary)
+    }
+
+    #[test]
+    fn select_named_forms() {
+        let mut spot = st(87, 100, "spotify");
+        spot.app_id = Some("com.spotify.client".into());
+        let s = vec![spot, st(90, 200, "firefox")];
+        for q in ["spotify", "Spotify", "spotify.desktop", "/usr/bin/spotify", "com.spotify.Client", " spotify "] {
+            let hit = select_named(&s, q);
+            assert_eq!(hit.iter().map(|s| s.id).collect::<Vec<_>>(), vec![87], "{q}");
+        }
+        assert!(select_named(&s, "spot").is_empty());
+        assert!(select_named(&s, "").is_empty());
+        assert_eq!(normalise_app(" /usr/share/applications/Firefox.desktop "), "firefox");
+    }
+
+    #[test]
+    fn select_window_pid_and_children() {
+        // 100 is the browser window; 101 its audio child; 102 a grandchild. 300 and 301
+        // point at each other.
+        let parents: HashMap<u32, u32> = HashMap::from([(101, 100), (102, 101), (100, 1), (300, 301), (301, 300)]);
+        let parent = |p: u32| parents.get(&p).copied();
+        let s = vec![st(1, 101, "chromium"), st(2, 102, "chromium"), st(3, 300, "loop"), st(4, 1, "init")];
+        let w = Window { pid: Some(100), class: "chromium".into() };
+        let ids: Vec<u32> = select_window(&s, &w, parent).iter().map(|s| s.id).collect();
+        assert_eq!(ids, vec![1, 2]);
+        // A cycle and pid 1 end the walk without a match (then class: none).
+        let w = Window { pid: Some(999), class: "nothing".into() };
+        assert!(select_window(&s, &w, parent).is_empty());
+    }
+
+    #[test]
+    fn select_window_class_fallback() {
+        let mut flat = st(5, 4000, "");
+        flat.app_id = Some("com.spotify.client".into());
+        let s = vec![flat, st(6, 50, "mpv")];
+        let none = |_| None;
+        // The window's pid is outside the sandbox: no pid match, so its class matches.
+        let w = Window { pid: Some(10), class: "com.spotify.Client".into() };
+        assert_eq!(select_window(&s, &w, none).iter().map(|s| s.id).collect::<Vec<_>>(), vec![5]);
+        // A pid match wins over the class.
+        let w = Window { pid: Some(50), class: "com.spotify.Client".into() };
+        assert_eq!(select_window(&s, &w, none).iter().map(|s| s.id).collect::<Vec<_>>(), vec![6]);
+        let w = Window { pid: None, class: String::new() };
+        assert!(select_window(&s, &w, none).is_empty());
+    }
+
+    #[test]
+    fn app_level_aggregates() {
+        let mut a = st(1, 10, "firefox");
+        a.level = Level { percent: 30, muted: true };
+        let mut b = st(2, 10, "firefox");
+        b.level = Level { percent: 70, muted: false };
+        let lv = app_level(&[&a, &b]).unwrap();
+        assert_eq!(lv.level, Some(Level { percent: 70, muted: false }));
+        assert_eq!(lv.ids, vec![1, 2]);
+        assert_eq!(lv.key, "firefox");
+        b.level.muted = true;
+        assert!(app_level(&[&a, &b]).unwrap().level.unwrap().muted);
+        assert_eq!(app_level(&[]), None);
+    }
+
+    #[test]
+    fn display_name_rules() {
+        let mut a = st(1, 10, "brave");
+        a.name = "audio-src".into();
+        assert_eq!(app_level(&[&a]).unwrap().name, "Brave");
+        a.name = "ALSA plug-in [mpv]".into();
+        a.binary = "foo-player".into();
+        assert_eq!(app_level(&[&a]).unwrap().name, "Foo-player");
+        a.name = "Music".into();
+        assert_eq!(app_level(&[&a]).unwrap().name, "Music");
+        assert_eq!(display_app("com.spotify.Client"), "Spotify");
+        assert_eq!(display_app("vlc.desktop"), "VLC");
+        assert_eq!(display_app("  "), "");
+        // Not playing: named and iconed after what was chosen.
+        let lv = resolve_named(&[], "Spotify.desktop");
+        assert_eq!((lv.name.as_str(), lv.key.as_str(), lv.level), ("Spotify", "", None));
+        assert_eq!(lv.icon_names, vec!["spotify".to_string()]);
+    }
+
+    #[test]
+    fn sticky_focus() {
+        let s = vec![test_stream(87, 100, "firefox")];
+        let no_parent = |_| None;
+        let mut sticky = None;
+        // Firefox focused: it, and it becomes sticky.
+        let w = Window { pid: Some(100), class: "firefox".into() };
+        let lv = resolve_focused(&s, Some(&w), &mut sticky, no_parent);
+        assert_eq!(lv.ids, vec![87]);
+        assert_eq!(sticky.as_deref(), Some("firefox"));
+        // A silent terminal focused: still Firefox.
+        let w = Window { pid: Some(200), class: "Alacritty".into() };
+        let lv = resolve_focused(&s, Some(&w), &mut sticky, no_parent);
+        assert_eq!(lv.ids, vec![87]);
+        // Firefox stops: the terminal's class, no level.
+        let lv = resolve_focused(&[], Some(&w), &mut sticky, no_parent);
+        assert_eq!((lv.name.as_str(), lv.level), ("Alacritty", None));
+        assert_eq!(sticky.as_deref(), Some("firefox"), "kept until another app plays");
+        // Nothing focused: no class.
+        let lv = resolve_focused(&[], None, &mut sticky, no_parent);
+        assert_eq!(lv.name, "");
+    }
+
+    #[test]
+    fn app_icon_lookup() {
+        let root = std::env::temp_dir().join(format!("omadeck-icons-{}", std::process::id()));
+        let apps = root.join("icons/hicolor/scalable/apps");
+        std::fs::create_dir_all(&apps).unwrap();
+        std::fs::create_dir_all(root.join("applications")).unwrap();
+        std::fs::create_dir_all(root.join("pixmaps")).unwrap();
+        std::fs::write(apps.join("foo.svg"), "<svg/>").unwrap();
+        std::fs::write(root.join("pixmaps/baz.png"), "png").unwrap();
+        std::fs::write(root.join("applications/bar.desktop"), "[Desktop Entry]\nName=Bar\nIcon=foo\n").unwrap();
+        let roots = vec![root.join("missing"), root.clone()];
+        let names = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert_eq!(app_icon_in(&roots, &names(&["bar"])), Some(apps.join("foo.svg")));
+        assert_eq!(app_icon_in(&roots, &names(&["nope", "baz"])), Some(root.join("pixmaps/baz.png")));
+        assert_eq!(app_icon_in(&roots, &names(&["nope", "../x", ""])), None);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn app_volume_commands_change_and_mute() {
+        let v = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert_eq!(
+            app_volume_commands(&[87, 90], 5, None),
+            vec![
+                v(&["wpctl", "set-volume", "-l", "1.0", "87", "5%+"]),
+                v(&["wpctl", "set-volume", "-l", "1.0", "90", "5%+"])
+            ]
+        );
+        assert_eq!(
+            app_volume_commands(&[87], -250, None),
+            vec![v(&["wpctl", "set-volume", "-l", "1.0", "87", "100%-"])]
+        );
+        assert_eq!(
+            app_volume_commands(&[87, 90], 0, Some(true)),
+            vec![v(&["wpctl", "set-mute", "87", "1"]), v(&["wpctl", "set-mute", "90", "1"])]
+        );
+        assert_eq!(app_volume_commands(&[87], 5, Some(false)), vec![v(&["wpctl", "set-mute", "87", "0"])]);
+        assert!(app_volume_commands(&[87], 0, None).is_empty());
+        assert!(app_volume_commands(&[], 5, None).is_empty());
+    }
+
+    #[test]
+    fn hyprctl_window_parses() {
+        // Hand-written in the documented shape (not captured yet): Firefox focused, and
+        // an empty workspace's `{}`.
+        let w = parse_hyprctl_window(r#"{"address":"0x5612","class":"firefox","title":"Mozilla Firefox","pid":4321}"#);
+        assert_eq!(w, Some(Window { pid: Some(4321), class: "firefox".into() }));
+        assert_eq!(parse_hyprctl_window("{}"), None);
+        assert_eq!(parse_hyprctl_window(r#"{"class":"x","pid":-1}"#), Some(Window { pid: None, class: "x".into() }));
+        assert_eq!(parse_hyprctl_window("garbage"), None);
     }
 
     #[test]
