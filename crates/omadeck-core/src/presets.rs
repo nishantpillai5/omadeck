@@ -5,7 +5,7 @@
 use anyhow::{Result, bail};
 
 use crate::action::which;
-use crate::config::{Action, AudioDevice, KeyConfig, OnFace};
+use crate::config::{Action, AudioDevice, KeyConfig, MediaCommand, OnFace};
 
 pub struct Preset {
     pub name: &'static str,
@@ -22,6 +22,8 @@ pub const PRESETS: &[Preset] = &[
     Preset { name: "Stay awake", needs: Some("jq"), apply: stay_awake },
     Preset { name: "Do Not Disturb", needs: Some("jq"), apply: do_not_disturb },
     Preset { name: "Bluetooth", needs: None, apply: bluetooth },
+    // Works through Omarchy's media commands without playerctl.
+    Preset { name: "Play/Pause", needs: None, apply: play_pause },
 ];
 
 /// The same test as `action::which`: on PATH and a file.
@@ -101,6 +103,15 @@ fn bluetooth(k: &mut KeyConfig) {
     k.label = "Bluetooth".into();
     k.action = Action::App { command: "omarchy-bluetooth-power".into() };
     k.on = Some(on_face("BT on", None, Some("omarchy-bluetooth-power is-on")));
+}
+
+/// The face shows what a press will do: play while paused, pause while playing. The on
+/// face follows the player (no state command).
+fn play_pause(k: &mut KeyConfig) {
+    k.label = "Play".into();
+    set_glyph(k, "f040a");
+    k.action = Action::Media { command: MediaCommand::PlayPause, seek: 0, player: None };
+    k.on = Some(on_face("Pause", Some("f03e4"), None));
 }
 
 /// The Service preset: a slow toggle for a systemd user unit, optional health URL.
