@@ -1194,6 +1194,48 @@ From these, write the preset rows as `(name, needs, action command, state comman
 Rule for the state command: exit 0 exactly when on; prefer a file test or a fast query
 over anything that can take seconds.
 
+### Captured (2026-10-17, Omarchy on this machine)
+
+1. Commands: `omarchy-toggle-nightlight`, `omarchy-toggle-idle`,
+   `omarchy-toggle-notification-silencing`, `omarchy-bluetooth-power`, and the generic
+   `omarchy-toggle <flag> [toggle|on|off]` / `omarchy-toggle-enabled <flag>` (flag file
+   `$HOME/.local/state/omarchy/toggles/<flag>`; `enabled` exits 0 when it exists).
+2. Night light: `omarchy-toggle-nightlight --status` prints
+   `{"enabled":false,"temperature":null}` and exits 0 **regardless of state** (4 ms).
+   `hyprctl hyprsunset temperature` fails (no hyprsunset socket). State:
+   `omarchy-toggle-nightlight --status | jq -e .enabled`.
+3. Stay awake: `omarchy-toggle-idle --status` prints
+   `{"enabled":false,"class":"disabled","tooltip":"Stay Awake"}`, exit 0 either way (1 ms).
+   `pgrep -x hypridle` is the inverse and flaky. State:
+   `omarchy-toggle-idle --status | jq -e .enabled`.
+4. DND: **`omarchy-toggle-notification-silencing` has no `--status`; any call toggles**
+   (it ran `omarchy-shell notifications toggleDnd` once during capture and had to be
+   toggled back). The state is the file `~/.local/state/omarchy/notifications.json`
+   (`{"version":3,"dnd":true|false}`, written on every change and at restart). State:
+   `jq -e .dnd ~/.local/state/omarchy/notifications.json`. The action stays
+   `omarchy-toggle-notification-silencing`.
+5. Bluetooth: `omarchy-bluetooth-power is-on` exits 0 when on (4 ms). `bluetoothctl show`
+   also works but is slower. State: `omarchy-bluetooth-power is-on`.
+6. Generic flags: `omarchy-toggle-enabled <flag>` (exit 0 when on). No flags exist yet
+   besides `hypr/flags.lua` (a different mechanism).
+7. Tools: `curl`, `jq`, `systemd-run`, `uwsm-app` all on PATH.
+8. A `systemd-run --user --scope --collect --quiet --` passes stdout and the exit status
+   through: `hi` then `exit=3`. ✓
+9. `xdg-terminal-exec sh -c 'sleep 3'` took 3.17 s: **the terminal waits for its child**.
+   A `terminal = true` tracked job therefore stays busy until the terminal window closes,
+   which is the right behaviour (the command really is still running in it).
+
+Preset rows: (name, needs, action, state). The mute presets use the built-in
+`Action::Volume { mute: true }` (no shell command): the key toggles the mute, and `on`
+with no state follows it.
+- **Mic mute**: (none, `Volume { Input, mute }`, none — follows the mute)
+- **Output mute**: (none, `Volume { Output, mute }`, none — follows the mute)
+- **Night light**: (jq, `omarchy-toggle-nightlight`, `omarchy-toggle-nightlight --status | jq -e .enabled`)
+- **Stay awake**: (jq, `omarchy-toggle-idle`, `omarchy-toggle-idle --status | jq -e .enabled`)
+- **Do Not Disturb**: (jq, `omarchy-toggle-notification-silencing`, `jq -e .dnd ~/.local/state/omarchy/notifications.json`)
+- **Bluetooth**: (none, `omarchy-bluetooth-power`, `omarchy-bluetooth-power is-on`)
+- **Service…**: dialog (see above).
+
 ## Implementation steps
 
 Each task is one session, ~150–300 lines with tests, and ends with its check. Commit after
@@ -1711,7 +1753,7 @@ each. `cargo fmt` before every commit.
 - **Decided: one branch.** At PR time, if it's over ~1,000 lines, Tasks H–J can go out as
   a second PR; that's a PR-time call.
 
-## Ask before building
+## Ask before building — settled (2026-10-17, user agreed with all planned items)
 
 1. **Press toggles across a daemon restart.** Planned: kept in `Runtime` only (survive a
    replug, reset to off when the daemon restarts), because a press toggle has no source of
