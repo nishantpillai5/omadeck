@@ -8,6 +8,8 @@ mod hypr;
 mod hypr_worker;
 mod nav;
 mod saver;
+#[allow(dead_code)]
+mod sequence;
 mod watch;
 
 use std::path::Path;
