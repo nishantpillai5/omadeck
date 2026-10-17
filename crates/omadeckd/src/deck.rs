@@ -6,6 +6,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use omadeck_core::device::{self, DeviceStateReader, HidApi, ImageRect, Kind, StreamDeck};
+use omadeck_core::player;
 use omadeck_core::probe::{self, Values};
 use omadeck_core::{Config, DeckInfo, DialStatus, KeyStatus, PANEL_W, Renderer};
 
@@ -174,9 +175,14 @@ pub fn open(hid: &mut HidApi) -> Option<Deck> {
     Some(deck)
 }
 
-/// What panel `i` shows now.
+/// What panel `i` shows now. A media panel is advanced to the wall clock here, at
+/// painting (`dial_status` stays pure, so `flush` only publishes real changes).
 pub fn panel_status(d: &Deck, cfg: &Config, values: &Values, i: u8, now: Instant) -> DialStatus {
-    probe::dial_status(cfg.dial(i), values, d.pressed(i, now))
+    let mut st = probe::dial_status(cfg.dial(i), values, d.pressed(i, now));
+    if let Some(m) = &mut st.panel.media {
+        *m = m.at(player::now_ms());
+    }
+    st
 }
 
 /// Repaint everything: brightness, every key (in its state), every strip panel, one
