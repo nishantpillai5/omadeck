@@ -20,6 +20,9 @@ struct AppRows {
     page: Rc<str>,
     group: adw::PreferencesGroup,
     rows: Rc<RefCell<Vec<adw::ActionRow>>>,
+    /// Where a failed edit is told: the dialog sits over the main window's toasts. Weak, as
+    /// the dialog's own rows hold this.
+    dialog: glib::WeakRef<adw::PreferencesDialog>,
 }
 
 impl AppRows {
@@ -79,15 +82,24 @@ impl AppRows {
                 apps.push(class.clone());
             }
         });
-        if edited {
-            self.fill();
-        }
+        self.after_edit(edited);
     }
 
     fn remove(&self, pattern: &str) {
         let Some(app) = self.app.upgrade() else { return };
-        if app.edit_page_apps(&self.page, |apps: &mut Vec<String>| apps.retain(|a| a != pattern)) {
-            self.fill();
+        let edited = app.edit_page_apps(&self.page, |apps: &mut Vec<String>| apps.retain(|a| a != pattern));
+        self.after_edit(edited);
+    }
+
+    /// Show the new list, or say on the dialog why nothing changed.
+    fn after_edit(&self, edited: Result<(), &str>) {
+        match edited {
+            Ok(()) => self.fill(),
+            Err(why) => {
+                if let Some(dialog) = self.dialog.upgrade() {
+                    dialog.add_toast(adw::Toast::new(why));
+                }
+            }
         }
     }
 }
@@ -119,6 +131,7 @@ pub fn show(app: &Rc<App>, page: &str) {
         page: Rc::from(page),
         group: group.clone(),
         rows: Rc::new(RefCell::new(Vec::new())),
+        dialog: dialog.downgrade(),
     };
     rows.fill();
 
