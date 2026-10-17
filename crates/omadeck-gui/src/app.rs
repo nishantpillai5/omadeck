@@ -557,7 +557,9 @@ impl App {
         let Some((button, image)) = keys.get(i as usize) else { return };
         let cfg = self.config.borrow();
         let key = cfg.key(self.page.borrow().as_deref(), i);
-        let face = self.renderer.borrow_mut().render(key, &cfg.style, PREVIEW_PX, false);
+        // PR 8's Task H previews the mirrored state (or the selected face tab);
+        // until then, off.
+        let face = self.renderer.borrow_mut().render(key, &cfg.style, PREVIEW_PX, &omadeck_core::KeyStatus::default());
         image.set_paintable(Some(&media::texture(face)));
         let tip = match key.filter(|k| !k.is_blank()) {
             Some(k) if !k.label.is_empty() => format!("{} — {}", k.label, k.action.summary()),
