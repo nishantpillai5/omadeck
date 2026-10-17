@@ -126,7 +126,10 @@ pub fn build_key(app: &Rc<App>, i: u8) -> gtk::Widget {
                 k.on = Some(OnFace::default());
             } else {
                 k.on = None;
-                k.busy = None;
+                // A busy-while-running key keeps its Busy tab, so it keeps its Busy look.
+                if !k.busy_while_running {
+                    k.busy = None;
+                }
             }
         });
         a.rebuild_editor();
