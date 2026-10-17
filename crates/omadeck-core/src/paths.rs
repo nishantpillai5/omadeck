@@ -30,6 +30,36 @@ pub fn icons_dir() -> PathBuf {
     config_dir().join("icons")
 }
 
+/// `~/.local/state/omadeck/backups`: earlier copies of config.toml.
+pub fn backups_dir() -> PathBuf {
+    xdg("XDG_STATE_HOME", ".local/state").join("omadeck/backups")
+}
+
+/// `~/.config/fontconfig/fonts.conf`, which `omarchy font set` rewrites.
+pub fn fontconfig_file() -> PathBuf {
+    xdg("XDG_CONFIG_HOME", ".config").join("fontconfig/fonts.conf")
+}
+
+/// The current UTC time as `2026-10-17T031500Z`: sortable and safe in a file name.
+pub fn timestamp() -> String {
+    utc_stamp(std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs()))
+}
+
+fn utc_stamp(secs: u64) -> String {
+    let (days, rem) = (secs / 86400, secs % 86400);
+    // Civil date from days since 1970-01-01 (Howard Hinnant's algorithm).
+    let z = days as i64 + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = yoe + era * 400 + i64::from(m <= 2);
+    format!("{y:04}-{m:02}-{d:02}T{:02}{:02}{:02}Z", rem / 3600, rem % 3600 / 60, rem % 60)
+}
+
 /// Unix socket the daemon publishes events on: `$XDG_RUNTIME_DIR/omadeck.sock`.
 ///
 /// There is deliberately no fallback: the runtime dir is private to the user (0700), while a
@@ -89,5 +119,18 @@ impl FileStamp {
     /// Whether both stamps are of the same file, edited or not.
     pub fn same_file(a: Option<Self>, b: Option<Self>) -> bool {
         a.map(|s| (s.dev, s.ino)) == b.map(|s| (s.dev, s.ino))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::utc_stamp;
+
+    #[test]
+    fn stamps() {
+        assert_eq!(utc_stamp(0), "1970-01-01T000000Z");
+        assert_eq!(utc_stamp(951782400), "2000-02-29T000000Z");
+        assert_eq!(utc_stamp(1792209096), "2026-10-17T035136Z");
+        assert_eq!(utc_stamp(4107542399), "2100-02-28T235959Z");
     }
 }

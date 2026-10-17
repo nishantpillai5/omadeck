@@ -175,6 +175,10 @@ fn run() -> Result<()> {
                 cfg_stamp = c;
                 reload_at.get_or_insert(Instant::now());
             }
+            // `omarchy font set` only rewrites fontconfig's user config.
+            if renderer.font_changed() {
+                reload_at.get_or_insert(Instant::now());
+            }
         }
         if reload_at.is_some_and(|t| Instant::now() >= t) {
             reload_at = None;

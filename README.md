@@ -136,6 +136,8 @@ omadeckd snapshot x.png [PAGE]  render the layout to an image
 
 The config file is `~/.config/omadeck/config.toml`. The app edits it for you, but it's plain TOML and safe to edit by hand; the daemon reloads it as soon as you save. See [`examples/config.toml`](examples/config.toml).
 
+Each time the app opens, and before it deletes a page, it keeps a copy of `config.toml` in `~/.local/state/omadeck/backups` (the newest 20). Deleting a page or clearing a key can also be undone from the notice that pops up.
+
 ```toml
 brightness = 70
 

@@ -7,6 +7,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::Arc;
 
 use ab_glyph::{Font, FontVec, PxScale, ScaleFont, point};
 use image::Rgba;
@@ -14,19 +15,31 @@ pub use image::RgbaImage;
 use image::imageops::{self, FilterType};
 
 use crate::config::{KeyConfig, Style};
-use crate::paths;
+use crate::paths::{self, FileStamp};
 use crate::theme::{Rgb, Theme};
 
 pub struct Renderer {
     font: Option<FontVec>,
     font_pattern: Option<String>,
+    /// fontconfig's user config as of the last font lookup; `omarchy font set` rewrites it.
+    fonts_stamp: Option<FileStamp>,
+    /// Fonts that supply symbols the label font lacks (picking a font without Nerd Font
+    /// icons shouldn't blank every glyph key).
+    fallbacks: HashMap<char, Option<Arc<FontVec>>>,
     pub theme: Theme,
     icons: HashMap<(PathBuf, u32), Option<RgbaImage>>,
 }
 
 impl Renderer {
     pub fn new(style: &Style) -> Self {
-        let mut r = Self { font: None, font_pattern: None, theme: Theme::default(), icons: HashMap::new() };
+        let mut r = Self {
+            font: None,
+            font_pattern: None,
+            fonts_stamp: FileStamp::of(&paths::fontconfig_file()),
+            fallbacks: HashMap::new(),
+            theme: Theme::default(),
+            icons: HashMap::new(),
+        };
         r.update_style(style);
         r.theme = Theme::load_omarchy();
         r
@@ -41,6 +54,20 @@ impl Renderer {
                 log::warn!("no usable font found; labels will not be drawn");
             }
         }
+    }
+
+    /// Re-resolve the font if the system font changed (e.g. `omarchy font set`).
+    /// Returns true when it did, so the caller can repaint.
+    pub fn font_changed(&mut self) -> bool {
+        let stamp = FileStamp::of(&paths::fontconfig_file());
+        if stamp == self.fonts_stamp {
+            return false;
+        }
+        self.fonts_stamp = stamp;
+        self.font = load_font(self.font_pattern.as_deref().unwrap_or("monospace"));
+        self.fallbacks.clear();
+        log::info!("system font changed; reloaded the label font");
+        true
     }
 
     pub fn reload_theme(&mut self) {
@@ -160,12 +187,17 @@ impl Renderer {
     }
 
     /// Rasterise a single (Nerd Font) symbol, scaled to fit a `box_px` square.
-    fn glyph(&self, text: &str, box_px: u32, color: Rgb) -> Option<RgbaImage> {
-        let font = self.font.as_ref()?;
-        let id = font.glyph_id(glyph_char(text)?);
-        if id.0 == 0 {
-            return None;
-        }
+    fn glyph(&mut self, text: &str, box_px: u32, color: Rgb) -> Option<RgbaImage> {
+        let c = glyph_char(text)?;
+        let fallback;
+        let font = match self.font.as_ref() {
+            Some(f) if f.glyph_id(c).0 != 0 => f,
+            _ => {
+                fallback = self.fallbacks.entry(c).or_insert_with(|| load_font_with(c).map(Arc::new)).clone()?;
+                &*fallback
+            }
+        };
+        let id = font.glyph_id(c);
         let probe = font.outline_glyph(id.with_scale(PxScale::from(100.0)))?.px_bounds();
         let k = box_px as f32 / probe.width().max(probe.height()).max(1.0);
         let outline = font.outline_glyph(id.with_scale_and_position(PxScale::from(100.0 * k), point(0.0, 0.0)))?;
@@ -372,6 +404,25 @@ fn load_font(pattern: &str) -> Option<FontVec> {
         {
             log::debug!("label font: {file}");
             return Some(font);
+        }
+    }
+    None
+}
+
+/// Any installed font that has `c`, preferring Nerd Font symbols.
+fn load_font_with(c: char) -> Option<FontVec> {
+    let charset = format!(":charset={:x}", c as u32);
+    for pat in [format!("Symbols Nerd Font{charset}"), format!("monospace{charset}"), charset.clone()] {
+        let out = Command::new("fc-match").args(["-s", "-f", "%{file}\\n", &pat]).output().ok()?;
+        // `-s` lists matches best first; take the first that really has the glyph.
+        for file in String::from_utf8_lossy(&out.stdout).lines().take(8) {
+            if let Ok(data) = fs::read(file.trim())
+                && let Ok(font) = FontVec::try_from_vec(data)
+                && font.glyph_id(c).0 != 0
+            {
+                log::debug!("glyph U+{:X} from {file}", c as u32);
+                return Some(font);
+            }
         }
     }
     None

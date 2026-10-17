@@ -13,6 +13,11 @@ All notable changes to omadeck are documented here. The format follows
   folder with a Back key in place. The deck follows the page you're editing, and the app
   follows page changes made on the deck.
 - `omadeckd press KEY [PAGE]` and `omadeckd snapshot FILE [PAGE]` take an optional page.
+- Undo for deleting a page or clearing a key, and backups of `config.toml` in
+  `~/.local/state/omadeck/backups` each time the app opens and before a page is deleted
+  (the newest 20 are kept).
+- The app warns when a page has no Back key, so the deck would get stuck on it, and offers to
+  add one.
 
 ### Fixed
 - A colour value with a non-ASCII character (in the config or the Omarchy theme) crashed the
@@ -26,6 +31,8 @@ All notable changes to omadeck are documented here. The format follows
   replaced with an empty one. The app shows the error and won't save until the file is fixed.
 - A site icon or file chosen for a key no longer lands on another page's key if you switch
   pages before it finishes.
+- Changing the system font (`omarchy font set`) now updates key labels without a restart, and
+  icon glyphs no longer vanish when the new font has no Nerd Font symbols.
 - Live reload keeps working after the config folder is deleted and recreated, and with a
   symlinked `config.toml`. Saving from the configurator keeps the symlink.
 

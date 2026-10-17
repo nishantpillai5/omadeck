@@ -381,14 +381,88 @@ impl Config {
     }
 
     /// Delete a page. Keys that opened it keep their look but no longer do anything.
-    pub fn remove_page(&mut self, name: &str) {
-        self.pages.retain(|p| p.name != name);
-        for k in self.all_keys_mut() {
+    /// Returns what [`Config::restore_page`] needs to undo it.
+    pub fn remove_page(&mut self, name: &str) -> Option<RemovedPage> {
+        let pos = self.pages.iter().position(|p| p.name == name)?;
+        let page = self.pages.remove(pos);
+        let mut links = Vec::new();
+        let home = self.keys.0.iter_mut().map(|k| (None, k));
+        let others = self.pages.iter_mut().flat_map(|p| p.keys.0.iter_mut().map(|k| (Some(p.name.clone()), k)));
+        for (on, k) in home.chain(others) {
             if matches!(&k.action, Action::Page { page } if page == name) {
                 k.action = Action::None;
+                links.push((on, k.index));
             }
         }
+        Some(RemovedPage { pos, page, links })
     }
+
+    /// Undo [`Config::remove_page`]: put the page back where it was and re-link the keys
+    /// that opened it, unless they've been given another job since.
+    pub fn restore_page(&mut self, removed: RemovedPage) -> bool {
+        let RemovedPage { pos, page, links } = removed;
+        if self.has_page(&page.name) {
+            return false;
+        }
+        let name = page.name.clone();
+        self.pages.insert(pos.min(self.pages.len()), page);
+        for (on, index) in links {
+            if let Some(k) = self.page_mut(on.as_deref()).and_then(|keys| keys.0.iter_mut().find(|k| k.index == index))
+                && k.action == Action::None
+            {
+                k.action = Action::Page { page: name.clone() };
+            }
+        }
+        true
+    }
+
+    /// Whether the deck can leave `page`: it needs a Back key or a key that opens a page.
+    /// Home never needs one.
+    pub fn has_way_out(&self, page: Option<&str>) -> bool {
+        page.is_none()
+            || self
+                .page(page)
+                .is_none_or(|keys| keys.iter().any(|k| matches!(k.action, Action::Back | Action::Page { .. })))
+    }
+}
+
+/// A deleted page, kept so the deletion can be undone.
+#[derive(Debug, Clone)]
+pub struct RemovedPage {
+    pos: usize,
+    pub page: Page,
+    /// Keys (page, index) that opened it.
+    links: Vec<(Option<String>, u8)>,
+}
+
+/// How many backups of config.toml to keep.
+const BACKUPS: usize = 20;
+
+/// Copy config.toml into the backups folder (`~/.local/state/omadeck/backups`), unless the
+/// newest backup already matches it, and prune old ones. Returns the new backup's path.
+pub fn backup() -> Result<Option<std::path::PathBuf>> {
+    let Ok(body) = fs::read(paths::config_file()) else { return Ok(None) };
+    let dir = paths::backups_dir();
+    fs::create_dir_all(&dir)?;
+    let mut old: Vec<_> = fs::read_dir(&dir)?
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .filter(|p| {
+            p.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.starts_with("config-") && n.ends_with(".toml"))
+        })
+        .collect();
+    old.sort();
+    let mut made = None;
+    if !old.last().is_some_and(|p| fs::read(p).is_ok_and(|b| b == body)) {
+        let path = dir.join(format!("config-{}.toml", paths::timestamp()));
+        fs::write(&path, &body)?;
+        old.push(path.clone());
+        made = Some(path);
+    }
+    let excess = old.len().saturating_sub(BACKUPS);
+    for p in &old[..excess] {
+        let _ = fs::remove_file(p);
+    }
+    Ok(made)
 }
 
 /// What the home page is called in the UI. It has no name in the config file.
@@ -465,6 +539,42 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         assert_eq!(back.keys.iter().map(|k| k.index).collect::<Vec<_>>(), [1, 4]);
         assert!(back.page(Some("P")).unwrap().is_empty(), "blank keys are dropped, empty pages kept");
+    }
+
+    #[test]
+    fn undo_page_delete() {
+        let mut c = Config::default();
+        for n in ["A", "B", "C"] {
+            c.pages.push(Page { name: n.into(), keys: Keys::default() });
+        }
+        c.keys.get_mut(0).action = Action::Page { page: "B".into() };
+        c.page_mut(Some("A")).unwrap().get_mut(2).action = Action::Page { page: "B".into() };
+        c.page_mut(Some("B")).unwrap().get_mut(1).label = "inside".into();
+        let before = c.clone();
+
+        let removed = c.remove_page("B").unwrap();
+        assert!(!c.has_page("B"));
+        assert_eq!(c.links_to("B"), 0);
+        assert!(c.restore_page(removed));
+        assert_eq!(c, before, "page back in place with its keys and links");
+
+        // A link that was given another job meanwhile is left alone.
+        let removed = c.remove_page("B").unwrap();
+        c.keys.get_mut(0).action = Action::Back;
+        c.restore_page(removed);
+        assert_eq!(c.keys.get(0).unwrap().action, Action::Back);
+        assert_eq!(c.links_to("B"), 1);
+        assert!(c.remove_page("nope").is_none());
+    }
+
+    #[test]
+    fn way_out() {
+        let mut c = Config::default();
+        c.pages.push(Page { name: "P".into(), keys: Keys::default() });
+        assert!(c.has_way_out(None));
+        assert!(!c.has_way_out(Some("P")));
+        c.page_mut(Some("P")).unwrap().get_mut(3).action = Action::Page { page: "P".into() };
+        assert!(c.has_way_out(Some("P")));
     }
 
     #[test]

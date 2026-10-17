@@ -7,6 +7,7 @@ use std::time::Duration;
 
 use adw::prelude::*;
 use gtk::{gdk, gio, glib};
+use omadeck_core::config::{self, RemovedPage};
 use omadeck_core::ipc::{self, Command as DaemonCommand, Event};
 use omadeck_core::paths::FileStamp;
 use omadeck_core::{Action, Config, DeckInfo, HOME, KeyConfig, Keys, Page, Renderer, device, paths};
@@ -49,6 +50,8 @@ pub struct App {
     page_list: gtk::StringList,
     page_dropdown: gtk::DropDown,
     page_actions: gtk::Box,
+    /// Warns that the page being edited has no way back on the deck.
+    dead_end: gtk::Box,
     /// Set while the page dropdown is updated from code, so it doesn't count as a choice.
     syncing_pages: Cell<bool>,
     /// The page being edited: `None` is home.
@@ -75,6 +78,10 @@ pub struct App {
 
 impl App {
     pub fn build(application: &adw::Application) -> Rc<Self> {
+        // A copy of the config as it was when the app opened, in case an edit goes wrong.
+        if let Err(e) = config::backup() {
+            log::warn!("backing up config.toml: {e:#}");
+        }
         let file = paths::config_file();
         let stamp = FileStamp::of(&file);
         let (config, mut disk, locked) = match std::fs::read_to_string(&file) {
@@ -158,6 +165,18 @@ impl App {
             .margin_end(24)
             .build();
         deck_area.append(&page_bar);
+        let dead_end = gtk::Box::builder().spacing(8).halign(gtk::Align::Center).visible(false).build();
+        dead_end.append(&gtk::Image::from_icon_name("dialog-warning-symbolic"));
+        dead_end.append(
+            &gtk::Label::builder()
+                .label("No Back key: the deck gets stuck on this page")
+                .wrap(true)
+                .css_classes(["warning"])
+                .build(),
+        );
+        let add_back = gtk::Button::builder().label("Add Back key").build();
+        dead_end.append(&add_back);
+        deck_area.append(&dead_end);
         deck_area.append(&frame);
         deck_area.append(&hint);
 
@@ -217,6 +236,7 @@ impl App {
             page_list,
             page_dropdown,
             page_actions,
+            dead_end,
             syncing_pages: Cell::new(false),
             page: RefCell::default(),
             daemon: RefCell::default(),
@@ -248,6 +268,12 @@ impl App {
                 n => app.config.borrow().pages.get(n as usize - 1).map(|p| p.name.clone()),
             };
             app.show_page(page, true);
+        });
+        let weak = Rc::downgrade(&app);
+        add_back.connect_clicked(move |_| {
+            if let Some(app) = weak.upgrade() {
+                app.add_back_key();
+            }
         });
         let weak = Rc::downgrade(&app);
         new_page.connect_clicked(move |_| {
@@ -380,6 +406,7 @@ impl App {
     }
 
     pub fn refresh_key(&self, i: u8) {
+        self.update_dead_end();
         let keys = self.keys.borrow();
         let Some((button, image)) = keys.get(i as usize) else { return };
         let cfg = self.config.borrow();
@@ -392,6 +419,24 @@ impl App {
             None => format!("Key {} — empty", i + 1),
         };
         button.set_tooltip_text(Some(&tip));
+    }
+
+    fn update_dead_end(&self) {
+        let ok = self.config.borrow().has_way_out(self.page.borrow().as_deref());
+        self.dead_end.set_visible(!ok);
+    }
+
+    /// Put a Back key in the first free slot of the page being edited.
+    fn add_back_key(self: &Rc<Self>) {
+        let n = self.deck.borrow().key_count();
+        let Some(i) = (0..n).find(|&i| self.key(i).is_none_or(|k| k.is_blank())) else {
+            self.toast("This page is full. Turn one of its keys into a Back key.");
+            return;
+        };
+        self.with_page(|keys| *keys.get_mut(i) = KeyConfig { index: i, ..back_key() });
+        self.refresh_key(i);
+        self.schedule_save();
+        self.select(Some(i));
     }
 
     pub fn refresh_all(&self) {
@@ -490,10 +535,23 @@ impl App {
     }
 
     pub fn clear_key(self: &Rc<Self>, i: u8) {
+        let at = self.key_ref(i);
+        let old = self.key(i).filter(|k| !k.is_blank());
         self.with_page(|keys| keys.clear(i));
         self.refresh_key(i);
         self.schedule_save();
         self.rebuild_editor();
+        let Some(old) = old else { return };
+        self.toast_undo(&format!("Cleared key {}", i + 1), move |app| {
+            if app.config.borrow().key(at.page.as_deref(), at.index).is_some_and(|k| !k.is_blank()) {
+                app.toast("That key has been used again, so it wasn't restored");
+                return;
+            }
+            let old = old.clone();
+            if app.edit_ref(&at, move |k| *k = old) {
+                app.rebuild_editor();
+            }
+        });
     }
 
     pub fn schedule_save(self: &Rc<Self>) {
@@ -546,6 +604,11 @@ impl App {
         let weak = Rc::downgrade(self);
         glib::timeout_add_local(Duration::from_secs(1), move || {
             let Some(app) = weak.upgrade() else { return glib::ControlFlow::Break };
+            let font = app.renderer.borrow_mut().font_changed();
+            if font {
+                app.refresh_all();
+                app.rebuild_editor();
+            }
             let stamp = FileStamp::of(&paths::config_file());
             if stamp != app.stamp.get() {
                 app.stamp.set(stamp);
@@ -741,13 +804,45 @@ impl App {
         dialog.set_close_response("cancel");
         let weak = Rc::downgrade(self);
         dialog.connect_response(Some("delete"), move |_, _| {
-            let Some(app) = weak.upgrade() else { return };
-            app.config.borrow_mut().remove_page(&name);
-            app.schedule_save();
-            app.show_page(None, true);
-            app.sync_page_list();
+            if let Some(app) = weak.upgrade() {
+                app.delete_page(&name);
+            }
         });
         dialog.present(Some(&self.window));
+    }
+
+    fn delete_page(self: &Rc<Self>, name: &str) {
+        // Back up first: undo only lasts as long as the toast.
+        self.flush_save();
+        if let Err(e) = config::backup() {
+            log::warn!("backing up config.toml: {e:#}");
+        }
+        let removed = self.config.borrow_mut().remove_page(name);
+        self.schedule_save();
+        self.show_page(None, true);
+        self.sync_page_list();
+        let Some(removed) = removed else { return };
+        let slot = RefCell::new(Some(removed));
+        self.toast_undo(&format!("Deleted “{name}”"), move |app| {
+            if let Some(removed) = slot.take() {
+                app.undo_remove_page(removed);
+            }
+        });
+    }
+
+    fn undo_remove_page(self: &Rc<Self>, removed: RemovedPage) {
+        if self.locked.borrow().is_some() {
+            return;
+        }
+        let name = removed.page.name.clone();
+        let restored = self.config.borrow_mut().restore_page(removed);
+        if !restored {
+            self.toast("There's a page with that name again, so it wasn't restored");
+            return;
+        }
+        self.schedule_save();
+        self.sync_page_list();
+        self.show_page(Some(name), true);
     }
 
     fn send(&self, cmd: DaemonCommand) {
@@ -759,8 +854,20 @@ impl App {
     }
 
     pub fn toast(&self, msg: &str) {
-        let t = adw::Toast::new(msg);
+        let t = adw::Toast::new(&glib::markup_escape_text(msg));
         t.set_timeout(4);
+        self.toasts.add_toast(t);
+    }
+
+    /// A toast with an Undo button, for edits that throw something away.
+    fn toast_undo(self: &Rc<Self>, msg: &str, undo: impl Fn(&Rc<Self>) + 'static) {
+        let t = adw::Toast::builder().title(glib::markup_escape_text(msg)).button_label("Undo").timeout(10).build();
+        let weak = Rc::downgrade(self);
+        t.connect_button_clicked(move |_| {
+            if let Some(app) = weak.upgrade() {
+                undo(&app);
+            }
+        });
         self.toasts.add_toast(t);
     }
 
@@ -836,6 +943,16 @@ impl App {
             let _ = gio::AppInfo::launch_default_for_uri(&uri, gio::AppLaunchContext::NONE);
         });
         list.append(&folder);
+
+        let backups =
+            adw::ButtonRow::builder().title("Open config backups").end_icon_name("folder-open-symbolic").build();
+        backups.set_tooltip_text(Some("A copy is kept each time omadeck opens and before a page is deleted"));
+        backups.connect_activated(|_| {
+            let _ = std::fs::create_dir_all(paths::backups_dir());
+            let uri = gio::File::for_path(paths::backups_dir()).uri();
+            let _ = gio::AppInfo::launch_default_for_uri(&uri, gio::AppLaunchContext::NONE);
+        });
+        list.append(&backups);
 
         let about = adw::ButtonRow::builder().title("About omadeck").build();
         let weak: Weak<Self> = Rc::downgrade(self);
