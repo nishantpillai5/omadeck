@@ -412,7 +412,9 @@ impl KeyConfig {
         }
         match &self.action {
             Action::Volume { device, mute: true, .. } => Some(Probe::Volume(*device)),
-            Action::Media { command: MediaCommand::PlayPause, seek: 0, player } => Some(Probe::Player(player.clone())),
+            Action::Media { command: MediaCommand::PlayPause, seek: 0, player } => {
+                Some(Probe::Player(player.as_deref().map(str::trim).filter(|p| !p.is_empty()).map(str::to_string)))
+            }
             _ => None,
         }
     }
