@@ -1,0 +1,30 @@
+# date: 2026-10-17T23:38:07+02:00
+hyprctl                        /usr/bin/hyprctl
+pactl                          /usr/bin/pactl
+pipewire                       /usr/bin/pipewire
+wpctl                          /usr/bin/wpctl
+playerctl                      /usr/bin/playerctl
+playerctld                     /usr/bin/playerctld
+omarchy-shell                  /usr/share/omarchy/bin/omarchy-shell
+omarchy-version                /usr/share/omarchy/bin/omarchy-version
+omarchy-audio-output-volume    /usr/share/omarchy/bin/omarchy-audio-output-volume
+swayosd-client                 missing
+socat                          /usr/bin/socat
+walker                         missing
+omadeckd                       /home/noobaf/.local/bin/omadeckd
+
+Hyprland 0.56.2 built from branch v0.56.2 at commit efb50993780079460b0cbed1363e2166a2de1d9f clean ([gha] Nix: update inputs).
+Date: Wed Aug 5 14:13:21 2026
+Tag: v0.56.2, commits: 7661
+pactl 17.0-98-gb096
+Compiled with libpulse 17.0.0
+Linked with libpulse 17.0.0
+pipewire
+Compiled with libpipewire 1.6.8
+Linked with libpipewire 1.6.8
+playerctl v2.4.1
+/usr/bin/playerctl is owned by playerctl 2.4.1-5
+omarchy 4.0.4-1
+NAME="Omarchy"
+PRETTY_NAME="Omarchy"
+ID=omarchy
