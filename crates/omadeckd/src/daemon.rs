@@ -243,6 +243,9 @@ pub struct Daemon {
     focus_class: Option<String>,
     /// When the newest focus change settles; `rt.window` is then the one that counts.
     focus_pending: Option<Instant>,
+    /// What the watcher was last told to read (`watch`), so a media action targets only
+    /// from a probe that is read now (`probe::media_target`).
+    watched: Vec<Probe>,
 }
 
 /// What `Daemon::new` takes from the system: the saved state and the Hyprland threads.
@@ -298,6 +301,7 @@ impl Daemon {
             follow: AppFollow::default(),
             focus_class: None,
             focus_pending: None,
+            watched: Vec::new(),
         }
     }
 
@@ -334,6 +338,7 @@ impl Daemon {
         // no-deck loop would never sleep (BUGS.md 73).
         self.media_due = None;
         // `in_flight` stays: the watcher still acknowledges every queued change.
+        self.watched.clear();
         let _ = self.watcher.cmd.send(WatchCmd::Watch(Vec::new()));
         self.hub.publish(Event::Disconnected);
     }
@@ -344,6 +349,7 @@ impl Daemon {
         let dials = self.deck.as_ref().map_or(0, |d| d.info.dials as usize);
         // No deck: no dials and no keys, so nothing is polled until one is attached.
         let probes = probe::watched_probes(&self.cfg, self.nav.current(), dials, self.key_count());
+        self.watched.clone_from(&probes);
         let _ = self.watcher.cmd.send(WatchCmd::Watch(probes));
     }
 
@@ -1217,19 +1223,26 @@ impl Daemon {
                 Ok(false)
             }
             Action::Media { command, seek, player } => {
-                let wanted = player.as_deref().map(str::trim).filter(|p| !p.is_empty());
-                let probe = Probe::Player(wanted.map(str::to_string));
-                let target = probe::media_target(&self.rt.values, wanted);
+                // The targeting rule is `probe::media_target`'s doc.
+                let dial = match src {
+                    Source::Turn(i) | Source::Press(i) | Source::Tap(i) | Source::LongTap(i) => self.cfg.dial(i),
+                    _ => None,
+                };
+                let wanted = probe::media_wanted(player.as_deref(), dial).map(str::to_string);
+                let probe = Probe::Player(wanted.clone());
                 let seek = player::fold_seek(*seek, steps);
+                let target = match probe::media_target(&self.rt.values, &self.watched, wanted.as_deref(), seek != 0) {
+                    probe::MediaSend::To(t) => t,
+                    probe::MediaSend::NothingToSeek => {
+                        log::info!("media: nothing playing to seek");
+                        return Ok(false);
+                    }
+                };
                 // A few `stat`s: nothing here waits on a process.
                 if player::needs_playerctl(audio::backend(), *command, seek, target.is_some())
                     && !omadeck_core::on_path("playerctl")
                 {
                     anyhow::bail!("playerctl not found (install playerctl)");
-                }
-                if seek != 0 && target.is_none() {
-                    log::info!("media: nothing known to seek");
-                    return Ok(false);
                 }
                 if seek != 0 || *command == MediaCommand::PlayPause {
                     self.guess_media(&probe, *command, seek);
