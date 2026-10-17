@@ -86,7 +86,7 @@ pub enum Event {
         index: u8,
         status: PanelStatus,
     },
-    /// What a key with a toggle, or with a running command, shows now. Published on each
+    /// What a key with a toggle, a running command or a live value shows now. Published on each
     /// change (each new progress text too) and for the current page after connect,
     /// reload and page change; replayed to new clients. `pressed` is always false here,
     /// so it is never written.
@@ -156,7 +156,7 @@ mod tests {
         roundtrip(&Event::Brightness { value: 40 });
         roundtrip(&Event::DialStatus { index: 1, status: PanelStatus::default() });
         let level = Some(crate::Level { value: 0.5, text: "50%".into(), muted: false });
-        roundtrip(&Event::DialStatus { index: 2, status: PanelStatus { level } });
+        roundtrip(&Event::DialStatus { index: 2, status: PanelStatus { level, live: None } });
         assert_eq!(Event::Brightness { value: 40 }.to_line(), "{\"event\":\"brightness\",\"value\":40}\n");
         assert_eq!(
             Event::DialStatus { index: 1, status: PanelStatus::default() }.to_line(),
@@ -199,5 +199,20 @@ mod tests {
             Event::DialTurn { index: 0, delta: -2 }.to_line(),
             "{\"event\":\"dial_turn\",\"index\":0,\"delta\":-2}\n"
         );
+    }
+
+    #[test]
+    fn key_state_live_wire_shape() {
+        let live = crate::LiveShow { text: "AA".into(), bar: None, charging: false };
+        let st = KeyStatus { live: Some(live), ..KeyStatus::default() };
+        assert_eq!(
+            Event::KeyState { page: None, index: 1, status: st.clone() }.to_line(),
+            "{\"event\":\"key_state\",\"page\":null,\"index\":1,\"status\":{\"live\":{\"text\":\"AA\"}}}\n"
+        );
+        roundtrip(&Event::KeyState { page: None, index: 1, status: st });
+        let none = Event::KeyState { page: None, index: 1, status: KeyStatus::default() }.to_line();
+        assert!(!none.contains("live"), "{none}");
+        let bat = crate::LiveShow { text: "50%".into(), bar: Some(0.5), charging: true };
+        roundtrip(&Event::DialStatus { index: 0, status: PanelStatus { level: None, live: Some(bat) } });
     }
 }
