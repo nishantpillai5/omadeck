@@ -5,6 +5,7 @@ pub mod action;
 pub mod audio;
 pub mod config;
 pub mod device;
+pub mod follow;
 pub mod ipc;
 pub mod live;
 pub mod paths;
