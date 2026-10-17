@@ -247,6 +247,9 @@ impl App {
         let dials_grid = gtk::Grid::builder().row_spacing(14).column_spacing(14).build();
         let model_label = gtk::Label::builder().halign(gtk::Align::End).css_classes(["deck-model"]).build();
         let frame = gtk::Box::new(gtk::Orientation::Vertical, 12);
+        // Centered, not filled: the area is as wide as the hint line below, and a filled
+        // frame would leave the 4-key grid stranded on its left with blank to the right.
+        frame.set_halign(gtk::Align::Center);
         frame.add_css_class("deck-frame");
         frame.append(&grid);
         frame.append(&strip);
