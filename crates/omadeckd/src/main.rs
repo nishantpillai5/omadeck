@@ -358,7 +358,13 @@ fn run_multi_here(steps: &[Action]) -> bool {
 /// Turn or press dial `index` here, with no daemon.
 fn dial_locally(index: u8, dir: Direction, steps: u8) -> i32 {
     let cfg = load_config();
-    let act = cfg.dial(index).map(|d| d.action(dir).clone()).unwrap_or_default();
+    let mut act = cfg.dial(index).map(|d| d.action(dir).clone()).unwrap_or_default();
+    // A media action with no player follows the dial's panel, as in the daemon
+    // (`probe::media_target`; nothing is watched here, so it goes to that player as named).
+    if let Action::Media { player, .. } = &mut act {
+        let wanted = probe::media_wanted(player.as_deref(), cfg.dial(index)).map(str::to_string);
+        *player = wanted;
+    }
     let which = match dir {
         Direction::Left => "left",
         Direction::Right => "right",
