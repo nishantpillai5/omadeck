@@ -18,7 +18,7 @@ use omadeck_core::{
     MediaShow, PanelStatus, Renderer, action, audio, tap_to_dial,
 };
 
-use crate::deck::{self, Deck};
+use crate::deck::{self, BackHold, Deck};
 use crate::hub::{Hub, Request};
 use crate::hypr::{self, HyprEvent};
 use crate::hypr_worker::{HyprJob, HyprWorker};
@@ -112,6 +112,12 @@ pub fn key_state(cfg: &Config, rt: &Runtime, page: Option<&str>, i: u8, pressed:
         st.state = Toggle::On;
     }
     st
+}
+
+/// Whether a press of `key` waits for its release: the action `press_key` would run
+/// (the on action while on) is `Back`.
+fn waits_for_release(key: Option<&KeyConfig>, on: bool) -> bool {
+    key.is_some_and(|k| matches!(k.action_for(on), Action::Back))
 }
 
 /// What follows a finished job. Pure apart from `rt`, so it is testable without a deck.
@@ -360,6 +366,10 @@ impl Daemon {
         let mut moved = self.nav.retain_existing(&self.cfg);
         if let Some(p) = self.wanted_page.take_if(|p| self.cfg.has_page(p)) {
             moved |= self.nav.go(Some(&p));
+        }
+        // The key under a held Back may be another one now: its release runs nothing.
+        if let Some(d) = &mut self.deck {
+            deck::forget_holds(&mut d.back_held, &mut d.key_pressed, moved);
         }
         if moved {
             self.hub.publish(Event::PageChanged { page: self.nav.current().map(str::to_string) });
@@ -630,14 +640,16 @@ impl Daemon {
         self.deck.as_ref().map_or(0, |d| d.info.key_count())
     }
 
-    /// What each of the current page's first `n` keys shows now (not pressed), for
-    /// painting.
-    /// A key a ctl press is flashing is drawn pressed, so the end-of-pass paint keeps the
-    /// flash.
+    /// What each of the current page's first `n` keys shows now, for painting. A key held
+    /// down, or flashing after a ctl press, is drawn pressed, so the end-of-pass paint
+    /// keeps it pressed.
     fn key_states(&self, n: u8) -> Vec<KeyStatus> {
-        let flashing =
-            |i: u8| self.deck.as_ref().is_some_and(|d| d.key_flash.get(i as usize).is_some_and(Option::is_some));
-        (0..n).map(|i| key_state(&self.cfg, &self.rt, self.nav.current(), i, flashing(i))).collect()
+        (0..n)
+            .map(|i| {
+                let held = self.deck.as_ref().is_some_and(|d| d.key_held(i));
+                key_state(&self.cfg, &self.rt, self.nav.current(), i, held)
+            })
+            .collect()
     }
 
     /// As for panels, for keys: build each key's status and publish the ones that differ
@@ -684,13 +696,14 @@ impl Daemon {
         self.rt.values.probes.retain(|p, _| *p == Probe::Workspace || all.contains(p));
     }
 
-    /// The next moment something is due: a tap flash ending, the post-connect repaint, a
-    /// debounced reload, a multi action's next step.
+    /// The next moment something is due: a tap flash ending, a held Back key going Home,
+    /// the post-connect repaint, a debounced reload, a multi action's next step.
     pub fn next_deadline(&self) -> Option<Instant> {
         let flash = self.deck.as_ref().and_then(Deck::flash_deadline);
+        let hold = self.deck.as_ref().and_then(|d| d.back_held).map(|h| h.deadline());
         // The media tick repaints the deck's panels: nothing to wait for without one.
         let media = self.deck.as_ref().and(self.media_due);
-        [flash, self.repaint_at, self.reload_at, self.seq.next_due(), media].into_iter().flatten().min()
+        [flash, hold, self.repaint_at, self.reload_at, self.seq.next_due(), media].into_iter().flatten().min()
     }
 
     /// One pass with a deck: read and handle its input until it's quiet, then paint what
@@ -707,6 +720,12 @@ impl Daemon {
             self.media_due = None;
             if let Some(d) = &mut self.deck {
                 d.dirty_where(&self.cfg, |dial| dial.and_then(DialConfig::level_source) == Some(LevelSource::Player));
+            }
+        }
+        if let Some(h) = self.deck.as_mut().and_then(|d| d.back_held.take_if(|h| now >= h.deadline())) {
+            log::info!("key {}: held Back, going Home", h.key);
+            if self.nav.home() {
+                self.show_page();
             }
         }
         let Some(d) = &mut self.deck else { return Ok(()) };
@@ -743,12 +762,29 @@ impl Daemon {
         match u {
             DeviceStateUpdate::ButtonDown(i) => {
                 self.clear_key_flash(i);
-                let _ = self.key_down(i, true);
+                self.set_key_pressed(i, true);
+                let page = self.nav.current();
+                let on = key_state(&self.cfg, &self.rt, page, i, false).state == Toggle::On;
+                if waits_for_release(self.cfg.key(page, i), on) {
+                    // Back waits for the release (a hold goes Home instead); show the press now.
+                    self.paint_key(i, true);
+                    self.hub.publish(Event::KeyDown { index: i, page: self.nav.current().map(str::to_string) });
+                    if let Some(d) = &mut self.deck {
+                        d.back_held = Some(BackHold { key: i, since: Instant::now() });
+                    }
+                } else {
+                    let _ = self.key_down(i, true);
+                }
             }
             DeviceStateUpdate::ButtonUp(i) => {
                 self.clear_key_flash(i);
+                self.set_key_pressed(i, false);
                 self.paint_key(i, false);
                 self.hub.publish(Event::KeyUp { index: i });
+                let held = self.deck.as_mut().and_then(|d| d.back_held.take_if(|h| h.key == i));
+                if held.is_some() {
+                    let _ = self.press_key(i); // a tap: Back, through the normal press path
+                }
             }
             DeviceStateUpdate::EncoderTwist(i, delta) => {
                 let _ = self.turn_dial(i, delta, true);
@@ -845,6 +881,14 @@ impl Daemon {
     fn clear_key_flash(&mut self, i: u8) {
         if let Some(f) = self.deck.as_mut().and_then(|d| d.key_flash.get_mut(i as usize)) {
             *f = None;
+        }
+    }
+
+    /// Record key `i` as held down or released. Doesn't mark it dirty: the button arms
+    /// paint it themselves.
+    fn set_key_pressed(&mut self, i: u8, pressed: bool) {
+        if let Some(p) = self.deck.as_mut().and_then(|d| d.key_pressed.get_mut(i as usize)) {
+            *p = pressed;
         }
     }
 
@@ -1232,6 +1276,11 @@ impl Daemon {
     /// Repaint the deck after `nav` moved to another page, watch the new page's keys,
     /// and tell the configurators.
     fn show_page(&mut self) {
+        // The key under your finger on the new page is drawn released; its release only
+        // repaints it.
+        if let Some(d) = &mut self.deck {
+            deck::forget_holds(&mut d.back_held, &mut d.key_pressed, true);
+        }
         log::info!("page: {}", self.nav.current().unwrap_or(omadeck_core::HOME));
         self.paint_all();
         self.watch();
@@ -1394,6 +1443,21 @@ mod tests {
         probe::{FAST_WINDOW, SETTLE},
         proc,
     };
+
+    #[test]
+    fn only_a_back_press_waits_for_release() {
+        let cfg = Config::parse(
+            "[[key]]\nindex = 0\n[key.action]\ntype = \"back\"\n\n\
+             [[key]]\nindex = 1\n[key.action]\ntype = \"page\"\npage = \"A\"\n\n\
+             [[key]]\nindex = 2\n[key.action]\ntype = \"app\"\ncommand = \"true\"\n[key.on]\n[key.on.action]\ntype = \"back\"\n",
+        )
+        .unwrap();
+        assert!(waits_for_release(cfg.key(None, 0), false), "a Back key");
+        assert!(!waits_for_release(cfg.key(None, 1), false), "Open page acts on key-down");
+        assert!(!waits_for_release(cfg.key(None, 2), false), "a toggle runs its off action while off");
+        assert!(waits_for_release(cfg.key(None, 2), true), "and its Back on action while on");
+        assert!(!waits_for_release(None, false), "no key");
+    }
 
     #[test]
     fn config_probes_keeps_app_dials() {
@@ -1807,5 +1871,18 @@ live = { source = "battery" }
         t.detach(&omadeck_core::device::StreamDeckError::NoScreen);
         assert_eq!(t.media_due, None);
         assert!(wait_for(Instant::now(), t.next_deadline()) > Duration::ZERO);
+    }
+
+    #[test]
+    fn a_reload_that_deletes_the_shown_page_moves_home() {
+        // The deck-free half of the held-Back reload path: `reload` moves `nav` without
+        // `show_page`, and says so. (Its held-key half is in `deck::tests`: a `Deck` needs
+        // a real device.)
+        let mut t = test_daemon("[[page]]\nname = \"F\"\n");
+        assert!(t.nav.go(Some("F")));
+        t.show_page();
+        t.apply_config(Config::parse("")).unwrap();
+        assert_eq!(t.nav.current(), None);
+        assert!(t.hub.replay_lines().contains(&r#"{"event":"page_changed","page":null}"#.to_string()));
     }
 }

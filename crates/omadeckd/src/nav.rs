@@ -54,6 +54,11 @@ impl Nav {
         true
     }
 
+    /// Go straight Home and clear the trail (holding Back). Returns whether anything changed.
+    pub fn home(&mut self) -> bool {
+        self.go(None)
+    }
+
     /// Go to the previous page, or home if there is none. Returns whether anything changed.
     pub fn back(&mut self) -> bool {
         if self.current.is_none() {
@@ -142,6 +147,18 @@ mod tests {
         assert_eq!(n.nearest(not_folder), None, "a folder opened from Home steps from Home");
         n.switch(Some("Music"));
         assert_eq!(n.nearest(not_folder), Some("Music"), "a normal page is its own origin");
+    }
+
+    #[test]
+    fn home_clears_a_nested_trail() {
+        let mut n = Nav::default();
+        n.go(Some("A"));
+        n.go(Some("F1"));
+        n.go(Some("F2"));
+        assert!(n.home());
+        assert_eq!(n.current(), None);
+        assert!(n.history.is_empty());
+        assert!(!n.home(), "already Home");
     }
 
     #[test]
