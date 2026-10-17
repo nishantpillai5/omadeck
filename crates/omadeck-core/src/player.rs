@@ -344,33 +344,28 @@ mod tests {
         assert!(!same(Some(&old), None));
     }
 
-    // Synthetic lines in playerctl's format, not captured output. Replace them with the
-    // `playerctl-two.txt` and `playerctl-stream.txt` captures (pr14-media-dial.md,
-    // Capture 4 and 5) once they exist.
+    // Captured on the Omarchy machine, 2026-10-17 (pr14-media-dial.md, Capture 4): a
+    // browser player with `file://` art and a local-file player with none. The positions
+    // are a snapshot of the capture.
     #[test]
     fn parse_playerctl_two_players() {
-        let out = [
-            line([
-                "spotify",
-                "spotify",
-                "Paused",
-                "83000000",
-                "225000000",
-                "Song",
-                "Band",
-                "https://i.scdn.co/image/ab67616d0000b273",
-            ]),
-            line(["chromium.instance4821", "chromium", "Playing", "12345678", "300000000", "Video ", " Channel", ""]),
-        ]
-        .join("\n")
-            + "\n";
-        let ts = parse_playerctl(&out, 7);
+        let ts = parse_playerctl(include_str!("../tests/fixtures/playerctl-two.txt"), 7);
         assert_eq!(ts.len(), 2);
-        assert_eq!((ts[0].player.as_str(), ts[0].status), ("spotify", PlayStatus::Paused));
-        assert_eq!((ts[0].position_ms, ts[0].length_ms), (83_000, Some(225_000)));
-        assert_eq!(ts[0].art, None, "https art is never fetched");
-        assert_eq!((ts[1].player.as_str(), ts[1].name.as_str()), ("chromium.instance4821", "chromium"));
-        assert_eq!((ts[1].position_ms, ts[1].title.as_str(), ts[1].artist.as_str()), (12_345, "Video", "Channel"));
+        assert_eq!(
+            (ts[0].player.as_str(), ts[0].name.as_str(), ts[0].status),
+            ("brave.instance3602", "brave", PlayStatus::Playing)
+        );
+        assert_eq!((ts[0].position_ms, ts[0].length_ms), (6_400_114, Some(9_509_061)));
+        assert_eq!(ts[0].title.as_str(), "Bhagam Bhag 2006 (HD) - Full Movie - Superhit Comedy Movie - Akshay Kumar - Govinda -  Paresh Rawal");
+        assert_eq!(ts[0].artist.as_str(), "Shemaroo Comedy");
+        // The `file://` cover resolves where the file exists (the capturing machine) and
+        // is dropped where it doesn't (CI).
+        assert!(ts[0].art.as_deref().is_none_or(|p| p.to_string_lossy().ends_with(".org.chromium.Chromium.W1WPyo")));
+        assert_eq!(art_path("https://i.scdn.co/image/ab67616d0000b273"), None, "https art is never fetched");
+        assert_eq!((ts[1].player.as_str(), ts[1].name.as_str()), ("mpv", "mpv"));
+        assert_eq!((ts[1].position_ms, ts[1].length_ms), (301, Some(1_088)));
+        assert_eq!((ts[1].title.as_str(), ts[1].artist.as_str()), ("complete.oga", ""));
+        assert_eq!(ts[1].art, None, "no art URL");
         assert_eq!(ts[1].read_ms, 7);
     }
 
