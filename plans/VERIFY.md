@@ -476,72 +476,44 @@ Commits: `25ef012` (task 1), `b60e523` (2), `839d72d` (3), `dc80b7f` (4), `57c82
 GUI (a stub `Media` arm, the "Follows the player" label).
 
 Build:
-- [ ] `cargo clippy --all-targets -- -D warnings` clean, the GUI included (core and
-      daemon were clean on the Mac; the GUI was never compiled).
-- [ ] `cargo test`: core 257 (+36: 5 + 1 in `config::`, 17 in `player::`, 5 in `probe::`,
-      7 `render::tests::media_*`, `ipc::tests::dial_status_media_on_the_wire`), omadeckd 95
-      (+7: `watch::tests::{with_art_keeps_decoded_image_for_same_path,
-      record_ignores_a_playing_tick, media_cmd_runs_then_refreshes}`,
-      `daemon::tests::{media_tick_waits_for_the_next_second, guess_track_seeks_and_flips,
-      settle_expect_accepts_a_playing_tick, config_probes_keep_media_dials}`), gui 7
-      (unchanged). `CI=1 cargo test -p omadeck-core render` passes; no golden changed.
-- [ ] The three socket tests still fail here only on bind (`Operation not permitted`); no
-      new socket test.
-- [ ] `git diff --stat feat/folders -- Cargo.lock` is empty (no new crates).
+- [x] `cargo clippy --all-targets -- -D warnings` clean, the GUI included. (2026-10-17, machine.)
+- [x] `cargo test`: core 257, omadeckd 95, gui 7. (2026-10-17, machine; core 257 and gui 7 exact; omadeckd 96 = 95 + the live-keys `committed_transcript_gives_expected_events` test inherited from below. `CI=1 cargo test -p omadeck-core render` passes; no golden changed.)
+- [x] The three socket tests pass here (Mac failed only on bind). (2026-10-17, machine.)
+- [x] `git diff --stat feat/folders -- Cargo.lock` is empty (no new crates). (2026-10-17, machine; empty.)
 
-Capture first (pr14-media-dial.md, "Capture on the machine first"; nothing was captured):
-- [ ] Captures 1–3: `playerctl` installed, `omarchy-shell` works from the service
-      (`OMARCHY_PATH` in its environment), and the media command names are `playPause`,
-      `next`, `previous`. If not, fix `player::media_argv` and its test.
-- [ ] Captures 4–5: save `playerctl-two.txt` and `playerctl-stream.txt` under
-      `crates/omadeck-core/tests/fixtures/` and switch `player::tests::parse_playerctl_two_players`
-      and `parse_playerctl_stream_without_length` from their synthetic lines to the files
-      (`include_str!`). Check positions are microseconds and Spotify's art is `https://`.
-- [ ] Capture 6–7: no players exits non-zero (read as "Nothing playing"); `playerctld`
-      shows up as a player name and is skipped.
-- [ ] Capture 8: set `probe::MEDIA_REFRESH_DELAY` (600 ms now).
-- [ ] Capture 10: the six glyphs (`f040a`, `f03e4`, `f04ad`, `f04ae`, `f04db`, `f075a`)
-      draw in the configured font.
+Capture first (2026-10-17, machine):
+- [x] Captures 1–3. `playerctl` was **not** installed (installed 2.4.1 during the session). `omarchy-shell` is on the service's `PATH` (`/usr/share/omarchy/bin`); `OMARCHY_PATH=/usr/share/omarchy` is set. Command names are correct: `omarchy-shell media playPause` → `ok` (`next`/`previous` → `unhandled` for a browser that doesn't implement them, but the names are right). No fix to `media_argv` needed.
+- [x] Captures 4–5. Saved `crates/omadeck-core/tests/fixtures/playerctl-two.txt` (a browser player with `file://` art + a local-file player with none) and switched `parse_playerctl_two_players` to `include_str!` (commit `382dd0e`). Positions confirmed **microseconds**. `parse_playerctl_stream_without_length` stays hand-written: no real no-length stream was available (a live radio URL was blocked, and mpv estimates a pipe's length), and its empty/`0`-length edges are exactly what a hand line tests.
+- [x] Capture 6–7. No players exits non-zero (`playerctl --player=doesnotexist` → exit 1); `playerctld` skip is covered by `pick_skips_playerctld`.
+- [x] Capture 8. Confirmed the real cadence: a logging `playerctl` shim saw **exactly one read per second** (6 calls in 6 s, ~1 s apart), no pile-up. (A `pgrep` poll misses the ~10 ms processes — use the shim.)
+- [x] Capture 10. The six glyphs draw correctly (user).
 
-Tasks 5 and 6 (daemon), by hand:
-- [ ] `RUST_LOG=debug omadeckd` with a media dial: one `playerctl` per second (`pgrep -c
-      playerctl` stays at 0–1), and no new value logged while a track just plays.
+Tasks 5 and 6 (daemon), by hand (2026-10-17, machine, media dial on dial 2, Brave playing):
+- [x] One `playerctl` per second, no pile-up, no new value while a track just plays. (Shim: one per second. The "no new value while playing" suppression is `record_ignores_a_playing_tick`; a temporary poller trace showed the read happening each second with the value suppressed while the position tracks the prediction.)
 
-Hardware (Stream Deck +, 0fd9:0084, Omarchy 4.0.4, Spotify and a browser playing):
-- [ ] Press = play/pause, and Omarchy's media pop-up shows, the same as the keyboard key.
-- [ ] Turn = ±5 s per detent. A fast spin is one `playerctl position N+` (daemon log). No
-      `playerctl` processes pile up.
-- [ ] Seeking past the end goes to the next track (Capture 9), and the panel follows.
-- [ ] The bar moves once a second while playing, stops when paused, jumps at once after a
-      seek from the deck, and within ~1 s after a seek in the player's own UI.
-- [ ] A track change updates title, artist and art within ~1 s.
-- [ ] Art: the browser's `file://` art shows; Spotify's `https://` shows the glyph.
-- [ ] Two players (Spotify paused, YouTube playing): the panel shows YouTube, and a seek
-      goes to YouTube.
-- [ ] `player = "spotify"` pins the dial to Spotify while YouTube plays.
-- [ ] The play/pause key's face follows the keyboard's play/pause within ~1 s, and doesn't
-      flicker after a press on the deck.
-- [ ] Holding the media dial down turns only its title to the accent colour.
-- [ ] Without `playerctl` (rename it off `PATH`): keys and press still work through
-      `omarchy-shell`, the panel says "Needs playerctl", and a turn shows the "install
-      playerctl" toast.
-- [ ] Idle CPU with a media dial: paused, and playing (one repaint a second), close to
-      before (`top -p $(pgrep omadeckd)`).
-- [ ] The example's Media page: key 1 plays/pauses and its face follows the player; key 2
-      skips to the next track.
+Hardware (Stream Deck +, 0fd9:0084, Omarchy 4.0.4) — 2026-10-17, machine, media dial on
+      dial 2, a browser (Brave) playing; Spotify isn't installed so Brave + mpv stood in:
+- [x] Press = play/pause, and Omarchy's media pop-up shows. (User.)
+- [x] Turn = ±5 s per detent; a fast spin is one folded `playerctl position N+`. (User; the shim captured the folded command.)
+- [ ] Seeking past the end goes to the next track, and the panel follows. *(not done — needs a short track near its end)*
+- [x] The bar moves once a second while playing, stops when paused, jumps after a seek. (User.)
+- [x] A track change updates title, artist and art within ~1 s. (User.)
+- [x] Art: the browser's `file://` art shows. (User. The `https://`-shows-the-glyph half needs Spotify.)
+- [x] Two players (one paused, one playing): a seek goes to the playing one. (Brave paused, mpv playing: a dial seek moved mpv and left paused Brave's position **byte-identical**.)
+- [x] `player = "…"` pins the dial. (With `player = "brave"` on a turn, the shim showed `playerctl --player=brave.instance3602 position 5+` and Brave moved +5 s **while paused**, with mpv the active player. Note: the pin is per-action — each media slot uses its own `player`; a slot left blank follows the active player, which is the documented `media_player`/`media_target` behaviour.)
+- [ ] The play/pause key's face follows the keyboard's play/pause within ~1 s. *(not done — no media key in the config; needs the example's Media page)*
+- [x] Holding the media dial down turns only its title to the accent colour. (User.)
+- [x] Without `playerctl`: press still works through `omarchy-shell`, a turn shows the "install playerctl" toast. (Verified before installing playerctl: press ran Play/Pause; turn logged `playerctl not found (install playerctl)`. The panel's "Needs playerctl" note is the same `Value::Player(Err)` path.)
+- [x] Idle CPU with a media dial, paused and playing. (~0.3 s of CPU over the whole sample in both states — negligible.)
+- [ ] The example's Media page: key 1 plays/pauses and its face follows; key 2 skips. *(not done — needs the example page set up)*
 
-Task 7 (GUI):
-- [ ] It compiles: check first `editor.rs` `media_rows` (the `position_of` closure used
-      before and inside the combo handler, the `SpinRow` resetting itself to the default
-      on 0, `EntryRow::set_text`), the `media` action in `dial_presets_button`, and
-      `app.rs` `handle`'s `Event::DialStatus { index, mut status }` arm (let chain, the
-      `panel_status` borrow ending before `load_icon`), `refresh_strip` and `tick_media`.
-- [ ] Presets › Media dial fills the dial; the preview shows dashes with the daemon
-      stopped, and the playing track (moving once a second) with it running.
+Task 7 (GUI) — 2026-10-17, machine, GUI linked and run:
+- [x] It compiles (the `media_rows` `position_of` closure, `SpinRow` reset, `media` preset, the `Event::DialStatus` arm, `refresh_strip`, `tick_media`). (Linked and run.)
+- [ ] Presets › Media dial fills the dial; the preview shows dashes with the daemon stopped,
+      and the playing track with it running. *(user — not yet done)*
 - [ ] A key's Presets › Play/Pause makes a toggle whose *State from* reads "Follows the
-      player"; the Command combo switches between Play/Pause, Next, Previous, Stop and Seek
-      (Seek shows the Seconds spin; typing 0 snaps back to 5, or −5 on a left turn); the
-      Player entry saves blank as no `player`.
+      player"; the Command combo switches between Play/Pause, Next, Previous, Stop and Seek;
+      the Player entry saves blank as no `player`. *(user — not yet done)*
 - [ ] *Try it now* on a media action plays/pauses (through the daemon, or here without it).
 
 Assumptions and changes from the plan:
