@@ -1282,3 +1282,23 @@ the code; *(plausible)* needs the machine to confirm. All 32 are fixed on `fix/r
   of the new page.
 - **Fix:** build the key slots on `ActionTarget::Key(app.key_ref(i))` through
   `action_at`/`set_action_at`, as the dial and step slots are.
+
+#### 105. Tracked jobs fail everywhere the user bus is down (CI red from `fix/review-2` on)
+
+- **Status:** fixed in `b7a5bc3` on `feat/toggle-keys`, cherry-picked to `pr/08-toggle-keys`
+  (`9352712`); the whole chain rebased on it (`fix/review-2` … `fix/review-3`, `pr/09` …
+  `pr/16`, `daily`). CI on `fix/review-2` is green again (run 39060927550).
+- **Found:** 2026-10-17, machine pass — the first CI run that includes `run_tracked`
+  (run 39060500703): `action::tests::run_tracked_streams_lines` fails in CI, passes on the
+  machine. A no-bus run with `XDG_RUNTIME_DIR` pointed at an empty dir reproduces it.
+- **Branch:** `feat/toggle-keys` (PR 8 introduced `run_tracked`); affects every branch
+  from `fix/review-2` up, and `pr/08` … `pr/16`.
+- **Where:** `action.rs` `run_tracked`: `HAS_SCOPE.get_or_init(|| which("systemd-run"))`.
+- **What goes wrong:** a CI runner (and any session without a user bus) has `systemd-run`
+  on PATH but no bus, so `systemd-run --user --scope` exits non-zero and every tracked
+  job — and the test — reports failure. U9's "fails silently when there's no user bus",
+  now with a visible failure.
+- **Fix:** `user_bus()` — the scope is taken only when `$XDG_RUNTIME_DIR/bus` exists;
+  otherwise the job runs directly, as the code already did when `systemd-run` was
+  missing. `run_tracked_streams_lines` now exercises the direct path in CI and the
+  scope path on a machine with a bus.

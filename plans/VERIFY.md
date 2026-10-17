@@ -45,16 +45,16 @@ Commits: `b1cdf93` (tasks 1–6), `8b33817` (tasks 7–8, GUI, not compiled), `f
 (task 9).
 
 Build:
-- [ ] `cargo clippy --all-targets -- -D warnings` clean, the GUI included.
-- [ ] `cargo test`: core 141, omadeckd 43 (the hub socket tests too), gui 3.
-- [ ] `cargo clippy --version` matches CI (0.1.95 or newer), and the CI run is `success`.
+- [x] `cargo clippy --all-targets -- -D warnings` clean, the GUI included. (2026-10-17, machine; gtk4 4.22.4 / libadwaita 1.9.3 present, so the GUI linked.)
+- [x] `cargo test`: core 141, omadeckd 43 (the hub socket tests too), gui 3. (2026-10-17, machine; counts exact.)
+- [x] `cargo clippy --version` matches CI (0.1.95 or newer), and the CI run is `success`. (2026-10-17; run 39060927550 success. The first run 39060500703 was red on `run_tracked_streams_lines` — BUGS.md 105, fixed and the chain rebased.)
 
 Task 4 (brightness):
 - [ ] Turn the brightness dial to 20, relabel a key in the GUI, then
       `systemctl --user restart omadeckd`. The deck comes back at 20, and `state.toml`
       has `brightness = 20` and `config_brightness = <the config's value>`.
-- [ ] Stop the daemon, edit `brightness = 35` in config.toml, start it: 35.
-- [ ] With the daemon running, edit `brightness = 45`: the deck dims within a second.
+- [x] Stop the daemon, edit `brightness = 35` in config.toml, start it: 35. (2026-10-17, machine, dev build. A config edit after the last save wins at start: with `config_brightness = 40` recorded, editing the config to 45 and starting came up at 45. Note: a *legacy* state file written before `config_brightness` existed still lets its saved brightness win — that is the documented rule, so the very first start after upgrading keeps the old value until the new daemon records `config_brightness` once.)
+- [x] With the daemon running, edit `brightness = 45`: the deck dims within a second. (2026-10-17, machine, dev build; edited to 60, `brightness 60%` logged <1 s later and saved to state.toml.)
 
 Task 5 (watcher):
 - [ ] Spin the volume dial hard both ways, then stop. The bar ends on the real level
