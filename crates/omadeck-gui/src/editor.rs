@@ -6,8 +6,8 @@ use std::rc::Rc;
 use adw::prelude::*;
 use gtk::{gdk, gio, glib};
 use omadeck_core::{
-    Action, AudioDevice, BusyFace, DialConfig, Direction, FaceTab, HOME, KeyConfig, Live, LookField, OnFace, Rgb,
-    StateChoice, action, audio, ipc, paths,
+    Action, AudioDevice, BusyFace, DialConfig, Direction, FaceTab, HOME, KeyConfig, Live, LookField, MediaCommand,
+    OnFace, Rgb, StateChoice, action, audio, ipc, paths,
 };
 
 use crate::app::{ActionTarget, App, KeyRef, Target};
@@ -680,16 +680,36 @@ fn dial_presets_button(app: &Rc<App>, i: u8) -> gtk::MenuButton {
     });
     group.add_action(&focused);
 
+    // Turn to scrub, press to play or pause; the panel shows the track.
+    let media_dial = gio::SimpleAction::new("media", None);
+    let a = app.clone();
+    media_dial.connect_activate(move |_action, _param| {
+        a.edit_dial(i, |d| {
+            let act = |seek: i16| Action::Media { command: MediaCommand::PlayPause, seek, player: None };
+            d.label = "Media".into();
+            // The state glyph and the cover show.
+            d.glyph = None;
+            // A live value would hide the media panel.
+            d.live = None;
+            d.turn_left = act(-5);
+            d.turn_right = act(5);
+            d.press = act(0);
+        });
+        a.rebuild_editor();
+    });
+    group.add_action(&media_dial);
+
     let menu = gio::Menu::new();
     menu.append(Some("Volume dial"), Some("dial-presets.volume"));
     menu.append(Some("Brightness dial"), Some("dial-presets.brightness"));
     menu.append(Some("App volume dial…"), Some("dial-presets.app"));
     menu.append(Some("Focused app dial"), Some("dial-presets.focused"));
+    menu.append(Some("Media dial"), Some("dial-presets.media"));
     let popover = gtk::PopoverMenu::from_model(Some(&menu));
     popover.insert_action_group("dial-presets", Some(&group));
     gtk::MenuButton::builder()
         .label("Presets")
-        .tooltip_text("Make this dial a volume, brightness or app volume dial")
+        .tooltip_text("Make this dial a volume, brightness, app volume or media dial")
         .popover(&popover)
         .css_classes(["flat"])
         .valign(gtk::Align::Center)
@@ -1555,8 +1575,7 @@ fn action_rows(app: &Rc<App>, group: &adw::PreferencesGroup, slot: &ActionSlot) 
 
         Action::Back => {}
 
-        // The media rows come in PR 14's last task.
-        Action::Media { .. } => {}
+        Action::Media { command, seek, player } => media_rows(app, group, slot, *command, *seek, player.as_deref()),
 
         Action::Delay { ms } => {
             let spin = adw::SpinRow::with_range(0.0, 600_000.0, 100.0);
@@ -1709,6 +1728,106 @@ fn action_rows(app: &Rc<App>, group: &adw::PreferencesGroup, slot: &ActionSlot) 
             }
         }
     }
+}
+
+/// The rows of a media action: what it does (a seek shows its seconds) and which player.
+/// Every row reads the action fresh through `slot.get` and writes through `slot.set`.
+fn media_rows(
+    app: &Rc<App>,
+    group: &adw::PreferencesGroup,
+    slot: &ActionSlot,
+    command: MediaCommand,
+    seek: i16,
+    player: Option<&str>,
+) {
+    group.add(&hint_row(
+        "Controls the media player. Play/pause, next and previous go through Omarchy's own media commands, so its \
+         pop-up shows. Seeking, stop, a chosen player and the strip need playerctl.",
+    ));
+
+    // The seek a Seek pick starts from: back on a left turn, forward otherwise.
+    let default_seek: i16 = if slot.dir == Some(Direction::Left) { -5 } else { 5 };
+    let position_of = |command: MediaCommand, seek: i16| -> u32 {
+        if seek != 0 {
+            return 4;
+        }
+        match command {
+            MediaCommand::PlayPause => 0,
+            MediaCommand::Next => 1,
+            MediaCommand::Previous => 2,
+            MediaCommand::Stop => 3,
+        }
+    };
+    let commands = gtk::StringList::new(&["Play/Pause", "Next track", "Previous track", "Stop", "Seek"]);
+    let cmd_row = adw::ComboRow::builder().title("Command").model(&commands).build();
+    cmd_row.set_selected(position_of(command, seek));
+    cmd_row.connect_selected_notify({
+        let a = app.clone();
+        let get = slot.get.clone();
+        let set_cmd = slot.set.clone();
+        move |row: &adw::ComboRow| {
+            let sel = row.selected();
+            let Action::Media { command, seek, player } = (get)(&a) else { return };
+            if sel == position_of(command, seek) {
+                return;
+            }
+            let (command, seek) = match sel {
+                1 => (MediaCommand::Next, 0),
+                2 => (MediaCommand::Previous, 0),
+                3 => (MediaCommand::Stop, 0),
+                4 => (MediaCommand::PlayPause, default_seek),
+                _ => (MediaCommand::PlayPause, 0),
+            };
+            (set_cmd)(&a, Action::Media { command, seek, player });
+            a.rebuild_editor();
+        }
+    });
+    group.add(&cmd_row);
+
+    if seek != 0 {
+        let spin = adw::SpinRow::with_range(-60.0, 60.0, 1.0);
+        spin.set_title("Seconds");
+        spin.set_subtitle("Per detent on a dial; negative goes back");
+        spin.set_value(f64::from(seek));
+        spin.connect_value_notify({
+            let a = app.clone();
+            let get = slot.get.clone();
+            let set_spin = slot.set.clone();
+            // Edits in place: a rebuild would take the focus from the spin.
+            move |r: &adw::SpinRow| {
+                let v = r.value().round() as i16;
+                if v == 0 {
+                    // 0 is no seek at all: back to the slot's default (this notifies again).
+                    r.set_value(f64::from(default_seek));
+                    return;
+                }
+                let mut act = (get)(&a);
+                if let Action::Media { seek, .. } = &mut act {
+                    *seek = v;
+                }
+                (set_spin)(&a, act);
+            }
+        });
+        group.add(&spin);
+    }
+
+    let player_row = adw::EntryRow::builder().title("Player (e.g. spotify; empty = the one playing)").build();
+    player_row.set_text(player.unwrap_or(""));
+    player_row.connect_changed({
+        let a = app.clone();
+        let get = slot.get.clone();
+        let set_player = slot.set.clone();
+        move |e: &adw::EntryRow| {
+            let text = e.text();
+            let name = text.trim();
+            let mut act = (get)(&a);
+            if let Action::Media { player, .. } = &mut act {
+                *player = (!name.is_empty()).then(|| name.to_string());
+            }
+            (set_player)(&a, act);
+        }
+    });
+    group.add(&player_row);
 }
 
 /// A multi action's rows: one per step (↑, ↓, remove; activate to edit it), "Add step",

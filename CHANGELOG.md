@@ -7,6 +7,13 @@ All notable changes to omadeck are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- Media: a `media` action plays or pauses, skips to the next or previous track, stops,
+  or seeks by a number of seconds. A media dial scrubs on a turn and plays or pauses on a
+  press; its strip panel shows the track, artist, cover (local files) and a bar that
+  moves while it plays. A play/pause key's on face follows the player. Play/pause, next
+  and previous go through Omarchy's media commands when it has them; seeking and the
+  panel need `playerctl`. The configurator has a Media dial preset and a Play/Pause key
+  preset.
 - Hold a Back key for half a second to go straight Home, as in the Elgato app. A Back key
   now goes back when you let go of it. In the configurator, double-click a folder key to
   open it or a Back key to go up; the page switcher shows a folder with its path
