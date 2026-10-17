@@ -558,14 +558,21 @@ impl Daemon {
             match ev {
                 HyprEvent::Workspace { name, .. } => self.apply_value(Probe::Workspace, Some(Value::Text(name)), 0),
                 HyprEvent::ActiveWindow(w) => {
-                    // Always, nothing focused included: the watcher only remembers it
-                    // when no focused dial is watched, and a focused dial with no window
-                    // falls back to its sticky app.
-                    let focus = w.as_ref().map(|w| audio::Window { pid: w.pid, class: w.class.clone() });
-                    let _ = self.watcher.cmd.send(WatchCmd::Focus(focus));
+                    // A retitle of the focused window comes as an `ActiveWindow` too. Only
+                    // another window counts: a window retitling faster than the settle
+                    // would never settle, and each retitle would re-read `pactl`
+                    // (BUGS.md 80).
+                    let moved = self.rt.window.as_ref().map(window_identity) != w.as_ref().map(window_identity);
+                    if moved {
+                        // Nothing focused included: the watcher only remembers it when no
+                        // focused dial is watched, and a focused dial with no window
+                        // falls back to its sticky app.
+                        let focus = w.as_ref().map(|w| audio::Window { pid: w.pid, class: w.class.clone() });
+                        let _ = self.watcher.cmd.send(WatchCmd::Focus(focus));
+                        // Pages that follow apps act on the window focus settles on.
+                        self.focus_pending = Some(Instant::now() + APP_FOCUS_SETTLE);
+                    }
                     self.rt.window = w;
-                    // Pages that follow apps act on the window focus settles on.
-                    self.focus_pending = Some(Instant::now() + APP_FOCUS_SETTLE);
                 }
             }
         }
@@ -1385,6 +1392,11 @@ impl Daemon {
     }
 }
 
+/// What makes a focused window another one: a retitle keeps all three.
+fn window_identity(w: &hypr::ActiveWindow) -> (&str, &str, Option<u32>) {
+    (&w.address, &w.class, w.pid)
+}
+
 /// The reply line for a `Run` that went through: where the deck is now, or what ran.
 fn run_message(act: &Action, page: Option<&str>, brightness: u8) -> String {
     match act {
@@ -1848,11 +1860,12 @@ live = { source = "battery" }
     }
 
     /// A daemon with no deck, socket, watcher thread, Hyprland or user state: the hub is
-    /// detached, the watcher's commands come out of `cmds`, and the state saver writes
-    /// into a temp dir that is removed on drop.
+    /// detached, the watcher's commands come out of `cmds`, Hyprland events go in through
+    /// `hypr_tx`, and the state saver writes into a temp dir that is removed on drop.
     struct TestDaemon {
         d: Option<Daemon>,
         cmds: std::sync::mpsc::Receiver<WatchCmd>,
+        hypr_tx: std::sync::mpsc::Sender<HyprEvent>,
         dir: std::path::PathBuf,
     }
 
@@ -1886,13 +1899,14 @@ live = { source = "battery" }
         let saver = crate::saver::start_saver_at(dir.join("state.toml"));
         let (hub, _requests) = Hub::detached();
         let (watcher, cmds, _values) = Watcher::detached();
+        let (hypr_tx, hypr_rx) = std::sync::mpsc::channel();
         let env = Env {
             saved: State::default(),
             hypr: HyprWorker::start_with(|d| anyhow::bail!("no Hyprland in tests ({d})")),
-            hypr_events: None,
+            hypr_events: Some(hypr_rx),
         };
         let d = Daemon::with_env(Config::parse(toml).unwrap(), true, hub, watcher, saver, env);
-        TestDaemon { d: Some(d), cmds, dir }
+        TestDaemon { d: Some(d), cmds, hypr_tx, dir }
     }
 
     #[test]
@@ -1918,6 +1932,39 @@ live = { source = "battery" }
         t.detach(&omadeck_core::device::StreamDeckError::NoScreen);
         assert_eq!(t.media_due, None);
         assert!(wait_for(Instant::now(), t.next_deadline()) > Duration::ZERO);
+    }
+
+    fn window(address: &str, class: &str, title: &str) -> hypr::ActiveWindow {
+        hypr::ActiveWindow { address: address.into(), class: class.into(), title: title.into(), pid: Some(7) }
+    }
+
+    fn focus_sends(cmds: &std::sync::mpsc::Receiver<WatchCmd>) -> usize {
+        cmds.try_iter().filter(|c| matches!(c, WatchCmd::Focus(_))).count()
+    }
+
+    #[test]
+    fn a_retitle_does_not_restart_the_app_page_settle() {
+        // BUGS.md 80: a window retitling faster than the settle never got its linked page,
+        // and each retitle re-read `pactl`.
+        let mut t = test_daemon("");
+        t.hypr_tx.send(HyprEvent::ActiveWindow(Some(window("a", "kitty", "one")))).unwrap();
+        t.apply_hypr();
+        let settle = t.focus_pending.expect("a new window starts the settle");
+        assert_eq!(focus_sends(&t.cmds), 1);
+        std::thread::sleep(Duration::from_millis(5));
+        t.hypr_tx.send(HyprEvent::ActiveWindow(Some(window("a", "kitty", "two")))).unwrap();
+        t.apply_hypr();
+        assert_eq!(t.focus_pending, Some(settle), "a retitle keeps the settle");
+        assert_eq!(focus_sends(&t.cmds), 0, "a retitle sends no Focus");
+        assert_eq!(t.rt.window.as_ref().map(|w| w.title.as_str()), Some("two"), "the title is still stored");
+        // Another window, or none, does restart it.
+        t.hypr_tx.send(HyprEvent::ActiveWindow(Some(window("b", "kitty", "two")))).unwrap();
+        t.apply_hypr();
+        assert!(t.focus_pending.is_some_and(|at| at > settle));
+        assert_eq!(focus_sends(&t.cmds), 1);
+        t.hypr_tx.send(HyprEvent::ActiveWindow(None)).unwrap();
+        t.apply_hypr();
+        assert_eq!(focus_sends(&t.cmds), 1);
     }
 
     #[test]
