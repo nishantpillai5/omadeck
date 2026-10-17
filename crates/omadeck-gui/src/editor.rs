@@ -1,5 +1,6 @@
 //! The right-hand panel: what a key or dial does and how it looks.
 
+use std::cell::RefCell;
 use std::rc::Rc;
 
 use adw::prelude::*;
@@ -14,6 +15,9 @@ use crate::{apps, media};
 
 pub fn build_key(app: &Rc<App>, i: u8) -> gtk::Widget {
     let key = app.key(i).unwrap_or_else(|| KeyConfig::new(i));
+    // A tab this key doesn't offer (its on face was just removed) falls back to Off.
+    let tab = key.clamp_face_tab(app.face_tab.get());
+    app.face_tab.set(tab);
     let deck = app.deck_info();
     let page = adw::PreferencesPage::new();
     let page_name = app.current_page();
@@ -100,6 +104,8 @@ pub fn build_key(app: &Rc<App>, i: u8) -> gtk::Widget {
         busy.connect_active_notify(move |r| {
             let on = r.is_active();
             a.edit(i, |k| k.busy_while_running = on);
+            // The Busy tab and the Progress bar row come and go with it.
+            a.rebuild_editor();
         });
         group.add(&busy);
     }
@@ -127,41 +133,69 @@ pub fn build_key(app: &Rc<App>, i: u8) -> gtk::Widget {
     });
     toggle.add(&two);
     if let Some(on) = &key.on {
-        let choices: &[&str] = key
-            .state_choices()
+        let choices = key.state_choices();
+        let names: Vec<&str> = choices
             .iter()
             .map(|c| match c {
                 StateChoice::Press => "Flips on each press",
                 StateChoice::Command => "Shell command",
                 StateChoice::Mute => "Follows mute",
             })
-            .collect::<Vec<_>>()
-            .leak();
-        let list = gtk::StringList::new(choices);
+            .collect();
+        let list = gtk::StringList::new(&names);
         let state_row = adw::ComboRow::builder().title("State from").model(&list).build();
-        state_row.set_selected(key.state_choice() as usize as u32);
-        let choices = key.state_choices().to_vec();
+        // The row is the choice's place in this key's list, not the enum's number.
+        state_row.set_selected(choices.iter().position(|c| *c == key.state_choice()).unwrap_or(0) as u32);
+        let choices = choices.to_vec();
         let a = app.clone();
         state_row.connect_selected_notify(move |row| {
-            let sel = row.selected() as usize;
-            a.edit(i, |k| k.set_state_choice(choices[sel]));
+            let Some(&c) = choices.get(row.selected() as usize) else { return };
+            a.edit(i, |k| k.set_state_choice(c));
             a.rebuild_editor();
         });
         toggle.add(&state_row);
         if key.state_choice() == StateChoice::Command {
-            let cmd = adw::EntryRow::builder().title("State command").text(on.state.as_deref().unwrap_or("")).build();
+            let cmd = adw::EntryRow::builder()
+                .title("State command")
+                .text(on.state.as_deref().unwrap_or(""))
+                .show_apply_button(true)
+                .build();
             cmd.add_suffix(
                 &gtk::Label::builder().label("exit 0 = on, 75 = busy, else off").css_classes(["dim-label"]).build(),
             );
-            let a = app.clone();
-            cmd.connect_changed(move |e| {
-                let text = e.text().to_string();
-                a.edit(i, |k| {
-                    if let Some(on) = &mut k.on {
-                        on.state = Some(text);
+            // Saved on Enter, ✓ or focus-out, not per keystroke: the daemon runs whatever is
+            // saved, and a half-typed `systemctl --user stop` would run too. Focus-out keeps an
+            // edit the user clicked away from.
+            let at = app.key_ref(i); // the key it was built for, even if the page changes first
+            let saved = Rc::new(RefCell::new(cmd.text().to_string()));
+            let save: Rc<dyn Fn(&adw::EntryRow)> = {
+                let a = app.clone();
+                Rc::new(move |e: &adw::EntryRow| {
+                    let text = e.text().to_string();
+                    // Unchanged (Enter, then focus moves on): no second edit, no second save.
+                    if *saved.borrow() == text {
+                        return;
                     }
-                });
+                    saved.replace(text.clone());
+                    a.edit_ref(&at, |k| {
+                        if let Some(on) = &mut k.on {
+                            on.state = Some(text);
+                        }
+                    });
+                })
+            };
+            cmd.connect_apply({
+                let save = save.clone();
+                move |e| save(e)
             });
+            let focus = gtk::EventControllerFocus::new();
+            let weak = cmd.downgrade();
+            focus.connect_leave(move |_| {
+                if let Some(e) = weak.upgrade() {
+                    save(&e);
+                }
+            });
+            cmd.add_controller(focus);
             toggle.add(&cmd);
             let adj = gtk::Adjustment::new(on.interval as f64, 1.0, 60.0, 1.0, 1.0, 0.0);
             let every = adw::SpinRow::builder().title("Every (seconds)").adjustment(&adj).build();
@@ -184,27 +218,10 @@ pub fn build_key(app: &Rc<App>, i: u8) -> gtk::Widget {
                         on.slow = active;
                     }
                 });
+                // The Busy tab and the Progress bar row come and go with it.
+                a.rebuild_editor();
             });
             toggle.add(&slow);
-        }
-        if key.is_slow_toggle() || key.busy_while_running {
-            let bar = adw::SwitchRow::builder()
-                .title("Progress bar")
-                .subtitle("Draw the last percentage of the state output")
-                .active(key.busy.as_ref().is_some_and(|b| b.bar))
-                .build();
-            let a = app.clone();
-            bar.connect_active_notify(move |r| {
-                let on = r.is_active();
-                a.edit(i, |k| {
-                    if on {
-                        k.busy.get_or_insert_with(BusyFace::default).bar = true;
-                    } else if let Some(b) = &mut k.busy {
-                        b.bar = false;
-                    }
-                });
-            });
-            toggle.add(&bar);
         }
         let on_slot = ActionSlot {
             target: ActionTarget::KeyOn(app.key_ref(i)),
@@ -227,17 +244,43 @@ pub fn build_key(app: &Rc<App>, i: u8) -> gtk::Widget {
                     });
                 }
             }),
-            on_new_page: Rc::new(move |a| new_folder(a, i)),
+            // A folder for the on action only: the key keeps its own look (`new_folder`
+            // would make the key itself look like a folder).
+            on_new_page: Rc::new(move |a| {
+                let label = a.key(i).map(|k| k.label).unwrap_or_default();
+                a.add_page(if label.trim().is_empty() { "Page" } else { label.as_str() }, true)
+            }),
             on_favicon: None,
         };
         action_editor(app, &toggle, "When pressed while on", &on_slot);
+    }
+    // A busy-while-running key has a busy face without being a toggle: the row follows
+    // the Busy tab, not the on face.
+    if key.face_tabs().contains(&FaceTab::Busy) {
+        let bar = adw::SwitchRow::builder()
+            .title("Progress bar")
+            .subtitle("Draw the first percentage of the busy text")
+            .active(key.busy.as_ref().is_some_and(|b| b.bar))
+            .build();
+        let a = app.clone();
+        bar.connect_active_notify(move |r| {
+            let on = r.is_active();
+            a.edit(i, |k| {
+                if on {
+                    k.busy.get_or_insert_with(BusyFace::default).bar = true;
+                } else if let Some(b) = &mut k.busy {
+                    b.bar = false;
+                }
+            });
+        });
+        toggle.add(&bar);
     }
     page.add(&toggle);
 
     // --- appearance -----------------------------------------------------------------------
     let look = adw::PreferencesGroup::builder().title("Appearance").build();
     appearance_tabs(app, &look, &key);
-    appearance_rows(app, &look, i, app.face_tab.get(), &key);
+    appearance_rows(app, &look, i, tab, &key);
     page.add(&look);
 
     page.upcast()
@@ -246,22 +289,26 @@ pub fn build_key(app: &Rc<App>, i: u8) -> gtk::Widget {
 /// The linked Off | On | Busy buttons in the Appearance header. On shows for toggles
 /// (a key with an on face); Busy for slow toggles and busy-while-running keys.
 fn appearance_tabs(app: &Rc<App>, group: &adw::PreferencesGroup, key: &KeyConfig) {
-    let tabs = vec![("Off", FaceTab::Off), ("On", FaceTab::On), ("Busy", FaceTab::Busy)]
-        .into_iter()
-        .filter(|(_, tab)| match tab {
-            FaceTab::Off => true,
-            FaceTab::On => key.on.is_some(),
-            FaceTab::Busy => key.is_slow_toggle() || key.busy_while_running,
-        })
-        .collect::<Vec<_>>();
+    let tabs = key.face_tabs();
     if tabs.len() < 2 {
         return;
     }
     let current = app.face_tab.get();
     let buttons = gtk::Box::new(gtk::Orientation::Horizontal, 0);
     buttons.add_css_class("linked");
-    for (label, tab) in tabs {
+    let mut first: Option<gtk::ToggleButton> = None;
+    for tab in tabs {
+        let label = match tab {
+            FaceTab::Off => "Off",
+            FaceTab::On => "On",
+            FaceTab::Busy => "Busy",
+        };
         let b = gtk::ToggleButton::builder().label(label).active(tab == current).build();
+        // One group: exactly one tab is active, and clicking the active one keeps it.
+        match &first {
+            Some(f) => b.set_group(Some(f)),
+            None => first = Some(b.clone()),
+        }
         let a = app.clone();
         let self_btn = b.clone();
         b.connect_toggled(move |_| {
@@ -549,34 +596,43 @@ fn presets_button(app: &Rc<App>, i: u8) -> gtk::MenuButton {
 /// The Service… dialog: a systemd user unit and an optional health URL.
 fn service_dialog(app: &Rc<App>, i: u8) {
     let unit = gtk::Entry::builder().placeholder_text("llm.service").build();
-    let url = gtk::Entry::builder().placeholder_text("http://127.0.0.1:8000/health (optional)").build();
+    let url_entry = gtk::Entry::builder().placeholder_text("http://127.0.0.1:8000/health (optional)").build();
     let entries = gtk::Box::new(gtk::Orientation::Vertical, 6);
     entries.append(&unit);
-    entries.append(&url);
-    let a = app.clone();
+    entries.append(&url_entry);
+    // The key it was opened for: a page change on the deck meanwhile must not move it.
+    let at = app.key_ref(i);
     let dialog = adw::AlertDialog::builder()
         .heading("Service toggle")
         .body("A slow toggle for a systemd user unit. Optionally check a health URL while it comes up.")
         .build();
     dialog.set_extra_child(Some(&entries));
-    dialog.add_response("ok", "OK");
-    let a2 = a.clone();
-    dialog.connect_response(None, move |d: &adw::AlertDialog, response: &str| {
-        if response == "ok" {
-            let u = unit.text().to_string();
-            let u2 = url.text().to_string();
-            let mut k = KeyConfig::new(0);
-            match omadeck_core::apply_service(&mut k, &u, (!u2.trim().is_empty()).then_some(u2.trim())) {
-                Ok(()) => {
-                    a2.edit(i, |k2| *k2 = k);
-                    a2.rebuild_editor();
-                }
-                Err(e) => a2.toast(&format!("{e:#}")),
-            }
+    dialog.add_responses(&[("cancel", "Cancel"), ("ok", "Create")]);
+    dialog.set_close_response("cancel");
+    dialog.set_default_response(Some("ok"));
+    dialog.set_response_appearance("ok", adw::ResponseAppearance::Suggested);
+    let a = app.clone();
+    dialog.connect_response(None, move |_, response| {
+        if response != "ok" {
+            return;
         }
-        d.unparent();
+        let u = unit.text().to_string();
+        let url = url_entry.text().trim().to_string();
+        let url = (!url.is_empty()).then_some(url.as_str());
+        // Checked on a scratch key first: a typo must not cost an edit (and a save)
+        // of the real key.
+        if let Err(e) = omadeck_core::apply_service(&mut KeyConfig::new(0), &u, url) {
+            a.toast(&format!("{e:#}"));
+            return;
+        }
+        // In place: the key keeps its index, background and colours.
+        a.edit_ref(&at, |k| {
+            let _ = omadeck_core::apply_service(k, &u, url);
+        });
+        a.rebuild_editor();
     });
-    dialog.present(Some(&a.window));
+    // AdwAlertDialog closes itself after a response: no `unparent`.
+    dialog.present(Some(&app.window));
 }
 
 /// One action an editor edits: a key's action, one of a dial's three, and later a
@@ -623,7 +679,7 @@ impl ActionSlot {
             }),
             on_new_page: Rc::new(move |a| {
                 let label = a.config.borrow().dial(i).map(|d| d.label.clone()).unwrap_or_default();
-                a.add_page(if label.trim().is_empty() { "Page" } else { &label }, true)
+                a.add_page(if label.trim().is_empty() { "Page" } else { label.as_str() }, true)
             }),
             on_favicon: None,
         }
@@ -694,6 +750,19 @@ fn action_editor(app: &Rc<App>, group: &adw::PreferencesGroup, combo_title: &str
     });
     group.add(&kind_row);
     action_rows(app, group, slot);
+}
+
+/// A short explanation under an action's rows. Its own row, not the group's
+/// description: the group belongs to whoever built it (a key's "Home · Row 1 ·
+/// Column 2", the Toggle group, PR 12's step editors).
+fn hint_row(text: &str) -> adw::ActionRow {
+    adw::ActionRow::builder()
+        .subtitle(text)
+        .subtitle_lines(0)
+        .use_markup(false)
+        .activatable(false)
+        .css_classes(["dim-label"])
+        .build()
 }
 
 fn action_rows(app: &Rc<App>, group: &adw::PreferencesGroup, slot: &ActionSlot) {
@@ -882,7 +951,7 @@ fn action_rows(app: &Rc<App>, group: &adw::PreferencesGroup, slot: &ActionSlot) 
         }
 
         Action::Hyprland { dispatch } => {
-            group.set_description(Some(
+            group.add(&hint_row(
                 "Runs hyprctl dispatch. Classic syntax like workspace 3 · togglefloating · killactive · exec pavucontrol \
                  is translated for you, or write Lua directly: hl.dsp.focus({ workspace = \"3\" })",
             ));
@@ -965,7 +1034,7 @@ fn action_rows(app: &Rc<App>, group: &adw::PreferencesGroup, slot: &ActionSlot) 
         }
 
         Action::Volume { device, change, mute } => {
-            group.set_description(Some(
+            group.add(&hint_row(
                 "Changes the system volume through Omarchy's own commands, so its pop-up shows. On a dial, the \
                  level is drawn on the touch strip.",
             ));
@@ -1043,7 +1112,7 @@ fn action_rows(app: &Rc<App>, group: &adw::PreferencesGroup, slot: &ActionSlot) 
         }
 
         Action::Brightness { change, set } => {
-            group.set_description(Some(
+            group.add(&hint_row(
                 "Changes the panel brightness (0–100). The value is remembered in the \
                  state file, so it survives a restart. On a dial it is drawn on the touch \
                  strip.",
