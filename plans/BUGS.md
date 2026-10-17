@@ -974,13 +974,14 @@ Hyprland), GUI (app, pages, apps), GUI (editor). The summary is in
 [review-2026-10-17c.md](review-2026-10-17c.md). Each entry names the branch that brought
 the bug in; fix it there (or in a `fix/review-3` on top, as decided when fixing).
 *(test)* means a test in a scratch copy showed it; *(read)* means it was traced through
-the code; *(plausible)* needs the machine to confirm. None is fixed yet.
+the code; *(plausible)* needs the machine to confirm. All 32 are fixed on `fix/review-3`
+(on top of `feat/strip-long-press`, now also `daily`), most with a regression test.
 
 ### Review 3: high
 
 #### 73. Unplugging the deck while music plays spins the daemon at 100% CPU
 
-- **Status:** open. **Found:** 2026-10-17, review 3 (daemon loop) *(read, re-checked)*.
+- **Status:** fixed in `816caac` (test in abad8d7) on `fix/review-3`, not yet verified on the machine ([VERIFY.md](VERIFY.md)). **Found:** 2026-10-17, review 3 (daemon loop) *(read, re-checked)*.
 - **Branch:** `feat/media-dial` (`75694de`).
 - **Where:** `Daemon::detach`, `Daemon::flush`, `Daemon::next_deadline`; `run()` in
   `main.rs`, the no-deck branch.
@@ -997,7 +998,7 @@ the code; *(plausible)* needs the machine to confirm. None is fixed yet.
 
 #### 74. Each `omadeckd` ctl call leaks a thread and a socket until the next event
 
-- **Status:** open. **Found:** 2026-10-17, review 3 (daemon watcher/hub) *(test)*.
+- **Status:** fixed in `887d9ac` on `fix/review-3`, not yet verified on the machine ([VERIFY.md](VERIFY.md)). **Found:** 2026-10-17, review 3 (daemon watcher/hub) *(test)*.
 - **Branch:** `feat/ctl` (`32390eb`). The writer and reader structure is older, but before
   ctl every client was a long-lived configurator.
 - **Where:** `hub.rs` `Hub::start` (accept loop), `spawn_writer`, `read_requests`,
@@ -1014,7 +1015,7 @@ the code; *(plausible)* needs the machine to confirm. None is fixed yet.
 
 #### 75. A seek key does nothing unless something else watches the player
 
-- **Status:** open. **Found:** 2026-10-17, review 3 (core probes) *(test)*.
+- **Status:** fixed in `324c99d` on `fix/review-3`, not yet verified on the machine ([VERIFY.md](VERIFY.md)). **Found:** 2026-10-17, review 3 (core probes) *(test)*.
 - **Branch:** `feat/media-dial` (`839d72d`, `75694de`).
 - **Where:** `probe::watched_probes`, `probe::media_target`; the daemon's `Action::Media`
   arm (`seek != 0 && target.is_none()` → "nothing known to seek").
@@ -1027,7 +1028,7 @@ the code; *(plausible)* needs the machine to confirm. None is fixed yet.
 
 #### 76. Media keys can target a stale player read on another page
 
-- **Status:** open. **Found:** 2026-10-17, review 3 (core probes) *(read)*.
+- **Status:** fixed in `324c99d` on `fix/review-3`, not yet verified on the machine ([VERIFY.md](VERIFY.md)). **Found:** 2026-10-17, review 3 (core probes) *(read)*.
 - **Branch:** `feat/media-dial` (`839d72d`, `75694de`).
 - **Where:** `probe::media_target`; `Daemon::dispatch` (`Action::Media`). Values of
   unwatched probes are kept on purpose (faces).
@@ -1040,7 +1041,7 @@ the code; *(plausible)* needs the machine to confirm. None is fixed yet.
 
 #### 77. The Volume and Brightness dial presets keep the dial's live value
 
-- **Status:** open. **Found:** 2026-10-17, review 3 (GUI editor) *(read)*.
+- **Status:** fixed in `5f9cf64` on `fix/review-3` (GUI: type-checked, not run), not yet verified on the machine ([VERIFY.md](VERIFY.md)). **Found:** 2026-10-17, review 3 (GUI editor) *(read)*.
 - **Branch:** `feat/app-volume` (`7ba769e`, the Presets menu); `live` on dials is PR 9's.
 - **Where:** `editor.rs` `dial_presets_button`, the `volume` and `brightness` actions.
 - **What goes wrong:** a dial showing a clock gets Presets › Volume dial: the actions
@@ -1050,7 +1051,7 @@ the code; *(plausible)* needs the machine to confirm. None is fixed yet.
 
 #### 78. `cargo clippy --all-targets -- -D warnings` fails for the GUI
 
-- **Status:** open. **Found:** 2026-10-17, review 3 (GUI) *(test: GUI type-checked with a
+- **Status:** fixed in `9df8df3` on `fix/review-3`, not yet verified on the machine ([VERIFY.md](VERIFY.md)). **Found:** 2026-10-17, review 3 (GUI) *(test: GUI type-checked with a
   stub pkg-config)*.
 - **Branch:** `feat/live-keys` (`969ab3a`: two `type_complexity` warnings on the `LiveEdit`
   closures in `editor.rs`); `feat/strip-long-press` (`large_enum_variant` on `app.rs`
@@ -1065,7 +1066,7 @@ the code; *(plausible)* needs the machine to confirm. None is fixed yet.
 
 #### 79. A reload that moves the page while Back is held runs the wrong key on release
 
-- **Status:** open. **Found:** 2026-10-17, review 3 (daemon loop) *(read)*.
+- **Status:** fixed in `afad70e` on `fix/review-3`, not yet verified on the machine ([VERIFY.md](VERIFY.md)). **Found:** 2026-10-17, review 3 (daemon loop) *(read)*.
 - **Branch:** `feat/folders` (`a09db77`, `back_held`); `feat/app-pages` (`54ea4fb`) added a
   trigger (`follow_focus` in `reload`).
 - **Where:** `Daemon::reload` (moves `nav` without `show_page`); the `ButtonUp` arm.
@@ -1076,7 +1077,7 @@ the code; *(plausible)* needs the machine to confirm. None is fixed yet.
 
 #### 80. A window title change restarts the app-page settle and re-reads `pactl`
 
-- **Status:** open. **Found:** 2026-10-17, review 3 (both daemon parts) *(read)*.
+- **Status:** fixed in `371f3d0` on `fix/review-3`, not yet verified on the machine ([VERIFY.md](VERIFY.md)). **Found:** 2026-10-17, review 3 (both daemon parts) *(read)*.
 - **Branch:** `feat/app-pages` (`54ea4fb`, the settle); `feat/app-volume` (`554812b`, the
   `Focus` send).
 - **Where:** `Daemon::apply_hypr`, the `ActiveWindow` arm; `hypr.rs` turns every
@@ -1089,7 +1090,7 @@ the code; *(plausible)* needs the machine to confirm. None is fixed yet.
 
 #### 81. The Hyprland listener can stay stuck on a crashed instance's directory
 
-- **Status:** open. **Found:** 2026-10-17, review 3 (daemon watcher/hub) *(plausible)*.
+- **Status:** fixed in `e904fce` on `fix/review-3`, not yet verified on the machine ([VERIFY.md](VERIFY.md)). **Found:** 2026-10-17, review 3 (daemon watcher/hub) *(plausible)*.
 - **Branch:** `feat/live-keys` (`635a384`).
 - **Where:** `hypr.rs` `find_instance`, `run`.
 - **What goes wrong:** if Hyprland crashes and leaves its old `.socket2.sock`, the env
@@ -1099,7 +1100,7 @@ the code; *(plausible)* needs the machine to confirm. None is fixed yet.
 
 #### 82. A slow `playerctl` read blanks the media dial and play/pause keys
 
-- **Status:** open. **Found:** 2026-10-17, review 3 (daemon watcher/hub) *(read)*.
+- **Status:** fixed in `05c5897` on `fix/review-3`, not yet verified on the machine ([VERIFY.md](VERIFY.md)). **Found:** 2026-10-17, review 3 (daemon watcher/hub) *(read)*.
 - **Branch:** `feat/media-dial` (`57c828e`).
 - **Where:** `player::read` (timeout → `Ok(None)`), `watch.rs` `Poller::run_due`.
 - **What goes wrong:** a timeout reads as "nothing playing", so the panel goes idle and
@@ -1108,28 +1109,28 @@ the code; *(plausible)* needs the machine to confirm. None is fixed yet.
 
 #### 83. A cover that won't decode is decoded again every second
 
-- **Status:** open. **Found:** 2026-10-17, review 3 (daemon watcher/hub) *(test)*.
+- **Status:** fixed in `05c5897` on `fix/review-3`, not yet verified on the machine ([VERIFY.md](VERIFY.md)). **Found:** 2026-10-17, review 3 (daemon watcher/hub) *(test)*.
 - **Branch:** `feat/media-dial` (`57c828e`).
 - **Where:** `watch.rs` `with_art` (its comment says it doesn't retry).
 - **Fix:** remember the failed path on the poller and skip it.
 
 #### 84. On Omarchy 3, every media command runs `hyprctl monitors` even when unused
 
-- **Status:** open. **Found:** 2026-10-17, review 3 (daemon watcher/hub) *(read)*.
+- **Status:** fixed in `05c5897` on `fix/review-3`, not yet verified on the machine ([VERIFY.md](VERIFY.md)). **Found:** 2026-10-17, review 3 (daemon watcher/hub) *(read)*.
 - **Branch:** `feat/media-dial` (`57c828e`).
 - **Where:** `watch.rs` `Poller::handle` (`WatchCmd::Media`); `player::media_argv`.
 - **Fix:** look the monitor up only for an untargeted non-seek, non-stop command.
 
 #### 85. Two player probes run two `playerctl -a` reads a second
 
-- **Status:** open. **Found:** 2026-10-17, review 3 (daemon watcher/hub) *(read)*.
+- **Status:** fixed in `05c5897` on `fix/review-3`, not yet verified on the machine ([VERIFY.md](VERIFY.md)). **Found:** 2026-10-17, review 3 (daemon watcher/hub) *(read)*.
 - **Branch:** `feat/media-dial` (`57c828e`).
 - **Where:** `watch.rs` `Poller::run_due` (`Probe::Player`).
 - **Fix:** one read per pass, then `player::pick` per watched probe (as app volume does).
 
 #### 86. A long ▶ (`Command::Run`) is refused by the 4096-byte line cap
 
-- **Status:** open. **Found:** 2026-10-17, review 3 (core) *(read)*.
+- **Status:** fixed in `29b90a4` on `fix/review-3`, not yet verified on the machine ([VERIFY.md](VERIFY.md)). **Found:** 2026-10-17, review 3 (core) *(read)*.
 - **Branch:** `feat/ctl` (`dbe1ae3`).
 - **Where:** `ipc::MAX_LINE`, `hub::read_requests`.
 - **What goes wrong:** a multi with a few dozen steps or a long command goes past 4 KiB and
@@ -1139,7 +1140,7 @@ the code; *(plausible)* needs the machine to confirm. None is fixed yet.
 
 #### 87. A clock with `%-S` or fractional seconds updates only every few seconds
 
-- **Status:** open. **Found:** 2026-10-17, review 3 (core) *(test)*.
+- **Status:** fixed in `e62ccbf` on `fix/review-3`, not yet verified on the machine ([VERIFY.md](VERIFY.md)). **Found:** 2026-10-17, review 3 (core) *(test)*.
 - **Branch:** `feat/live-keys` (`837c11e`).
 - **Where:** `live::needs_seconds`.
 - **Fix:** skip jiff's flags and width (`-_0^#`, digits, `.`, `:`) after `%`, and add `f`
@@ -1147,20 +1148,20 @@ the code; *(plausible)* needs the machine to confirm. None is fixed yet.
 
 #### 88. `parse_command` calls a known command with a bad field "unknown"
 
-- **Status:** open. **Found:** 2026-10-17, review 3 (core) *(test)*.
+- **Status:** fixed in `77d7168` on `fix/review-3`, not yet verified on the machine ([VERIFY.md](VERIFY.md)). **Found:** 2026-10-17, review 3 (core) *(test)*.
 - **Branch:** `feat/ctl` (`dbe1ae3`).
 - **Fix:** keep serde's message for a known name (`bad “press” command: …`).
 
 #### 89. The Play/Pause preset needs `playerctl` for its on face but says it needs nothing
 
-- **Status:** open. **Found:** 2026-10-17, review 3 (core) *(read)*.
+- **Status:** fixed in `bf67a74` on `fix/review-3`, not yet verified on the machine ([VERIFY.md](VERIFY.md)). **Found:** 2026-10-17, review 3 (core) *(read)*.
 - **Branch:** `feat/media-dial` (`072d31c`).
 - **Where:** `presets::PRESETS` (`needs: None`); README features list.
 - **Fix:** `needs: Some("playerctl")`, or say so in the README.
 
 #### 90. A preset applied in place keeps the key's live value and busy settings
 
-- **Status:** open. **Found:** 2026-10-17, review 3 (core) *(read)*.
+- **Status:** fixed in `9387a41` on `fix/review-3`, not yet verified on the machine ([VERIFY.md](VERIFY.md)). **Found:** 2026-10-17, review 3 (core) *(read)*.
 - **Branch:** `fix/review-2` (`b1cdf93`, presets apply in place); `live` is PR 9's.
 - **What goes wrong:** Mic mute on a CPU key keeps showing CPU; a leftover
   `busy_while_running` or `[key.busy]` stays.
@@ -1169,19 +1170,19 @@ the code; *(plausible)* needs the machine to confirm. None is fixed yet.
 
 #### 91. `ipc::commands` is dead code that drops bad lines silently
 
-- **Status:** open. **Found:** 2026-10-17, review 3 (core) *(read)*.
+- **Status:** fixed in `7e701e7` on `fix/review-3`, not yet verified on the machine ([VERIFY.md](VERIFY.md)). **Found:** 2026-10-17, review 3 (core) *(read)*.
 - **Branch:** `feat/ctl` (`dbe1ae3`). **Fix:** delete it.
 
 #### 92. Docs: "Eleven action types", no `media` row, `BusyFace::bar` says "last"
 
-- **Status:** open. **Found:** 2026-10-17, review 3 (core) *(read)*.
+- **Status:** fixed in `7dba580` on `fix/review-3`, not yet verified on the machine ([VERIFY.md](VERIFY.md)). **Found:** 2026-10-17, review 3 (core) *(read)*.
 - **Branch:** `feat/media-dial` (`072d31c`, README); `fix/review-2` (`b1cdf93`, the
   `BusyFace::bar` doc comment).
 - **Fix:** "Twelve action types", a `media` row in the action table, "the first `NN%`".
 
 #### 93. Outside the daemon, a multi's app volume step can land after the next step
 
-- **Status:** open. **Found:** 2026-10-17, review 3 (core) *(read)*.
+- **Status:** fixed in `6bc2be3` on `fix/review-3`, not yet verified on the machine ([VERIFY.md](VERIFY.md)). **Found:** 2026-10-17, review 3 (core) *(read)*.
 - **Branch:** `feat/multi-actions` (`5fb32bf`).
 - **Where:** `action::run_multi_blocking` (an `AppVolume` step goes through `run`, which
   spawns a thread). Its doc says volume steps wait.
@@ -1189,7 +1190,7 @@ the code; *(plausible)* needs the machine to confirm. None is fixed yet.
 
 #### 94. A media dial's panel and its actions can follow different players
 
-- **Status:** open. **Found:** 2026-10-17, review 3 (core probes) *(read)*.
+- **Status:** fixed in `324c99d` on `fix/review-3`, not yet verified on the machine ([VERIFY.md](VERIFY.md)). **Found:** 2026-10-17, review 3 (core probes) *(read)*.
 - **Branch:** `feat/media-dial` (`839d72d`).
 - **Where:** `DialConfig::media_player` (the panel) vs `Daemon::dispatch` (each action's
   own `player`).
@@ -1199,7 +1200,7 @@ the code; *(plausible)* needs the machine to confirm. None is fixed yet.
 
 #### 95. `player::read` drops good lines when `playerctl -a` exits non-zero
 
-- **Status:** open. **Found:** 2026-10-17, review 3 (core probes) *(plausible)*.
+- **Status:** fixed in `05c5897` on `fix/review-3`, not yet verified on the machine ([VERIFY.md](VERIFY.md)). **Found:** 2026-10-17, review 3 (core probes) *(plausible)*.
 - **Branch:** `feat/media-dial` (`839d72d`).
 - **What goes wrong:** one player without metadata can make the whole call exit 1:
   "Nothing playing" while Spotify plays.
@@ -1207,7 +1208,7 @@ the code; *(plausible)* needs the machine to confirm. None is fixed yet.
 
 #### 96. Flatpak app icons are never found (the app id is lowercased first)
 
-- **Status:** open. **Found:** 2026-10-17, review 3 (core probes) *(plausible: the Mac's
+- **Status:** fixed in `c3da136` on `fix/review-3`, not yet verified on the machine ([VERIFY.md](VERIFY.md)). **Found:** 2026-10-17, review 3 (core probes) *(plausible: the Mac's
   filesystem ignores case)*.
 - **Branch:** `feat/app-volume` (`34c6918`).
 - **Where:** `audio::parse_pactl_streams`, `audio::app_level`.
@@ -1215,14 +1216,14 @@ the code; *(plausible)* needs the machine to confirm. None is fixed yet.
 
 #### 97. A clock with `%n` on a dial draws the newline as a glyph
 
-- **Status:** open. **Found:** 2026-10-17, review 3 (core render) *(plausible)*.
+- **Status:** fixed in `9c57e9a` on `fix/review-3`, not yet verified on the machine ([VERIFY.md](VERIFY.md)). **Found:** 2026-10-17, review 3 (core render) *(plausible)*.
 - **Branch:** `feat/live-keys` (`056fd8a`).
 - **Where:** `Renderer::render_strip_panel`, the live arm (only `render_body` handles `\n`).
 - **Fix:** replace `\n` with a space there (or draw the first line).
 
 #### 98. The page switcher's folder paths go stale
 
-- **Status:** open. **Found:** 2026-10-17, review 3 (GUI app) *(read)*.
+- **Status:** fixed in `e13123f` on `fix/review-3` (GUI: type-checked, not run), not yet verified on the machine ([VERIFY.md](VERIFY.md)). **Found:** 2026-10-17, review 3 (GUI app) *(read)*.
 - **Branch:** `feat/folders` (`b05fb0e`).
 - **Where:** `app.rs` `sync_page_list`; `editor.rs` `new_folder`, the `on_new_page`
   closures (`add_page` syncs before the key points at the page).
@@ -1232,21 +1233,21 @@ the code; *(plausible)* needs the machine to confirm. None is fixed yet.
 
 #### 99. The Follow apps dialog edits while config.toml is broken, and toasts behind itself
 
-- **Status:** open. **Found:** 2026-10-17, review 3 (GUI app) *(read)*.
+- **Status:** fixed in `5d99fd8` on `fix/review-3` (GUI: type-checked, not run), not yet verified on the machine ([VERIFY.md](VERIFY.md)). **Found:** 2026-10-17, review 3 (GUI app) *(read)*.
 - **Branch:** `feat/app-pages` (`88f5a7e`).
 - **Where:** `app.rs` `App::edit_page_apps`; `pages.rs` `AppRows`.
 - **Fix:** return early when `locked`; toast on the dialog.
 
 #### 100. Picking a `uwsm app --` launched app stores "uwsm"
 
-- **Status:** open. **Found:** 2026-10-17, review 3 (GUI app) *(plausible)*.
+- **Status:** fixed in `29bb822` on `fix/review-3` (GUI: type-checked, not run), not yet verified on the machine ([VERIFY.md](VERIFY.md)). **Found:** 2026-10-17, review 3 (GUI app) *(plausible)*.
 - **Branch:** `feat/app-volume` (`7ba769e`).
 - **Where:** `apps.rs` `audio_key` (only `uwsm-app` is in the launcher list).
 - **Fix:** add `"uwsm"`.
 
 #### 101. Dial presets keep a long press that then decides the panel
 
-- **Status:** open. **Found:** 2026-10-17, review 3 (GUI editor) *(read)*.
+- **Status:** fixed in `57e0f62` on `fix/review-3` (GUI: type-checked, not run), not yet verified on the machine ([VERIFY.md](VERIFY.md)). **Found:** 2026-10-17, review 3 (GUI editor) *(read)*.
 - **Branch:** `feat/strip-long-press` (`13597e8`).
 - **Where:** `editor.rs` `dial_presets_button`; `DialConfig::level_source` walks the long
   press too.
@@ -1256,7 +1257,7 @@ the code; *(plausible)* needs the machine to confirm. None is fixed yet.
 
 #### 102. Switching "Two faces" off erases a busy-while-running key's Busy look
 
-- **Status:** open. **Found:** 2026-10-17, review 3 (GUI editor) *(read)*.
+- **Status:** fixed in `26364d1` on `fix/review-3` (GUI: type-checked, not run), not yet verified on the machine ([VERIFY.md](VERIFY.md)). **Found:** 2026-10-17, review 3 (GUI editor) *(read)*.
 - **Branch:** `fix/review-2` (`8b33817` gave such keys a Busy tab; the `k.busy = None` is
   older).
 - **Where:** `editor.rs` `build_key`, the `two` handler.
@@ -1264,14 +1265,14 @@ the code; *(plausible)* needs the machine to confirm. None is fixed yet.
 
 #### 103. The media Seconds spin can't cross zero
 
-- **Status:** open. **Found:** 2026-10-17, review 3 (GUI editor) *(read)*.
+- **Status:** fixed in `22e8d25` on `fix/review-3` (GUI: type-checked, not run), not yet verified on the machine ([VERIFY.md](VERIFY.md)). **Found:** 2026-10-17, review 3 (GUI editor) *(read)*.
 - **Branch:** `feat/media-dial` (`072d31c`).
 - **Where:** `editor.rs` `media_rows`, the seek spin (`0` resets to the slot's default).
 - **Fix:** on 0, skip to ±1 in the direction of travel (remember the last value).
 
 #### 104. A key's own action rows edit through the current page
 
-- **Status:** open. **Found:** 2026-10-17, review 3 (GUI editor) *(plausible; older than
+- **Status:** fixed in `746e326` on `fix/review-3` (GUI: type-checked, not run), not yet verified on the machine ([VERIFY.md](VERIFY.md)). **Found:** 2026-10-17, review 3 (GUI editor) *(plausible; older than
   `55d0d62`, but the new App volume, Media and Volume spins use it)*.
 - **Where:** `editor.rs` `build_key`, `slot.get`/`slot.set` and `on_slot`'s
   (`a.key(i)`/`a.edit(i, …)`).

@@ -764,3 +764,77 @@ Assumptions and changes from the plan:
   `[dial.long_press]` example, and the example's brightness dial (index 3) gets
   `[dial.long_press]` set = 100, uncommented by `example_dial_parses` (still eight
   blocks).
+
+## `fix/review-3` (BUGS.md 73–104)
+
+On top of `feat/strip-long-press`; `daily` is this branch (`746e326`). It fixes every
+review 3 bug, adds `scripts/capture-fixtures.sh` (`33a7678`) and a socket-free test
+`Daemon` (`abad8d7`). The fix commits are listed in BUGS.md.
+
+Build:
+- [ ] `cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test`
+      clean. Counts here: core 273 + 10 capture tests, omadeckd 111 + 3 capture tests,
+      plus the 3 hub socket tests (EPERM on the Mac). GUI: its new unit tests
+      (`seek_spin_steps_over_zero`, `uwsm_lines_give_the_program_after_the_dashes`) have
+      only been type-checked.
+- [ ] CI run on `fix/review-3` is `success` (it couldn't be started from the Mac: `gh`
+      there is logged in to the work account).
+
+**First on the machine: the captures.**
+- [ ] `scripts/capture-fixtures.sh`. It is read-only and asks before each step (start two
+      players, focus Walker, hold the strip, …); skip any step. It saves into
+      `crates/*/tests/fixtures/captured/<date>/`. It stops the service for the strip step and
+      starts it again. Check the files for anything private (window titles, paths), commit
+      them, and run `cargo test`: the capture tests then check the parsers against real
+      output instead of skipping. The README in each `captured/` folder says which test
+      reads which file.
+- [ ] The strip capture answers PR 16's open question: `captured_strip` fails if a hold
+      logs a tap before the long press.
+- [ ] Not captured (each changes state), so do them by hand as the script lists at the
+      end: `wpctl set-volume`/`set-mute`, `omarchy-shell media …`, how fast a player
+      reports a new status, seeking past the end, `hyprctl reload`/`renameworkspace`.
+
+Fixes to check on the deck:
+- [ ] 73: play music, unplug the deck: `top` shows omadeckd idle, not at 100%.
+- [ ] 74: `for i in $(seq 200); do omadeckd state >/dev/null; done`, then
+      `ls /proc/$(pidof omadeckd)/fd | wc -l` is back near where it started.
+- [ ] 75: a seek key on a page with no media dial seeks.
+- [ ] 76: on a Media page play something in Chromium, go Home, close it, start Spotify:
+      a Home Next key skips in Spotify, and Omarchy's pop-up shows.
+- [ ] 94: a dial whose turns have `player = "spotify"` and whose press has none: the
+      press pauses Spotify.
+- [ ] 82, 95: a stalled MPRIS player doesn't make the dial or keys flicker; with
+      several players, one without metadata doesn't make it show "Nothing playing".
+- [ ] 79: hold Back in a folder while the configurator deletes that folder; releasing
+      runs nothing, and no key stays drawn pressed.
+- [ ] 80: a terminal retitling quickly (`while :; do printf '\e]2;%s\a' $RANDOM; sleep
+      0.05; done`) with an app link: its page appears after 200 ms.
+- [ ] 81: after a Hyprland crash (not a clean restart), workspace keys update again.
+- [ ] 86: `omadeckd ctl` (or ▶) on a multi of 40 steps works.
+- [ ] 96: a Flatpak app (Spotify) shows its icon on an app volume dial.
+- [ ] 97: a dial clock with `%n` reads as one line.
+- [ ] 93: a multi with an app volume step that finds no app reports a failed step (new
+      behaviour).
+
+Fixes to check in the configurator:
+- [ ] 77, 101: a dial with a clock and a Media long press, Presets › Volume dial: the panel
+      shows the volume, and the long press is gone.
+- [ ] 98: New folder from a key on "Music": the switcher shows "Music › …" at once.
+- [ ] 99: break config.toml with the Follow apps dialog open: adding an app shows a toast
+      on the dialog, and nothing changes.
+- [ ] 100: an app whose `Exec` is `uwsm app -- foo` is matched in "Playing now".
+- [ ] 102: a busy-while-running key with a Busy label: switching "Two faces" off keeps it.
+- [ ] 103: the media Seconds spin goes from 1 to -1 with the minus button, and back.
+- [ ] 104: type into a key's spin, then change page from the deck: the other page's key
+      is untouched. A key's action rows now do nothing while config.toml is broken, and
+      toast if the key's page was deleted (new behaviour).
+
+Decisions taken while fixing (check they're right):
+- One rule for media targets, in `probe::media_target`'s doc: the action's player, on a
+  dial falling back to the dial's; the instance a *watched* probe shows; else
+  untargeted. A media step inside a multi doesn't fall back to a dial's player.
+- Dial presets now clear the long press too (a preset defines the whole dial). This
+  changes PR 16's "a long press is something you add".
+- The Play/Pause preset keeps `needs: None` (the press works without playerctl); the
+  README says its on face needs playerctl.
+- A Hyprland instance that refuses connections is logged at debug level only.

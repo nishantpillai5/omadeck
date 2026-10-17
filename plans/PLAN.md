@@ -40,7 +40,11 @@ hub socket tests, which the sandbox can't bind). The GUI type-checks on every br
 stub `pkg-config`, see [review-2026-10-17c.md](review-2026-10-17c.md)) but was never
 linked or run, and nothing was run on the deck. **Review 3**
 ([review-2026-10-17c.md](review-2026-10-17c.md), BUGS.md 73–104): one high (73), four
-medium (74–77) and CI red from clippy (78); fix 73, 74 and 78 before the machine pass. Next: work through [VERIFY.md](VERIFY.md) on the Omarchy
+medium (74–77) and CI red from clippy (78); all 32 are fixed on `fix/review-3` (on top of
+`feat/strip-long-press`; `daily` is now that branch, `746e326`), most with regression
+tests, including a socket-free test `Daemon`. `scripts/capture-fixtures.sh` collects every
+machine capture into test fixtures. On the machine: run the capture script first, then
+VERIFY.md from the top. Next: work through [VERIFY.md](VERIFY.md) on the Omarchy
 machine, branch by branch from the bottom. Fix compile errors and bugs on the lowest
 branch that has them, then rebase the ones above. After that, rebuild `daily`.
 
@@ -113,6 +117,7 @@ order; the order is mine, not upstream's roadmap order.
 | 14 | `feat/media-dial` | Media dial: scrub, play/pause, track and progress on the strip — **built, not verified** ([VERIFY.md](VERIFY.md)) | [pr14](pr14-media-dial.md) |
 | 15 | `feat/app-pages` | Pages follow the focused app (`apps` on `[[page]]`, Elgato's Smart Profiles) — **built, not verified** ([VERIFY.md](VERIFY.md)) | [pr15](pr15-app-pages.md) |
 | 16 | `feat/strip-long-press` | Hold a strip panel for a second action per dial (Elgato's "long touch"). Needs PR 11's `tap_dial`/`try_input`, so it can move up to right after PR 11 — **built, not verified** ([VERIFY.md](VERIFY.md)) | [pr16](pr16-strip-long-press.md) |
+| – | `fix/review-3` | Bugs from the third review (73–104), the capture script, a test `Daemon`; `daily` = this branch — **built, not verified** ([VERIFY.md](VERIFY.md)) | [review-2026-10-17c](review-2026-10-17c.md) |
 
 ### Shared building blocks
 
@@ -291,7 +296,7 @@ Useful pages (check they're still current when you use them):
 |--------|------|---------|
 | `master` | `upstream/master` | Pure mirror. Never commit here. |
 | `feat/*` | `upstream/master`, or the feature it depends on | One branch per PR. Small and self-contained. |
-| `daily` | `upstream/master` + every `feat/*` merged in | What I build and run. |
+| `daily` | `upstream/master` + every `feat/*` merged in | What I build and run. Today the chain is linear, so it is `fix/review-3` (`746e326`). |
 | `fix/bugs` | `feat/strip-backgrounds` | The 2026-10-17 bug pass (all 21 bugs closed). |
 | `fix/review` | `fix/bugs` | The 2026-10-17 review fixes, BUGS.md 22–43 (`87be396`). |
 | `plans` | `upstream/master` | These notes only. Never merged anywhere. |
