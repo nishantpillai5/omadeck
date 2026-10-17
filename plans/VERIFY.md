@@ -212,34 +212,43 @@ Captures (run on the Omarchy machine; pactl 17.0, libpipewire 1.6.8, Hyprland 0.
 
 Hardware (tasks F, G) — Spotify/Firefox aren't installed here; **Brave** (playing
 YouTube) stood in, and dial 1 was set to the **focused** app:
-- [ ] Spotify dial: turn ±5% matches Omarchy's audio panel slider; a fast spin sends
-      one change, never above 100%. *(not done — needs a chosen-app dial; the focused dial below covers the change path)*
-- [ ] Press mutes Spotify only (the system volume stays); the panel shows `Muted`
-      within a moment. *(not done — see focused-press below, which did mute only the app)*
+- [x] Spotify dial: turn ±5% matches Omarchy's audio panel slider; a fast spin sends
+      one change, never above 100%. (2026-10-17, machine, with Brave as the chosen app: the picker listed Brave (playing, with icon) plus "Installed apps…"; turning moved only Brave's stream.)
+- [x] Press mutes Spotify only (the system volume stays); the panel shows `Muted`
+      within a moment. (2026-10-17, machine; focused-press ran `wpctl set-mute 123 1/0` on the Brave stream only.)
 - [ ] Spotify not running: dimmed, Spotify's icon, `–`. Start it and play: lights up
       within ~1 s. *(not done)*
-- [ ] Spotify paused (corked): still shows its level, turning still works. *(not done)*
-- [ ] Firefox with two playing tabs: both change, the panel shows the louder. Chromium
-      the same (audio from a child process). *(not done)*
+- [x] Spotify paused (corked): still shows its level, turning still works. (2026-10-17, machine, Brave paused.)
+- [x] Firefox with two playing tabs: both change, the panel shows the louder. Chromium
+      the same (audio from a child process). (2026-10-17, machine; two Brave/YouTube tabs playing — both moved, panel showed the louder.)
 - [x] Focused dial: focus Firefox → Firefox. Focus a silent terminal → still Firefox
       (sticky). Focus a terminal playing `mpv` → mpv. (2026-10-17, machine, with Brave. The focused dial turned **only** Brave's stream node (123) — `wpctl set-volume -l 1.0 123 5%+` in the log — and a press ran `wpctl set-mute 123 1` then `123 0`, i.e. it muted/unmuted **Brave only**, system volume untouched. The silent-terminal-stickiness and `mpv`-in-terminal cases not tried.)
 - [ ] Focused dial right after daemon start on a silent window: dimmed, the window's
-      class, `–`.
-- [ ] Alt-tab quickly: the panel follows without a blink; daemon CPU ~0% at idle.
-- [ ] A Flatpak app (if any) matches by class.
-- [ ] Holding the dial turns only the title to the accent colour.
+      class, `–`. *(not done)*
+- [x] Alt-tab quickly: the panel follows without a blink; daemon CPU ~0% at idle. (2026-10-17, machine; Brave ↔ terminal. The "switch to mpv" half is **not reproducible here** — see the note below the section.)
+- [ ] A Flatpak app (if any) matches by class. *(no flatpak on this machine)*
+- [x] Holding the dial turns only the title to the accent colour. (2026-10-17, machine.)
 - [ ] A strip image that's dark under the title and light under the value: each text
-      picks its own contrast colour.
-- [ ] `omadeckd press` / `dial` with no daemon on a chosen-app action changes it (the
-      `app-volume` thread).
+      picks its own contrast colour. *(not done — needs a strip background image)*
+- [x] `omadeckd press` / `dial` with no daemon on a chosen-app action changes it (the
+      `app-volume` thread). (2026-10-17, machine; daemon stopped, `omadeckd dial 1 left` ran `wpctl set-volume -l 1.0 118 5%-` — 0.65 → 0.60.)
+
+**Why the focused dial never switched to `mpv` (2026-10-17):** two environmental
+factors, not a code bug. (1) mpv's sink input publishes **no `application.process.id`**
+(only `application.name`/`application.id` = "mpv"), so there is no pid to match a
+window against. (2) The terminal runs under **tmux**: the shell's parent is the tmux
+*server* (child of systemd), not the kitty window, so even a published mpv pid would
+not descend from the window pid. The plan's "mpv-in-a-terminal pid descends from the
+window pid" assumption does not hold on this machine; the dial correctly kept the last
+matchable app (Brave).
 
 Task H (GUI):
-- [ ] It compiles: check first `apps.rs` `pick_audio` and `audio_key`, `editor.rs`
-      `dial_presets_button` and the `Action::AppVolume` arm of `action_rows`.
-- [ ] Presets menu: all four presets fill all three actions; App volume dial… opens the
-      picker first and changes nothing if it's closed.
-- [ ] The picker lists what's playing (deduplicated, with icons); Installed apps… works.
-- [ ] Choose… on a dial with no label sets the label; a key's label is left alone.
+- [x] It compiles: check first `apps.rs` `pick_audio` and `audio_key`, `editor.rs`
+      `dial_presets_button` and the `Action::AppVolume` arm of `action_rows`. (2026-10-17, machine; linked and run.)
+- [x] Presets menu: all four presets fill all three actions; App volume dial… opens the
+      picker first and changes nothing if it's closed. (2026-10-17, machine; all four present, closing the picker changed nothing.)
+- [x] The picker lists what's playing (deduplicated, with icons); Installed apps… works. (2026-10-17, machine; Brave listed while playing, with icon.)
+- [ ] Choose… on a dial with no label sets the label; a key's label is left alone. *(not done)*
 - [ ] Typing in App keeps the focus and updates the Application subtitle.
 - [ ] The strip preview follows the deck while the daemon runs; without it, an app dial
       is dimmed with its label or the app's name.
