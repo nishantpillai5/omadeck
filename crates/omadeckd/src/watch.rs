@@ -23,9 +23,9 @@
 //! (`COMMAND_TIMEOUT`). The minute still turns over, late by that much once.
 //!
 //! The media player is read inline too, one `playerctl` per second while a media dial or a
-//! play/pause key is shown, and a read that only confirms the moving position isn't sent
-//! (`Value::same_as`). Media commands run here in order, then re-read. Covers are decoded
-//! here, never on the deck loop.
+//! play/pause key is shown (one read answers every player probe), and a read that only
+//! confirms the moving position isn't sent (`Value::same_as`). Media commands run here in
+//! order, then re-read. Covers are decoded here, never on the deck loop.
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -37,7 +37,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use omadeck_core::audio::AppQuery;
-use omadeck_core::player::{self, PlayerRead};
+use omadeck_core::player::{self, PlayersRead};
 use omadeck_core::probe::{Probe, Toggle, Value, is_missing, toggle_from_exit};
 use omadeck_core::proc::Job;
 use omadeck_core::{AudioDevice, MediaCommand, action, audio, live, render, sysinfo};
@@ -68,7 +68,6 @@ pub enum WatchCmd {
     /// Run a media command here, in order with the other changes, then re-read `probe`
     /// after `probe.refresh_after()` and send those reads even if unchanged. `seek` is
     /// in seconds with the steps folded in; `target` is a `playerctl --player` instance.
-    #[allow(dead_code)]
     Media { command: MediaCommand, seek: i32, target: Option<String>, probe: Probe },
     /// A runner thread finished. Sent by the runner, not by the daemon. `run` is the id
     /// `run_due` gave the run: a `Done` from a run that was cancelled and replaced (the
@@ -166,18 +165,26 @@ fn app_values(
         .collect()
 }
 
-/// Decode a new cover off the deck loop; keep the old image when the path is unchanged.
-fn with_art(prev: Option<&Value>, mut v: Value) -> Value {
+/// Decode a new cover off the deck loop; keep the old image when the path is unchanged. A
+/// cover that won't decode is drawn as the glyph, and its path goes into `bad_art` so the
+/// next reads (one a second while it plays) don't decode it again. Only the last bad path
+/// is kept: a new track's cover is tried once.
+fn with_art(prev: Option<&Value>, mut v: Value, bad_art: &mut Option<PathBuf>) -> Value {
     if let Value::Player(Ok(Some(t))) = &mut v
         && let Some(path) = t.art.clone()
     {
+        if bad_art.as_ref() == Some(&path) {
+            t.art = None;
+            return v;
+        }
         let old = match prev {
             Some(Value::Player(Ok(Some(p)))) if p.art.as_ref() == Some(&path) => p.art_img.clone(),
             _ => None,
         };
         t.art_img = old.or_else(|| render::load_icon(&path, 48).map(Arc::new));
         if t.art_img.is_none() {
-            t.art = None; // won't decode: draw the glyph, and don't try again every second
+            t.art = None;
+            *bad_art = Some(path);
         }
     }
     v
@@ -224,9 +231,13 @@ struct Poller {
     read_streams: fn() -> Option<Vec<audio::Stream>>,
     run_commands: fn(&[Vec<String>]),
     find_icon: fn(&[String]) -> Option<PathBuf>,
-    /// The media player's I/O: `player::read` and `player::run_argv`.
-    read_player: fn(Option<&str>) -> PlayerRead,
+    /// The media player's I/O: `player::read_all` and `player::run_argv`.
+    read_players: fn() -> PlayersRead,
     run_media: fn(&[String]) -> bool,
+    /// The last cover that wouldn't decode, so it isn't decoded again every read.
+    bad_art: Option<PathBuf>,
+    /// The focused monitor lookup, for Omarchy 3's media pop-up.
+    focused_monitor: fn() -> Option<String>,
 }
 
 impl Default for Poller {
@@ -250,8 +261,10 @@ impl Default for Poller {
             read_streams: audio::streams,
             run_commands: audio::run_commands,
             find_icon: audio::app_icon,
-            read_player: player::read,
+            read_players: player::read_all,
             run_media: player::run_argv,
+            bad_art: None,
+            focused_monitor: audio::focused_monitor,
         }
     }
 }
@@ -362,7 +375,9 @@ impl Poller {
                 // In order, like volume. `playerctl` and Omarchy's commands answer in a few
                 // ms; each is capped at `COMMAND_TIMEOUT`.
                 let backend = audio::backend();
-                let monitor = (backend == audio::Backend::Omarchy3).then(audio::focused_monitor).flatten();
+                // Only the command that passes it on costs a `hyprctl` run.
+                let monitor =
+                    player::uses_monitor(backend, command, seek, target.is_some()).then(self.focused_monitor).flatten();
                 for argv in player::media_argv(backend, command, seek, target.as_deref(), monitor.as_deref()) {
                     (self.run_media)(&argv);
                 }
@@ -447,6 +462,7 @@ impl Poller {
         // 2. Start what is due.
         let mut start = Vec::new();
         let mut apps_read = false;
+        let mut players_read = false;
         for p in self.watched.clone() {
             if self.in_flight.contains_key(&p) || self.next_due.get(&p).is_some_and(|t| *t > now) {
                 continue;
@@ -471,10 +487,14 @@ impl Poller {
                 }
                 // Fed by the Hyprland listener, never watched.
                 Probe::Workspace => {}
-                // Inline: one `playerctl` (under `COMMAND_TIMEOUT`) reads every player.
-                Probe::Player(wanted) => {
-                    let v = with_art(self.last.get(&p), Value::Player((self.read_player)(wanted.as_deref())));
-                    self.record(p, v, now, out, 0);
+                // Inline: one `playerctl` (under `COMMAND_TIMEOUT`) reads every player and
+                // answers every player probe; the rest of this pass skips them, as for
+                // apps.
+                Probe::Player(_) => {
+                    if !players_read {
+                        self.read_players(now, out);
+                        players_read = true;
+                    }
                 }
                 // One read answers every app probe; the rest of this pass skips (their
                 // `next_due` was just reset).
@@ -524,6 +544,33 @@ impl Poller {
         if forced || !self.last.get(&p).is_some_and(|old| old.same_as(&v)) {
             self.last.insert(p.clone(), v.clone());
             out.push((p, Some(v), applied));
+        }
+    }
+
+    /// Read every player once and answer every watched player probe from it. A read that
+    /// timed out sends nothing (the dial and keys keep their last track) and tries again in
+    /// a second, like a failed volume read.
+    fn read_players(&mut self, now: Instant, out: &mut Vec<(Probe, Option<Value>, i32)>) {
+        let probes: Vec<Probe> = self.watched.iter().filter(|p| matches!(p, Probe::Player(_))).cloned().collect();
+        if probes.is_empty() {
+            return;
+        }
+        match (self.read_players)() {
+            None => {
+                for p in probes {
+                    self.warn_once(&p, "playerctl didn't answer");
+                    self.next_due.insert(p.clone(), now + p.interval());
+                }
+            }
+            Some(read) => {
+                for p in probes {
+                    let Probe::Player(wanted) = &p else { continue };
+                    let r = read.clone().map(|ts| player::pick(ts, wanted.as_deref()));
+                    self.failing.remove(&p);
+                    let v = with_art(self.last.get(&p), Value::Player(r), &mut self.bad_art);
+                    self.record(p, v, now, out, 0);
+                }
+            }
         }
     }
 
@@ -1503,24 +1550,32 @@ mod tests {
             art_img: None,
             read_ms: 0,
         };
-        let first = with_art(None, Value::Player(Ok(Some(track(Some(path.clone()))))));
+        let mut bad_art = None;
+        let first = with_art(None, Value::Player(Ok(Some(track(Some(path.clone()))))), &mut bad_art);
         let Value::Player(Ok(Some(t1))) = &first else { panic!() };
         let img = t1.art_img.clone().expect("decoded");
         assert!(img.width() <= 48 && img.height() <= 48);
-        let second = with_art(Some(&first), Value::Player(Ok(Some(track(Some(path.clone()))))));
+        let second = with_art(Some(&first), Value::Player(Ok(Some(track(Some(path.clone()))))), &mut bad_art);
         let Value::Player(Ok(Some(t2))) = &second else { panic!() };
         assert!(Arc::ptr_eq(&img, t2.art_img.as_ref().unwrap()), "same path: no second decode");
         // A file that won't decode drops the art.
         std::fs::write(&path, b"not a png").unwrap();
-        let bad = with_art(None, Value::Player(Ok(Some(track(Some(path.clone()))))));
+        let bad = with_art(None, Value::Player(Ok(Some(track(Some(path.clone()))))), &mut bad_art);
         let Value::Player(Ok(Some(t3))) = &bad else { panic!() };
         assert!(t3.art.is_none() && t3.art_img.is_none());
+        assert_eq!(bad_art, Some(path.clone()));
+        // The bad path isn't decoded again on the next read. (The file now decodes, so a
+        // decode would show.)
+        image::RgbaImage::from_pixel(64, 64, image::Rgba([200, 30, 30, 255])).save(&path).unwrap();
+        let again = with_art(Some(&bad), Value::Player(Ok(Some(track(Some(path.clone()))))), &mut bad_art);
+        let Value::Player(Ok(Some(t4))) = &again else { panic!() };
+        assert!(t4.art.is_none() && t4.art_img.is_none(), "not decoded again");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn record_ignores_a_playing_tick() {
-        let mut p = Poller { read_player: |_| panic!("not read here"), ..Poller::default() };
+        let mut p = Poller { read_players: || panic!("not read here"), ..Poller::default() };
         let probe = Probe::Player(None);
         let mut out = Vec::new();
         let t0 = Instant::now();
@@ -1552,7 +1607,7 @@ mod tests {
 
     #[test]
     fn media_cmd_runs_then_refreshes() {
-        let mut p = Poller { read_player: |_| Ok(None), run_media: record_media, ..Poller::default() };
+        let mut p = Poller { read_players: || Some(Ok(Vec::new())), run_media: record_media, ..Poller::default() };
         let probe = Probe::Player(None);
         let mut out = Vec::new();
         let t0 = Instant::now();
@@ -1573,5 +1628,65 @@ mod tests {
         assert_eq!(p.refresh_at.len(), 2);
         assert!(p.refresh_at.iter().all(|(_, pr)| *pr == probe));
         assert!(out.is_empty(), "nothing read inline");
+    }
+
+    thread_local! {
+        static PLAYER_READS: std::cell::RefCell<Vec<PlayersRead>> = const { std::cell::RefCell::new(Vec::new()) };
+        static PLAYER_READ_COUNT: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    }
+
+    /// Hands out the queued reads in order, counting them.
+    fn queued_players() -> PlayersRead {
+        PLAYER_READ_COUNT.with(|c| c.set(c.get() + 1));
+        PLAYER_READS.with(|r| r.borrow_mut().remove(0))
+    }
+
+    // A `playerctl` that didn't answer is not "nothing playing".
+    #[test]
+    fn a_player_read_that_times_out_keeps_the_last_track() {
+        let track = media_track(10_000, player::now_ms());
+        PLAYER_READS.with(|r| *r.borrow_mut() = vec![Some(Ok(vec![track.clone()])), None, Some(Ok(Vec::new()))]);
+        let mut p = Poller { read_players: queued_players, ..Poller::default() };
+        let probe = Probe::Player(None);
+        let mut out = Vec::new();
+        let t0 = Instant::now();
+        p.handle(WatchCmd::Watch(vec![probe.clone()]), t0, &mut out);
+        p.run_due(t0, &mut out);
+        assert_eq!(out, vec![(probe.clone(), Some(Value::Player(Ok(Some(track.clone())))), 0)]);
+        out.clear();
+        let t1 = t0 + probe.interval();
+        p.run_due(t1, &mut out);
+        assert!(out.is_empty(), "a timeout sends nothing: {out:?}");
+        assert_eq!(p.last.get(&probe), Some(&Value::Player(Ok(Some(track)))));
+        assert_eq!(p.next_due.get(&probe), Some(&(t1 + probe.interval())), "read again next interval");
+        // A real "no players" still goes out.
+        p.run_due(t1 + probe.interval(), &mut out);
+        assert_eq!(out, vec![(probe, Some(Value::Player(Ok(None))), 0)]);
+    }
+
+    // One `playerctl -a` read a pass answers every player probe.
+    #[test]
+    fn one_player_read_answers_every_player_probe() {
+        let mut spotify = media_track(10_000, player::now_ms());
+        let mut mpv = spotify.clone();
+        mpv.player = "mpv".into();
+        mpv.name = "mpv".into();
+        mpv.status = player::PlayStatus::Paused;
+        spotify.status = player::PlayStatus::Playing;
+        PLAYER_READS.with(|r| *r.borrow_mut() = vec![Some(Ok(vec![mpv.clone(), spotify.clone()]))]);
+        PLAYER_READ_COUNT.with(|c| c.set(0));
+        let mut p = Poller { read_players: queued_players, ..Poller::default() };
+        let any = Probe::Player(None);
+        let pinned = Probe::Player(Some("mpv".into()));
+        let mut out = Vec::new();
+        let t0 = Instant::now();
+        p.handle(WatchCmd::Watch(vec![any.clone(), Probe::Cpu, pinned.clone()]), t0, &mut out);
+        p.read_live = |_, _| None;
+        p.run_due(t0, &mut out);
+        assert_eq!(PLAYER_READ_COUNT.with(|c| c.get()), 1);
+        assert_eq!(
+            out,
+            vec![(any, Some(Value::Player(Ok(Some(spotify)))), 0), (pinned, Some(Value::Player(Ok(Some(mpv)))), 0),]
+        );
     }
 }

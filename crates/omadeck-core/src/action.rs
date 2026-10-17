@@ -163,7 +163,7 @@ fn check_media(cmd: MediaCommand, seek: i32, target: Option<&str>) -> Result<aud
 
 /// Run a media command's commands in order and wait for them. Blocking.
 fn apply_media(backend: audio::Backend, cmd: MediaCommand, seek: i32, target: Option<&str>) {
-    let monitor = (backend == audio::Backend::Omarchy3).then(audio::focused_monitor).flatten();
+    let monitor = player::uses_monitor(backend, cmd, seek, target.is_some()).then(audio::focused_monitor).flatten();
     for argv in player::media_argv(backend, cmd, seek, target, monitor.as_deref()) {
         player::run_argv(&argv);
     }

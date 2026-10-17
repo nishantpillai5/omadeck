@@ -9,12 +9,13 @@ use anyhow::Result;
 use omadeck_core::config::apply_brightness;
 use omadeck_core::device::{DeviceStateUpdate, StreamDeckError};
 use omadeck_core::ipc::{Command, Event, Reply};
+use omadeck_core::player::{self, PlayStatus};
 use omadeck_core::probe::{self, FAST_WINDOW, Probe, SETTLE, Toggle, Value, Values};
 use omadeck_core::proc;
 use omadeck_core::state::State;
 use omadeck_core::{
-    Action, AudioDevice, Config, DialConfig, Direction, KeyConfig, KeyStatus, Level, LevelSource, Live, PanelStatus,
-    Renderer, action, audio, tap_to_dial,
+    Action, AudioDevice, Config, DialConfig, Direction, KeyConfig, KeyStatus, Level, LevelSource, Live, MediaCommand,
+    MediaShow, PanelStatus, Renderer, action, audio, tap_to_dial,
 };
 
 use crate::deck::{self, Deck};
@@ -72,7 +73,8 @@ enum Settle {
 impl Settle {
     fn accepts(&self, v: &Value, now: Instant) -> bool {
         match self {
-            Settle::Expect { value, until } => now >= *until || v == value,
+            // `same_as`: a player read that only moved on with the music confirms the guess.
+            Settle::Expect { value, until } => now >= *until || value.same_as(v),
             Settle::Leaving { from, until } => now >= *until || *v != Value::Toggle(from.clone()),
         }
     }
@@ -131,7 +133,8 @@ fn finish_job(rt: &mut Runtime, cfg: &Config, id: &KeyId, status: std::process::
     let refresh = match k.state_probe() {
         Some(p @ Probe::Command { .. }) => Some(p), // ask the real state now; no guessing
         Some(Probe::Volume(_)) => None,
-        Some(_) => None, // a state probe is only ever a volume or a command
+        Some(Probe::Player(_)) => None, // the watcher re-reads after the media command
+        Some(_) => None,                // a state probe is only ever a volume, a player or a command
         None => {
             // A press toggle flips only when its command succeeded.
             if ok && k.on.is_some() && !rt.flipped.remove(id) {
@@ -217,8 +220,14 @@ pub struct Daemon {
     in_flight: HashMap<AudioDevice, i32>,
     pub reload_at: Option<Instant>,
     pub repaint_at: Option<Instant>,
+    /// When a playing media panel's shown second next changes: its panels are repainted
+    /// then. `None` while nothing plays.
+    media_due: Option<Instant>,
     /// The multi actions running, timed by the loop.
     seq: Sequencer,
+    /// What the watcher was last told to read (`watch`), so a media action targets only
+    /// from a probe that is read now (`probe::media_target`).
+    watched: Vec<Probe>,
 }
 
 impl Daemon {
@@ -249,7 +258,9 @@ impl Daemon {
             in_flight: HashMap::new(),
             reload_at: None,
             repaint_at: None,
+            media_due: None,
             seq: Sequencer::default(),
+            watched: Vec::new(),
         }
     }
 
@@ -282,7 +293,11 @@ impl Daemon {
         self.published.clear();
         self.published_keys.clear();
         self.repaint_at = None;
+        // Only a deck pass clears it, and with no deck it would stay in the past: the
+        // no-deck loop would never sleep.
+        self.media_due = None;
         // `in_flight` stays: the watcher still acknowledges every queued change.
+        self.watched.clear();
         let _ = self.watcher.cmd.send(WatchCmd::Watch(Vec::new()));
         self.hub.publish(Event::Disconnected);
     }
@@ -293,6 +308,7 @@ impl Daemon {
         let dials = self.deck.as_ref().map_or(0, |d| d.info.dials as usize);
         // No deck: no dials and no keys, so nothing is polled until one is attached.
         let probes = probe::watched_probes(&self.cfg, self.nav.current(), dials, self.key_count());
+        self.watched.clone_from(&probes);
         let _ = self.watcher.cmd.send(WatchCmd::Watch(probes));
     }
 
@@ -546,7 +562,8 @@ impl Daemon {
         {
             value = Value::Level(settle_volume(self.in_flight.get(dev).copied().unwrap_or(0), read));
         }
-        if self.rt.values.probes.get(&probe) == Some(&value) {
+        // `same_as`: a player that only played on keeps its stored read (the anchor).
+        if self.rt.values.probes.get(&probe).is_some_and(|old| old.same_as(&value)) {
             return;
         }
         self.store_value(probe, value);
@@ -650,7 +667,9 @@ impl Daemon {
     /// debounced reload, a multi action's next step.
     pub fn next_deadline(&self) -> Option<Instant> {
         let flash = self.deck.as_ref().and_then(Deck::flash_deadline);
-        [flash, self.repaint_at, self.reload_at, self.seq.next_due()].into_iter().flatten().min()
+        // The media tick repaints the deck's panels: nothing to wait for without one.
+        let media = self.deck.as_ref().and(self.media_due);
+        [flash, self.repaint_at, self.reload_at, self.seq.next_due(), media].into_iter().flatten().min()
     }
 
     /// One pass with a deck: read and handle its input until it's quiet, then paint what
@@ -660,6 +679,14 @@ impl Daemon {
         if self.repaint_at.is_some_and(|t| now >= t) {
             self.repaint_at = None;
             self.paint_all();
+        }
+        // A playing media panel's second turned over: repaint the media panels (`flush`
+        // sets the next one).
+        if self.media_due.is_some_and(|t| now >= t) {
+            self.media_due = None;
+            if let Some(d) = &mut self.deck {
+                d.dirty_where(&self.cfg, |dial| dial.and_then(DialConfig::level_source) == Some(LevelSource::Player));
+            }
         }
         let Some(d) = &mut self.deck else { return Ok(()) };
         d.expire_flashes(now);
@@ -898,6 +925,7 @@ impl Daemon {
                 self.mark_key(id.page.as_deref(), id.index);
             }
             Some(Probe::Volume(_)) => {} // the watcher runs the change and re-reads
+            Some(Probe::Player(_)) => {} // dispatch already guessed; the watcher re-reads
             Some(p) if matches!(before, Toggle::Busy(_)) => {
                 // No guess while busy: just ask for the real state now.
                 let _ = self.watcher.cmd.send(WatchCmd::Refresh(p));
@@ -1074,6 +1102,35 @@ impl Daemon {
                 let _ = self.watcher.cmd.send(WatchCmd::AppVolume { query, change, mute: *mute });
                 Ok(false)
             }
+            Action::Media { command, seek, player } => {
+                // The targeting rule is `probe::media_target`'s doc.
+                let dial = match src {
+                    Source::Turn(i) | Source::Press(i) | Source::Tap(i) => self.cfg.dial(i),
+                    _ => None,
+                };
+                let wanted = probe::media_wanted(player.as_deref(), dial).map(str::to_string);
+                let probe = Probe::Player(wanted.clone());
+                let seek = player::fold_seek(*seek, steps);
+                let target = match probe::media_target(&self.rt.values, &self.watched, wanted.as_deref(), seek != 0) {
+                    probe::MediaSend::To(t) => t,
+                    probe::MediaSend::NothingToSeek => {
+                        log::info!("media: nothing playing to seek");
+                        return Ok(false);
+                    }
+                };
+                // A few `stat`s: nothing here waits on a process.
+                if player::needs_playerctl(audio::backend(), *command, seek, target.is_some())
+                    && !omadeck_core::on_path("playerctl")
+                {
+                    anyhow::bail!("playerctl not found (install playerctl)");
+                }
+                if seek != 0 || *command == MediaCommand::PlayPause {
+                    self.guess_media(&probe, *command, seek);
+                }
+                // One command per input: a spun dial skips one track, not a queue of them.
+                let _ = self.watcher.cmd.send(WatchCmd::Media { command: *command, seek, target, probe });
+                Ok(false)
+            }
             Action::Hyprland { dispatch } => {
                 // Queued on the worker, in order behind earlier ones: `hyprctl` waits for
                 // Hyprland, which must never stall the deck. Only an empty dispatcher fails
@@ -1102,6 +1159,32 @@ impl Daemon {
         let Some(cur) = self.rt.values.level(device) else { return };
         let next = probe::guess_volume(cur, change, mute);
         self.store_value(Probe::Volume(device), Value::Level(next));
+    }
+
+    /// Move the shown track at once (seek, or play/pause flipped), and hold the guess
+    /// against stale reads for `SETTLE`, as fast toggles do. Nothing before the first read.
+    fn guess_media(&mut self, probe: &Probe, cmd: MediaCommand, seek: i32) {
+        // Clone out: everything below takes &mut self.
+        let Some(Value::Player(Ok(Some(mut t)))) = self.rt.values.probes.get(probe).cloned() else { return };
+        guess_track(&mut t, cmd, seek, player::now_ms());
+        let guess = Value::Player(Ok(Some(t)));
+        // As after_toggle_press's fast arm: store directly (not through `apply_value`,
+        // whose settle check would accept the guess and drop the settle), then settle,
+        // then mark.
+        self.rt.values.probes.insert(probe.clone(), guess.clone());
+        self.rt.settle.insert(probe.clone(), Settle::Expect { value: guess, until: Instant::now() + SETTLE });
+        self.mark_probe(probe);
+    }
+
+    /// When the shown second of a playing media panel next changes, if any is playing.
+    fn next_media_tick(&self, now: Instant) -> Option<Instant> {
+        let d = self.deck.as_ref()?;
+        let wall = player::now_ms();
+        (0..d.info.dials)
+            .filter_map(|i| probe::dial_status(self.cfg.dial(i), &self.rt.values, false).panel.media)
+            .filter_map(|m| ms_to_next_second(&m, wall))
+            .min()
+            .map(|ms| now + Duration::from_millis(ms))
     }
 
     /// Set or change the panel brightness: the deck (if any), the state file, the
@@ -1170,6 +1253,7 @@ impl Daemon {
                 self.hub.publish(Event::DialStatus { index: i, status });
             }
         }
+        self.media_due = self.next_media_tick(Instant::now());
     }
 
     /// Hand the deck back to its logo, close the socket, write any pending state.
@@ -1215,6 +1299,24 @@ fn settle_volume(f: i32, read: &Level) -> Level {
     if read.muted { Level { value: guess.value, ..read.clone() } } else { guess }
 }
 
+/// Pure, so it's tested without a deck: re-anchor `t` at `now_ms`, then seek (clamped to
+/// the track) or flip play/pause. Next, previous and stop change nothing.
+fn guess_track(t: &mut player::Track, cmd: MediaCommand, seek: i32, now_ms: u64) {
+    t.position_ms = t.show().position_at(now_ms);
+    t.read_ms = now_ms;
+    if seek != 0 {
+        let to = (t.position_ms as i64 + i64::from(seek) * 1000).max(0) as u64;
+        t.position_ms = t.length_ms.map_or(to, |l| to.min(l));
+    } else if cmd == MediaCommand::PlayPause {
+        t.status = if t.status == PlayStatus::Playing { PlayStatus::Paused } else { PlayStatus::Playing };
+    }
+}
+
+/// The wait until the shown second changes, for a playing panel at `now_ms`.
+fn ms_to_next_second(show: &MediaShow, now_ms: u64) -> Option<u64> {
+    show.playing.then(|| 1000 - show.position_at(now_ms) % 1000)
+}
+
 /// The flip state a reload keeps: only the keys that are still press toggles.
 fn retain_flips(cfg: &Config, flipped: &mut HashSet<KeyId>) {
     flipped.retain(|id| cfg.key(id.page.as_deref(), id.index).is_some_and(KeyConfig::is_press_toggle));
@@ -1237,7 +1339,11 @@ fn config_probes(cfg: &Config, n_dials: usize) -> Vec<Probe> {
                     add(Probe::AppVolume(q));
                 }
             }
-            Some(LevelSource::Brightness | LevelSource::Player) | None => {}
+            // A reload keeps the track instead of blanking the panel.
+            Some(LevelSource::Player) => {
+                add(Probe::Player(dial.and_then(DialConfig::media_player).map(str::to_string)))
+            }
+            Some(LevelSource::Brightness) | None => {}
         }
         if let Some(l) = dial.and_then(|d| d.live.as_ref()) {
             add(l.probe());
@@ -1535,5 +1641,85 @@ live = { source = "battery" }
         assert!(all.contains(&Probe::Battery));
         assert!(all.contains(&Probe::Output { command: "date".into(), interval_ms: 5000 }));
         assert!(!config_probes(&cfg, 0).contains(&Probe::Battery), "only the dials the deck has");
+    }
+
+    #[test]
+    fn media_tick_waits_for_the_next_second() {
+        let p = MediaShow {
+            playing: true,
+            position_ms: 83_250,
+            as_of_ms: 10_000,
+            length_ms: Some(200_000),
+            ..Default::default()
+        };
+        assert_eq!(ms_to_next_second(&p, 10_000), Some(750));
+        assert_eq!(ms_to_next_second(&p, 10_750), Some(1000));
+        let paused = MediaShow { playing: false, ..p.clone() };
+        assert_eq!(ms_to_next_second(&paused, 10_000), None);
+    }
+
+    fn track(status: PlayStatus, position_ms: u64, read_ms: u64) -> player::Track {
+        player::Track {
+            player: "spotify".into(),
+            name: "spotify".into(),
+            status,
+            position_ms,
+            length_ms: Some(200_000),
+            title: "Song".into(),
+            artist: "Band".into(),
+            art: None,
+            art_img: None,
+            read_ms,
+        }
+    }
+
+    #[test]
+    fn guess_track_seeks_and_flips() {
+        // Playing at 10 s, read 2 s ago.
+        let base = track(PlayStatus::Playing, 10_000, 1_000);
+        let now = 3_000;
+        let mut t = base.clone();
+        guess_track(&mut t, MediaCommand::PlayPause, 5, now);
+        assert_eq!((t.position_ms, t.read_ms, t.status), (17_000, now, PlayStatus::Playing));
+        let mut t = base.clone();
+        guess_track(&mut t, MediaCommand::PlayPause, -60, now);
+        assert_eq!(t.position_ms, 0);
+        let mut t = base.clone();
+        guess_track(&mut t, MediaCommand::PlayPause, 600, now);
+        assert_eq!(t.position_ms, 200_000, "clamped to the length");
+        let mut t = base.clone();
+        guess_track(&mut t, MediaCommand::PlayPause, 0, now);
+        assert_eq!((t.position_ms, t.read_ms, t.status), (12_000, now, PlayStatus::Paused));
+        guess_track(&mut t, MediaCommand::PlayPause, 0, now + 5_000);
+        assert_eq!((t.position_ms, t.status), (12_000, PlayStatus::Playing), "paused: the position held");
+        let mut t = base.clone();
+        guess_track(&mut t, MediaCommand::Next, 0, now);
+        assert_eq!((t.status, t.title.as_str()), (PlayStatus::Playing, "Song"), "next guesses nothing");
+    }
+
+    #[test]
+    fn settle_expect_accepts_a_playing_tick() {
+        let now = Instant::now();
+        let guess = Value::Player(Ok(Some(track(PlayStatus::Playing, 10_000, 1_000_000))));
+        let s = Settle::Expect { value: guess, until: now + SETTLE };
+        // The same track read a second later, a second further, inside the window.
+        let tick = Value::Player(Ok(Some(track(PlayStatus::Playing, 11_000, 1_001_000))));
+        assert!(s.accepts(&tick, now));
+        // A contradicting read (still paused) waits for the window to end.
+        let stale = Value::Player(Ok(Some(track(PlayStatus::Paused, 10_000, 1_001_000))));
+        assert!(!s.accepts(&stale, now));
+        assert!(s.accepts(&stale, now + SETTLE));
+    }
+
+    #[test]
+    fn config_probes_keep_media_dials() {
+        let cfg = Config::parse(
+            "[[dial]]\nindex = 0\n[dial.press]\ntype = \"media\"\n\n\
+             [[dial]]\nindex = 1\n[dial.press]\ntype = \"media\"\nplayer = \"spotify\"\n",
+        )
+        .unwrap();
+        let all = config_probes(&cfg, 2);
+        assert!(all.contains(&Probe::Player(None)));
+        assert!(all.contains(&Probe::Player(Some("spotify".into()))));
     }
 }
