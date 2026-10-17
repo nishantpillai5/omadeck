@@ -40,14 +40,14 @@ impl Default for Config {
     }
 }
 
-/// A named page of keys. Pages are flat: a "folder" is just a page with a Back key.
+/// A named page of keys. A `folder` page is one you open from a key (it starts with a
+/// Back key); flicks and `page_step` skip it.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Page {
     pub name: String,
     #[serde(default, rename = "key", skip_serializing_if = "Keys::is_empty")]
     pub keys: Keys,
-    /// A folder: opened from a key, with a Back key. Folders are skipped by page steps,
-    /// so a flick can't land inside one.
+    /// Skipped by flicks and `page_step`.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub folder: bool,
 }
