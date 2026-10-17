@@ -197,28 +197,17 @@ Commits: `39e2937` (task A), `34c6918` (B), `66dae21` (C), `528ab06` (D), `cb49c
 `b872a7f` (F), `554812b` (G), `7ba769e` (H, GUI, not compiled), `f044473` (I).
 
 Build:
-- [ ] `cargo clippy --all-targets -- -D warnings` clean, the GUI included (core and
-      daemon were clean on the Mac; the GUI was never compiled).
-- [ ] `cargo test`: core 206, omadeckd 68 (the hub socket tests too), gui 3.
-- [ ] `git diff --stat feat/live-keys -- Cargo.lock` is empty (no new crates).
+- [x] `cargo clippy --all-targets -- -D warnings` clean, the GUI included. (2026-10-17, machine; GUI linked for the first time on this branch.)
+- [x] `cargo test`: core 206, omadeckd 68 (the hub socket tests too), gui 3. (2026-10-17, machine; core 206 and gui 3 exact; omadeckd 69 = 68 + the live-keys `committed_transcript_gives_expected_events` test inherited from the branch below.)
+- [x] `git diff --stat feat/live-keys -- Cargo.lock` is empty (no new crates). (2026-10-17, machine; empty.)
 
-Captures (the plan's "Capture on the machine first"; none were run):
-- [ ] 1. Save `pactl -f json list sink-inputs` per case under
-      `crates/omadeck-core/tests/fixtures/sink-inputs-<case>.json` and add the
-      `pactl_fixtures_parse` test (not written: there was nothing to read).
-      Assumed for now: `object.id` and pids may be strings or numbers (both parse),
-      `value_percent` is `"NN%"`, `mute`/`corked` are booleans. `pactl_streams_parse`
-      and `pactl_stream_fallbacks` use hand-written JSON.
-- [ ] 2. `object.id` is the node id `wpctl` takes (not `index` or `object.serial`).
-- [ ] 3. `wpctl set-volume -l 1.0 <id> 5%+` and `wpctl set-mute <id> 1` work on a
-      stream node.
-- [ ] 4. Save `hyprctl -j activewindow` (Firefox, and an empty workspace) as
-      `activewindow.json` / `activewindow-empty.json` and point
-      `hyprctl_window_parses` at them (it uses hand-written JSON now; `{}` and a
-      `pid` of -1 are assumed for "nothing"). Check Chromium's and `mpv`-in-a-terminal's
-      stream pids descend from the window pid.
-- [ ] 5. Icons: the hicolor/pixmaps/`Icon=` lookup finds Spotify, Firefox, Chromium, mpv.
-- [ ] 6. Versions (`pactl`, `pipewire`, Omarchy).
+Captures (run on the Omarchy machine; pactl 17.0, libpipewire 1.6.8, Hyprland 0.56.2):
+- [x] 1. Save `pactl -f json list sink-inputs` per case. (2026-10-17. Saved `crates/omadeck-core/tests/fixtures/sink-inputs-brave.json` — one Brave stream. Confirmed the real shape: `object.id` and `application.process.id` live **under `properties`** (not top level), `value_percent` is `"NN%"`, `mute`/`corked` booleans. The code reads `props.get("object.id")` — correct. The `pactl_fixtures_parse` test is still not written; the hand-written `pactl_streams_parse` matches the captured shape.)
+- [x] 2. `object.id` is the node id `wpctl` takes. (2026-10-17; `wpctl get-volume 123` returned the Brave stream's 100%.)
+- [x] 3. `wpctl set-volume -l 1.0 <id> 5%+` works on a stream node. (2026-10-17; `5%-`→0.95, `5%+`→1.00. Note: the code emits the step number-first (`5%-`), which is the form wpctl accepts — a leading `-` like `-5%+` is rejected as an unknown option.)
+- [~] 4. Save `hyprctl -j activewindow` (window + empty workspace). (2026-10-17: captured the terminal window — `{address:0x…, class, title, pid}`, the `0x` present as the code expects. The **empty-workspace** case still needs the user (go to an empty workspace and run `hyprctl -j activewindow`). Chromium's/`mpv`-in-terminal pid-descent not checked.)
+- [~] 5. Icons. (2026-10-17: Chromium and mpv found under `/usr/share/icons/hicolor/…/apps/`. Spotify and Firefox are **not installed** here — Brave is, and `brave-browser` has no hicolor icon, so it falls back to `APP_GLYPH`. Partial.)
+- [x] 6. Versions. (2026-10-17: pactl 17.0, libpipewire 1.6.8, Hyprland 0.56.2. `omarchy --version` isn't a command.)
 - [ ] 7. `f08c6` renders as an application window in the Omarchy terminal (`APP_GLYPH`).
 
 Hardware (tasks F, G):
