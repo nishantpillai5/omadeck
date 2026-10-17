@@ -49,6 +49,7 @@ Written in Rust: a tiny background daemon drives the hardware, and a GTK4/libadw
   - App icons from your icon theme.
   - **Nerd Font glyphs**, drawn in your theme's accent colour.
   - Labels are rendered in your Omarchy font.
+- **Pages follow apps,** like Elgato's Smart Profiles. List window classes in a page's `apps` (or use **Follow apps** in the configurator's page bar), and the deck shows that page while one of those apps is focused, then goes back to where it was, open folder included, when you leave it. A page you pick by hand while the app is focused stays.
 - **Stream Deck + dials.** Each dial runs any of the action types on turn left, turn right and press — a workspace dial, a volume dial, a launch-on-press dial.
 - **Stream Deck + touch strip.** The strip shows each dial's label and icon in its own panel, in the theme's colours, following the same panel layouts as Elgato's own app. A volume dial shows its level and a groove bar in Elgato's `Indicator` layout, kept in sync when the volume changes elsewhere, and a brightness dial shows the panel's brightness. Tapping a panel presses its dial; the pressed panel highlights briefly. A flick pages through, like the Elgato app. The strip and each dial panel can have a background image, like the Elgato app.
 - **Theme aware.** Key backgrounds, labels, glyphs and the press highlight come from the active Omarchy theme. Run `omarchy theme set …` and the deck re-renders instantly.
@@ -130,6 +131,8 @@ Click any key to change it, or clear it with the trash button. The ▶ button te
 
 The switcher above the deck picks the page you're editing; **+** adds a page, and the folder, pencil and trash buttons mark it as a folder, rename or delete it. To make a folder, set a key to **Open page** and click **New page**: you get a page with a Back key already in place, and the key gets a folder symbol. Open it with **›** to fill it. The folder button marks a page as a folder: flicks and Next/previous page skip it. A page made with **New page** from an Open page action is a folder already. Double-click a folder key to open it, or a Back key to go up to the page that opens this one. The switcher shows a folder with its path, such as `Music › Media › Spotify`.
 
+The cog button opens **Follow apps**: the apps a page follows. Add an installed app, one of the windows open now, or a window class by hand (`hyprctl activewindow` shows the focused window's class; `*` matches anything). While one of them is focused the deck shows the page; when you move to an app that isn't linked, it goes back to where it was. Folders and Home can't follow apps, and focusing the configurator never moves the deck.
+
 On the deck, **Go back** returns to the page you came from, or Home, when you let go of the key; hold a Back key for half a second to go straight Home, as in the Elgato app. Next/previous page and flicks inside a folder, however deep, step from the page the folders hang off. Renaming a page updates every key that opens it.
 
 ### Command line
@@ -202,6 +205,7 @@ page = "Media"
 [[page]]                       # top-level [[key]]s are the Home page; more pages go here
 name = "Media"
 # folder = true                # skipped by flicks and page_step
+# apps = ["spotify"]           # shown while one of these window classes is focused
 
 [[page.key]]
 index = 0
@@ -409,6 +413,7 @@ Ideas, roughly in order; [docs/ROADMAP.md](docs/ROADMAP.md) has the details. Wan
 - [ ] **OBS** scene and recording keys via obs-websocket
 - [x] **Live keys** that show a clock, CPU usage or the active workspace
 - [x] **Per-app volume** (chosen or focused app)
+- [x] **App pages**: a page follows the focused app, like Elgato's Smart Profiles
 - [ ] **Multiple decks** with a layout per serial number
 
 ## How this was built
