@@ -665,6 +665,10 @@ impl App {
 
     /// Set (or clear) the strip's background image, then repaint and save.
     pub fn set_strip_background(self: &Rc<Self>, image: Option<String>) {
+        // Like `edit_dial`: a late pick is dropped while config.toml can't be parsed.
+        if self.locked.borrow().is_some() {
+            return;
+        }
         self.config.borrow_mut().strip.background_image = image;
         self.refresh_strip();
         self.schedule_save();

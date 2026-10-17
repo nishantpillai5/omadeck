@@ -333,7 +333,7 @@ impl ActionSlot {
             }),
             on_new_page: Rc::new(move |a| {
                 let label = a.config.borrow().dial(i).map(|d| d.label.clone()).unwrap_or_default();
-                a.add_page(if label.trim().is_empty() { "Page" } else { &label }, true)
+                a.add_page(if label.trim().is_empty() { "Page" } else { label.as_str() }, true)
             }),
             on_favicon: None,
         }
@@ -404,6 +404,19 @@ fn action_editor(app: &Rc<App>, group: &adw::PreferencesGroup, combo_title: &str
     });
     group.add(&kind_row);
     action_rows(app, group, slot);
+}
+
+/// A short explanation under an action's rows. Its own row, not the group's
+/// description: the group belongs to whoever built it (a key's "Home · Row 1 ·
+/// Column 2", the Toggle group, PR 12's step editors).
+fn hint_row(text: &str) -> adw::ActionRow {
+    adw::ActionRow::builder()
+        .subtitle(text)
+        .subtitle_lines(0)
+        .use_markup(false)
+        .activatable(false)
+        .css_classes(["dim-label"])
+        .build()
 }
 
 fn action_rows(app: &Rc<App>, group: &adw::PreferencesGroup, slot: &ActionSlot) {
@@ -592,7 +605,7 @@ fn action_rows(app: &Rc<App>, group: &adw::PreferencesGroup, slot: &ActionSlot) 
         }
 
         Action::Hyprland { dispatch } => {
-            group.set_description(Some(
+            group.add(&hint_row(
                 "Runs hyprctl dispatch. Classic syntax like workspace 3 · togglefloating · killactive · exec pavucontrol \
                  is translated for you, or write Lua directly: hl.dsp.focus({ workspace = \"3\" })",
             ));
@@ -675,7 +688,7 @@ fn action_rows(app: &Rc<App>, group: &adw::PreferencesGroup, slot: &ActionSlot) 
         }
 
         Action::Volume { device, change, mute } => {
-            group.set_description(Some(
+            group.add(&hint_row(
                 "Changes the system volume through Omarchy's own commands, so its pop-up shows. On a dial, the \
                  level is drawn on the touch strip.",
             ));
@@ -753,7 +766,7 @@ fn action_rows(app: &Rc<App>, group: &adw::PreferencesGroup, slot: &ActionSlot) 
         }
 
         Action::Brightness { change, set } => {
-            group.set_description(Some(
+            group.add(&hint_row(
                 "Changes the panel brightness (0–100). The value is remembered in the \
                  state file, so it survives a restart. On a dial it is drawn on the touch \
                  strip.",
