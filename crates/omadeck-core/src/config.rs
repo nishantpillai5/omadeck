@@ -1202,6 +1202,10 @@ pub struct DialConfig {
     /// Runs when the dial is pressed down.
     #[serde(default, skip_serializing_if = "Action::is_none")]
     pub press: Action,
+    /// Runs when the dial's strip panel is pressed and held (Elgato's "long touch").
+    /// Unset: a long press does what a tap does (runs `press`).
+    #[serde(default, skip_serializing_if = "Action::is_none")]
+    pub long_press: Action,
     /// A value the strip panel shows and keeps up to date. Last: TOML writes tables last.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub live: Option<Live>,
@@ -1221,6 +1225,7 @@ impl DialConfig {
             turn_left: Action::None,
             turn_right: Action::None,
             press: Action::None,
+            long_press: Action::None,
             live: None,
         }
     }
@@ -1237,11 +1242,12 @@ impl DialConfig {
             && self.turn_left.is_none()
             && self.turn_right.is_none()
             && self.press.is_none()
+            && self.long_press.is_none()
             && self.live.is_none()
     }
 
     /// The audio device this dial shows a level for: the device of the first `Volume`
-    /// action among turn_right, turn_left and press. `None` for a non-volume dial.
+    /// action among turn_right, turn_left, press and long_press. `None` for a non-volume dial.
     pub fn volume_device(&self) -> Option<AudioDevice> {
         self.level_source().and_then(|s| match s {
             LevelSource::Volume(dev) => Some(dev),
@@ -1266,33 +1272,41 @@ impl DialConfig {
         }
     }
 
-    /// Every action this dial owns, nested ones included, slot by slot in `Direction::ALL`
-    /// order.
+    /// Every action this dial owns, nested ones included, slot by slot in
+    /// `Direction::ALL` order, then the long press.
     pub fn actions(&self) -> Vec<&Action> {
         let mut out = Vec::new();
         for dir in Direction::ALL {
             self.action(dir).walk(&mut |a| out.push(a));
         }
+        // The long press isn't a `Direction`: it joins the walk on its own, last.
+        self.long_press.walk(&mut |a| out.push(a));
         out
     }
 
-    /// `actions`, mutably.
+    /// `actions`, mutably, in the same order.
     pub fn actions_mut(&mut self, f: &mut dyn FnMut(&mut Action)) {
         for dir in Direction::ALL {
             self.action_mut(dir).walk_mut(f);
         }
+        self.long_press.walk_mut(f);
+    }
+
+    /// What holding this dial's strip panel runs: `long_press`, else `press`.
+    pub fn long_press_action(&self) -> &Action {
+        if self.long_press.is_none() { &self.press } else { &self.long_press }
     }
 
     /// What this dial's strip panel shows: the first `Volume` action's device or `App`
-    /// for the first app volume with an app set, in turn_right, turn_left, press order
-    /// (the first wins), else `Brightness` when any of its actions is a brightness
+    /// for the first app volume with an app set, in turn_right, turn_left, press,
+    /// long_press order (the first wins), else `Brightness` when any of its actions is a brightness
     /// action. `None` when `live` is set: an explicit live value wins. A media action
     /// wins over the rest (`Player`): a dial that controls the player shows the player.
     pub fn level_source(&self) -> Option<LevelSource> {
         if self.live.is_some() {
             return None;
         }
-        let actions = [&self.turn_right, &self.turn_left, &self.press];
+        let actions = [&self.turn_right, &self.turn_left, &self.press, &self.long_press];
         if actions.iter().any(|a| matches!(a, Action::Media { .. })) {
             return Some(LevelSource::Player);
         }
@@ -1307,15 +1321,16 @@ impl DialConfig {
     }
 
     /// The app this dial's app volume actions target: the first `Action::app_query`
-    /// among turn_right, turn_left and press.
+    /// among turn_right, turn_left, press and long_press.
     pub fn app_query(&self) -> Option<AppQuery> {
-        [&self.turn_right, &self.turn_left, &self.press].into_iter().find_map(Action::app_query)
+        [&self.turn_right, &self.turn_left, &self.press, &self.long_press].into_iter().find_map(Action::app_query)
     }
 
     /// The player a media dial follows: the first `Media` action's `player` among turn
-    /// right, turn left and press, trimmed; `None` when blank or there's no media action.
+    /// right, turn left, press and long press, trimmed; `None` when blank or there's no
+    /// media action.
     pub fn media_player(&self) -> Option<&str> {
-        [&self.turn_right, &self.turn_left, &self.press]
+        [&self.turn_right, &self.turn_left, &self.press, &self.long_press]
             .into_iter()
             .find_map(|a| match a {
                 Action::Media { player, .. } => Some(player.as_deref().map(str::trim).filter(|p| !p.is_empty())),
@@ -1596,7 +1611,8 @@ impl Config {
         }
         for d in &mut self.dials {
             let index = d.index;
-            for (slot, a) in [&mut d.turn_left, &mut d.turn_right, &mut d.press].into_iter().enumerate() {
+            let slots = [&mut d.turn_left, &mut d.turn_right, &mut d.press, &mut d.long_press];
+            for (slot, a) in slots.into_iter().enumerate() {
                 unlink(a, name, Link::Dial { index, slot: slot as u8 }, &mut links);
             }
         }
@@ -1640,6 +1656,7 @@ impl Config {
                     0 => Some(&mut d.turn_left),
                     1 => Some(&mut d.turn_right),
                     2 => Some(&mut d.press),
+                    3 => Some(&mut d.long_press),
                     _ => None,
                 }
             }
@@ -1688,7 +1705,7 @@ pub struct RemovedPage {
 enum Link {
     /// A key's action, or its on face's (`on`), on `page` (`None`: Home).
     Key { page: Option<String>, index: u8, on: bool },
-    /// A dial's turn left (0), turn right (1) or press (2).
+    /// A dial's turn left (0), turn right (1), press (2) or long press (3).
     Dial { index: u8, slot: u8 },
 }
 
@@ -2166,8 +2183,17 @@ slow = true
 
     #[test]
     fn walkers_visit_every_slot_in_order() {
-        let d = DialConfig { turn_left: Action::Back, press: Action::PageStep { change: 1 }, ..DialConfig::new(0) };
-        assert_eq!(d.actions(), vec![&Action::Back, &Action::None, &Action::PageStep { change: 1 }]);
+        let d = DialConfig {
+            turn_left: Action::Back,
+            press: Action::PageStep { change: 1 },
+            long_press: Action::PageStep { change: -1 },
+            ..DialConfig::new(0)
+        };
+        assert_eq!(
+            d.actions(),
+            vec![&Action::Back, &Action::None, &Action::PageStep { change: 1 }, &Action::PageStep { change: -1 }],
+            "the long press last"
+        );
         let k = KeyConfig {
             action: Action::Back,
             on: Some(OnFace { action: Action::PageStep { change: -1 }, ..OnFace::default() }),
@@ -2283,6 +2309,40 @@ slow = true
         c.remove_page("Call");
         assert_eq!(steps(&c)[3], Action::None);
         assert_eq!(c.links_to("Call"), 0);
+    }
+
+    #[test]
+    fn long_press_falls_back_to_press_and_is_omitted() {
+        let mut d = DialConfig { press: Action::Brightness { change: 0, set: Some(20) }, ..DialConfig::new(3) };
+        assert_eq!(d.long_press_action(), &d.press, "unset: same as a tap");
+        let s = toml::to_string_pretty(&d).unwrap();
+        assert!(!s.contains("long_press"), "nothing written when unset");
+        d.long_press = Action::Brightness { change: 0, set: Some(100) };
+        assert_eq!(d.long_press_action(), &Action::Brightness { change: 0, set: Some(100) });
+        let back: DialConfig = toml::from_str(&toml::to_string_pretty(&d).unwrap()).unwrap();
+        assert_eq!(back, d);
+        assert!(!DialConfig { long_press: Action::Back, ..DialConfig::new(0) }.is_blank());
+    }
+
+    #[test]
+    fn long_press_counts_for_the_panel_level() {
+        let d = DialConfig {
+            long_press: Action::Volume { device: AudioDevice::default(), change: 0, mute: true },
+            ..DialConfig::new(1)
+        };
+        assert_eq!(d.level_source(), Some(LevelSource::Volume(AudioDevice::Output)));
+    }
+
+    #[test]
+    fn rename_page_follows_long_press() {
+        let mut c = Config::default();
+        c.pages.push(Page { name: "A".into(), keys: Keys::default(), folder: false, apps: Vec::new() });
+        c.dial_mut(2).long_press = Action::Page { page: "A".into() };
+        c.rename_page("A", "B");
+        assert_eq!(c.dial(2).unwrap().long_press, Action::Page { page: "B".into() });
+        assert_eq!(c.links_to("B"), 1);
+        c.remove_page("B");
+        assert_eq!(c.dial(2).unwrap().long_press, Action::None);
     }
 
     #[test]
@@ -2513,6 +2573,16 @@ slow = true
         assert_eq!(c.keys.get(0).unwrap().action, Action::Multi { steps: vec![Action::Back, Action::None] });
         assert!(c.restore_page(removed));
         assert_eq!(c.keys.get(0).unwrap().action, multi);
+    }
+
+    #[test]
+    fn undo_page_delete_relinks_long_press() {
+        let mut c = Config::parse("[[page]]\nname = \"B\"\n").unwrap();
+        c.dial_mut(0).long_press = Action::Page { page: "B".into() };
+        let removed = c.remove_page("B").unwrap();
+        assert_eq!(c.dial(0).unwrap().long_press, Action::None);
+        assert!(c.restore_page(removed));
+        assert_eq!(c.dial(0).unwrap().long_press, Action::Page { page: "B".into() });
     }
 
     #[test]
