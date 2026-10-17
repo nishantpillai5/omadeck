@@ -76,7 +76,6 @@ impl ActionTarget {
     }
 
     /// The dial and slot, for a dial's action.
-    #[allow(dead_code)] // nothing calls it until PR 10's app picker
     pub fn dial_slot(&self) -> Option<(u8, Direction)> {
         match self {
             ActionTarget::Key(_) | ActionTarget::KeyOn(_) => None,
