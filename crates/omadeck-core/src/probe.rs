@@ -180,6 +180,9 @@ pub fn guess_volume(cur: &Level, change: i32, mute: bool) -> Level {
 
 /// Whether `dial`'s panel shows `probe`, so a new value for it repaints the panel.
 pub fn shows(dial: Option<&DialConfig>, probe: &Probe) -> bool {
+    if let Some(l) = dial.and_then(|d| d.live.as_ref()) {
+        return l.probe() == *probe;
+    }
     match (dial.and_then(DialConfig::level_source), probe) {
         (Some(LevelSource::Volume(dev)), Probe::Volume(p)) => dev == *p,
         _ => false,
@@ -253,26 +256,34 @@ fn number_at_end(part: &str) -> Option<u8> {
 }
 
 /// Everything the watcher should read while `page` is shown on a deck with `n_dials` dials
-/// and `n_keys` keys, each once: the dials' volume levels in dial order, then the probes of
-/// the page's keys the deck has (a toggle's state command, or the mute it follows). A key
-/// past `n_keys` (a config made for a bigger deck) is not polled. No deck: both are 0, so
-/// nothing is.
+/// and `n_keys` keys, each once: per dial in dial order its volume level, then its live
+/// value; then per key of the page the deck has, its toggle's state command (or the mute it
+/// follows), then its live value. A key past `n_keys` (a config made for a bigger deck) is
+/// not polled. Probes something else feeds (the workspace) are left out. No deck: both are
+/// 0, so nothing is.
 pub fn watched_probes(cfg: &Config, page: Option<&str>, n_dials: usize, n_keys: u8) -> Vec<Probe> {
     let mut out = Vec::new();
+    let mut add = |p: Probe| {
+        if p.is_polled() && !out.contains(&p) {
+            out.push(p);
+        }
+    };
     for i in 0..n_dials {
-        if let Some(LevelSource::Volume(dev)) = cfg.dial(i as u8).and_then(DialConfig::level_source) {
-            let p = Probe::Volume(dev);
-            if !out.contains(&p) {
-                out.push(p);
-            }
+        let dial = cfg.dial(i as u8);
+        if let Some(LevelSource::Volume(dev)) = dial.and_then(DialConfig::level_source) {
+            add(Probe::Volume(dev));
+        }
+        if let Some(l) = dial.and_then(|d| d.live.as_ref()) {
+            add(l.probe());
         }
     }
     if let Some(ks) = cfg.page(page) {
         for k in ks.iter().filter(|k| k.index < n_keys) {
-            if let Some(p) = k.state_probe()
-                && !out.contains(&p)
-            {
-                out.push(p);
+            if let Some(p) = k.state_probe() {
+                add(p);
+            }
+            if let Some(l) = &k.live {
+                add(l.probe());
             }
         }
     }
@@ -570,5 +581,68 @@ change = 5
             serde_json::to_string(&Value::Battery { percent: 5, charging: false }).unwrap(),
             r#"{"battery":{"percent":5,"charging":false}}"#
         );
+    }
+
+    #[test]
+    fn watched_probes_only_current_page() {
+        let cfg = Config::parse(
+            r#"
+[[key]]
+index = 0
+live = { source = "cpu" }
+
+[[page]]
+name = "Other"
+[[page.key]]
+index = 0
+live = { source = "memory" }
+
+[[dial]]
+index = 0
+live = { source = "workspace" }
+"#,
+        )
+        .unwrap();
+        let home = watched_probes(&cfg, None, 4, 15);
+        assert!(home.contains(&Probe::Cpu));
+        assert!(!home.contains(&Probe::Memory));
+        assert!(!home.contains(&Probe::Workspace), "fed by the listener, never polled");
+        assert!(watched_probes(&cfg, Some("Other"), 4, 15).contains(&Probe::Memory));
+    }
+
+    #[test]
+    fn watched_probes_includes_dial_live() {
+        let cfg = Config {
+            dials: vec![
+                DialConfig { live: Some(Live::Battery), ..volume_dial(0, AudioDevice::Output) },
+                volume_dial(1, AudioDevice::Input),
+                DialConfig { live: Some(Live::Battery), ..DialConfig::new(2) },
+            ],
+            ..Config::default()
+        };
+        // Dial 0's live value wins over its volume action; dial 2's battery is deduped.
+        assert_eq!(watched_probes(&cfg, None, 4, 15), vec![Probe::Battery, Probe::Volume(AudioDevice::Input)]);
+        assert_eq!(watched_probes(&cfg, None, 0, 15), vec![]);
+    }
+
+    #[test]
+    fn shows_live_dial() {
+        let dial = DialConfig { live: Some(Live::Battery), ..volume_dial(0, AudioDevice::Output) };
+        assert!(shows(Some(&dial), &Probe::Battery));
+        assert!(!shows(Some(&dial), &Probe::Volume(AudioDevice::Output)));
+    }
+
+    #[test]
+    fn key_status_fills_live() {
+        let mut values = Values::default();
+        let k = KeyConfig { live: Some(Live::Workspace), ..KeyConfig::new(0) };
+        assert_eq!(key_status(Some(&k), &values, false).live, None);
+        values.probes.insert(Probe::Workspace, Value::Text("3".into()));
+        let st = key_status(Some(&k), &values, true);
+        assert_eq!(st.live, Some(LiveShow { text: "3".into(), bar: None, charging: false }));
+        assert!(st.pressed);
+        assert_eq!(key_status(Some(&KeyConfig::new(0)), &values, false).live, None);
+        let d = DialConfig { live: Some(Live::Workspace), ..DialConfig::new(0) };
+        assert_eq!(dial_status(Some(&d), &values, false).panel.live.unwrap().text, "3");
     }
 }
