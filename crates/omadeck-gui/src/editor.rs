@@ -280,7 +280,7 @@ pub fn build_key(app: &Rc<App>, i: u8) -> gtk::Widget {
     // --- live value -----------------------------------------------------------------------
     let live_group = adw::PreferencesGroup::builder().title("Live value").build();
     let at = app.key_ref(i); // the key it was built for, even if the page changes first
-    let edit: LiveEdit = Rc::new(move |a: &Rc<App>, f: Box<dyn FnOnce(&mut Option<Live>)>| {
+    let edit: LiveEdit = Rc::new(move |a: &Rc<App>, f: LiveChange| {
         a.edit_ref(&at, |k: &mut KeyConfig| f(&mut k.live));
     });
     live_rows(app, &live_group, key.live.as_ref(), edit);
@@ -479,7 +479,7 @@ pub fn build_dial(app: &Rc<App>, i: u8) -> gtk::Widget {
 
     // --- panel value ----------------------------------------------------------------------
     let panel_group = adw::PreferencesGroup::builder().title("Panel value").build();
-    let edit: LiveEdit = Rc::new(move |a: &Rc<App>, f: Box<dyn FnOnce(&mut Option<Live>)>| {
+    let edit: LiveEdit = Rc::new(move |a: &Rc<App>, f: LiveChange| {
         a.edit_dial(i, |d: &mut DialConfig| f(&mut d.live));
     });
     live_rows(app, &panel_group, dial.live.as_ref(), edit);
@@ -777,7 +777,10 @@ fn action_editor(app: &Rc<App>, group: &adw::PreferencesGroup, combo_title: &str
 }
 
 /// Changes a key's or a dial's `live` (the one it was built for).
-type LiveEdit = Rc<dyn Fn(&Rc<App>, Box<dyn FnOnce(&mut Option<Live>)>)>;
+type LiveEdit = Rc<dyn Fn(&Rc<App>, LiveChange)>;
+
+/// One change to a `live`, applied by a [`LiveEdit`].
+type LiveChange = Box<dyn FnOnce(&mut Option<Live>)>;
 
 /// A clock's example, on one line.
 fn clock_example(format: &str) -> String {
