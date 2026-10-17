@@ -554,63 +554,61 @@ Review 3 bugs brought in here (BUGS.md): 79 (new trigger), 80, 99.
 Commits: `0460fbe` (task 1), `54ea4fb` (task 2), `88f5a7e` (task 3, GUI and docs, GUI not
 compiled; also adds `follow::desktop_class` to core).
 
-Build:
-- [ ] `cargo clippy --all-targets -- -D warnings` clean, the GUI included (core and
-      daemon were clean on the Mac; the GUI was never compiled).
-- [ ] `cargo test`: core 262 (+5: `follow::tests::{class_matches_globs,
-      parse_clients_dedups_and_sorts, desktop_class_prefers_startup_wm_class}`,
-      `config::tests::{follow_apps_omitted_when_empty,
-      follow_app_page_skips_folders_and_takes_first}`), omadeckd 101 (+6, all in
-      `follow::tests`), gui 7 (unchanged).
-- [ ] The three socket tests still fail here only on bind (`Operation not permitted`); no
-      new socket test.
-- [ ] `git diff --stat feat/media-dial -- Cargo.lock` is empty (no new crates).
+Build (2026-10-17, machine):
+- [x] `cargo clippy --all-targets -- -D warnings` clean, the GUI included.
+- [x] `cargo test`: core 263 (262 + `parse_clients_on_a_real_capture`), gui 7, omadeckd
+      102 (= 101 + the live-keys test inherited from below).
+- [x] The three socket tests pass here (Mac failed only on bind).
+- [x] `git diff --stat feat/media-dial -- Cargo.lock` is empty.
 
-Capture first (pr15-app-pages.md, "Capture on the machine first"; nothing was captured):
-- [ ] The configurator's class is `dev.omadeck.Omadeck` (`hyprctl activewindow | grep
-      class` with it focused). If not, change `follow::CONFIGURATOR_CLASS`.
-- [ ] Save `hyprctl -j clients` (Spotify, an Omarchy web app, a TUI app open) as
-      `crates/omadeck-core/tests/fixtures/hyprctl-clients.json` and add a `parse_clients`
-      test on it; the current test uses a synthetic list.
-- [ ] Whether Walker (or another layer-shell launcher) sends `activewindow` events
-      (socket2, open and close Walker). If it sends an empty one, opening Walker over a
-      linked app for longer than 200 ms puts the deck back.
+Capture first (2026-10-17, machine):
+- [x] The configurator's class is `dev.omadeck.Omadeck` (hyprctl clients). No change to
+      `follow::CONFIGURATOR_CLASS`.
+- [x] Saved `crates/omadeck-core/tests/fixtures/hyprctl-clients.json` (a browser, the
+      configurator, a terminal) and added `parse_clients_on_a_real_capture` on it
+      (`79657b6`).
+- [x] Walker (`omarchy-menu`) sends **no `activewindow` on open** (only `openlayer`), and
+      one for the *previous* window on close — opening it over a linked app never puts the
+      deck back. (socket2 monitor, 2026-10-17.)
 
-Task 2 (daemon), on the deck:
-- [ ] Link Music to Spotify. Focusing Spotify switches the deck (log: `page Music (follows
-      spotify)`); focusing the browser returns to the page it was on.
-- [ ] Alt-tab quickly through several windows: the deck changes at most once.
-- [ ] Flick to another page while Spotify is focused, then leave Spotify: the deck stays.
-      Focus Spotify again: it switches again.
-- [ ] Inside a folder on Work, focus Spotify, then leave: back in the folder, and its Back
-      key goes to Work.
-- [ ] Open a folder from Music while Spotify is focused, then leave: back to before.
-- [ ] Spotify's popups and menus don't bounce the deck.
-- [ ] Closing the last window on a workspace returns the deck.
-- [ ] Unplug, focus Spotify, plug in: the deck comes up on Music.
-- [ ] A config without `apps` saves byte-identical.
+Task 2 (daemon), on the deck (2026-10-17, machine; Spotify isn't installed, so the
+      Spotify page follows `brave-browser`; kitty stands in for "the other app"):
+- [x] Link. Focusing Brave: `page Spotify (follows brave-browser)`; focusing the terminal:
+      `page Home (left kitty)` — back to where it was. (Also on daemon start with Brave
+      already focused: it switches immediately.)
+- [x] Alt-tab quickly: exactly one switch per focus decision, no double-switching.
+- [x] Flick (`strip flick: Previous page`) while Brave focused, then leave: the deck
+      **stays** on the flicked page; re-focus Brave: it switches again.
+- [x] Inside the Music folder, focus Brave, then leave: `page Music (left kitty)` — back
+      in the folder; its Back key goes Home.
+- [x] Popups and menus don't bounce the deck. (User; the layer-shell case is the Walker
+      capture above.)
+- [x] Closing a window returns the deck. (New kitty opened → `page Home (left kitty)`;
+      closed → focus landed on the other kitty → stayed; re-focus Brave → Spotify.)
+- [x] Unplug, focus Brave, plug in: `lost Stream Deck +` → (while unplugged)
+      `page Spotify (follows brave-browser)` → `connected` — the deck comes up on the
+      linked page.
+- [x] A config without `apps` saves byte-identical. (Parse → `save()` round trip on the
+      pre-`apps` file: byte-identical.)
 
-Task 3 (GUI):
-- [ ] It compiles: check first `pages.rs` (`AppRows::fill` and its row buttons calling
-      back into it, `show`'s `ButtonRow::connect_activated` handlers, the
-      `gio::spawn_blocking` around `proc::output_timeout`, `PreferencesDialog::add_toast`,
-      `pick_window`'s `AlertDialog::set_extra_child`, `desktop_entry` with
-      `glib::user_data_dir`/`system_data_dirs`), and in `app.rs` `edit_page_apps` (the
-      `borrow_mut` in the `match` scrutinee) and the `follow_apps` handler's let chain.
-- [ ] The cog button shows for a page, not Home. On a folder the group is greyed out and
-      says folders can't follow apps.
-- [ ] Add app… with Spotify adds `spotify` (or its `StartupWMClass`); a GTK app adds its
-      app id. Adding the same class twice (any case) does nothing; the trash button
-      removes it. The switcher reads `Music · follows apps`.
-- [ ] An Omarchy web app added with **Add open window…** matches. With Hyprland not
-      running the dialog toasts "No open windows found".
-- [ ] Typing a class in the Window class row and pressing apply adds it and clears the row.
-- [ ] Focusing the configurator never switches the deck; its page switcher follows the
-      deck's automatic switches.
+Task 3 (GUI) — 2026-10-17, machine:
+- [x] It compiles (linked and run from `feat/app-pages`, the same build as the daemon).
+- [ ] The cog button shows for a page, not Home; greyed out on a folder. *(user skipped)*
+- [ ] Add app… / Add open window… / Window class row; duplicates; trash; the switcher's
+      `· follows apps`. *(user skipped)*
+- [ ] Focusing the configurator never switches the deck; the switcher follows automatic
+      switches. *(user skipped)*
 - [ ] Add a link in the GUI while the app is focused: the deck switches on reload.
+      *(user skipped — the daemon half is proven: a config edit while Brave was focused
+      re-decided in place on reload, `page Spotify (follows brave-browser)` with no focus
+      change)*
 
 Assumptions and changes from the plan:
-- Nothing from "Capture on the machine first" was run; the plan's defaults are taken.
+- Captures 1–3 were run (see above); the plan's defaults stand otherwise.
+- **Version-mixing hazard found:** running the *old* GUI (feat/media-dial build) against
+  the new daemon silently dropped the unknown `apps` field on its next save (serde
+  ignores unknown fields on parse). Not a production bug — both binaries ship from one
+  package — but dev sessions must build the GUI from the same branch as the daemon.
 - The daemon reads the class from `rt.window` when focus settles, instead of carrying it
   in `focus_pending` (now `Option<Instant>`), so `Runtime.window` is used and its
   `#[allow(dead_code)]` is gone. Every focus event, the configurator's too, restarts the
