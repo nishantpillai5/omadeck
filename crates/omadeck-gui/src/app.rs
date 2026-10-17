@@ -287,7 +287,6 @@ impl App {
             locked: RefCell::new(locked),
         });
 
-        app.settings_btn.set_popover(Some(&app.settings_popover()));
         let weak = Rc::downgrade(&app);
         app.page_dropdown.connect_selected_notify(move |dd| {
             let Some(app) = weak.upgrade() else { return };
@@ -454,6 +453,9 @@ impl App {
             self.strip.set_size_request(width, width * h as i32 / w as i32);
         }
         self.strip.set_visible(deck.strip.is_some());
+        // The settings popover has a strip-background row only on a deck with a strip,
+        // so rebuild it when a different deck (say, a Plus plugged in late) lays out.
+        self.settings_btn.set_popover(Some(&self.settings_popover()));
         self.model_label.set_label(&deck.model.to_uppercase());
         if let Some(Selection::Key(i)) = self.selected.get()
             && i >= deck.key_count()
@@ -640,6 +642,11 @@ impl App {
         list.append(&row);
         popover.set_child(Some(&list));
         popover.set_parent(&self.strip);
+        // A new popover per right-click; unparent it once closed, or each one stays.
+        popover.connect_closed(|p| {
+            let p = p.clone();
+            glib::idle_add_local_once(move || p.unparent());
+        });
         popover.set_position(gtk::PositionType::Bottom);
         popover.popup();
     }
