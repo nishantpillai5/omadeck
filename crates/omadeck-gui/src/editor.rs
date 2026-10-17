@@ -10,7 +10,7 @@ use omadeck_core::{
     StateChoice, action, audio, ipc, paths,
 };
 
-use crate::app::{ActionTarget, App, Target};
+use crate::app::{ActionTarget, App, KeyRef, Target};
 use crate::{apps, media};
 
 pub fn build_key(app: &Rc<App>, i: u8) -> gtk::Widget {
@@ -33,20 +33,30 @@ pub fn build_key(app: &Rc<App>, i: u8) -> gtk::Widget {
         ))
         .build();
 
+    // The rows read and write the key they were built for, through its page, like the dial
+    // and step slots: an edit that lands after the page changed (a spin committing as it
+    // loses focus) must not touch the new page's key `i`.
+    let key_at = app.key_ref(i);
     let slot = ActionSlot {
-        target: ActionTarget::Key(app.key_ref(i)),
+        target: ActionTarget::Key(key_at.clone()),
         dir: None,
-        get: Rc::new(move |a| a.key(i).map(|k| k.action).unwrap_or_default()),
-        set: Rc::new(move |a, act| {
-            let mut action = act;
-            if let Action::Page { page } = &mut action {
-                // Nothing to choose from yet: make the page, like creating a folder.
-                let others = a.config.borrow().pages.iter().any(|p| Some(&p.name) != a.current_page().as_ref());
-                if !others {
-                    *page = new_folder(a, i);
+        get: Rc::new({
+            let at = ActionTarget::Key(key_at.clone());
+            move |a| a.action_at(&at).unwrap_or_default()
+        }),
+        set: Rc::new({
+            let k = key_at.clone();
+            move |a, act| {
+                let mut action = act;
+                if let Action::Page { page } = &mut action {
+                    // Nothing to choose from yet: make the page, like creating a folder.
+                    let others = a.config.borrow().pages.iter().any(|p| Some(p.name.as_str()) != k.page());
+                    if !others {
+                        *page = new_folder(a, &k);
+                    }
                 }
+                a.set_action_at(&ActionTarget::Key(k.clone()), action);
             }
-            a.edit(i, |k| k.action = action);
         }),
         own_page: app.current_page(),
         on_app_picked: Rc::new(|a, at, command, name, icon| {
@@ -60,7 +70,10 @@ pub fn build_key(app: &Rc<App>, i: u8) -> gtk::Widget {
                 });
             }
         }),
-        on_new_page: Rc::new(move |a| new_folder(a, i)),
+        on_new_page: Rc::new({
+            let k = key_at.clone();
+            move |a| new_folder(a, &k)
+        }),
         on_favicon: Some(Rc::new(move |a, at, icon, name| {
             if let ActionTarget::Key(k) = at {
                 a.edit_ref(&k, |k| {
@@ -222,16 +235,20 @@ pub fn build_key(app: &Rc<App>, i: u8) -> gtk::Widget {
             });
             toggle.add(&slow);
         }
+        // Through the key's page, like the key's own slot.
+        let on_at = ActionTarget::KeyOn(key_at.clone());
         let on_slot = ActionSlot {
-            target: ActionTarget::KeyOn(app.key_ref(i)),
+            target: on_at.clone(),
             dir: None,
-            get: Rc::new(move |a| a.key(i).and_then(|k| k.on).map(|f| f.action).unwrap_or_default()),
-            set: Rc::new(move |a, act| {
-                a.edit(i, |k| {
-                    if let Some(on) = &mut k.on {
-                        on.action = act;
-                    }
-                });
+            get: Rc::new({
+                let at = on_at.clone();
+                move |a| a.action_at(&at).unwrap_or_default()
+            }),
+            set: Rc::new({
+                let at = on_at.clone();
+                move |a, act| {
+                    a.set_action_at(&at, act);
+                }
             }),
             own_page: app.current_page(),
             on_app_picked: Rc::new(|a, at, command, _, _| {
@@ -245,9 +262,12 @@ pub fn build_key(app: &Rc<App>, i: u8) -> gtk::Widget {
             }),
             // A folder for the on action only: the key keeps its own look (`new_folder`
             // would make the key itself look like a folder).
-            on_new_page: Rc::new(move |a| {
-                let label = a.key(i).map(|k| k.label).unwrap_or_default();
-                a.add_page(if label.trim().is_empty() { "Page" } else { label.as_str() }, true)
+            on_new_page: Rc::new({
+                let k = key_at.clone();
+                move |a| {
+                    let label = key_label(a, &k);
+                    a.add_page(if label.trim().is_empty() { "Page" } else { label.as_str() }, true)
+                }
             }),
             on_favicon: None,
             kinds: Action::KEY_KINDS,
@@ -773,7 +793,7 @@ impl ActionSlot {
     /// The slot for step `n` of the multi that `self` edits. Reads and writes go through
     /// its target, like a dial slot's.
     pub fn step(&self, n: usize) -> Self {
-        let target = ActionTarget::Step(Box::new(self.target.clone()), n);
+        let target = self.step_target(n);
         let (t1, t2) = (target.clone(), target.clone());
         ActionSlot {
             target,
@@ -792,6 +812,11 @@ impl ActionSlot {
             on_favicon: None,
             kinds: Action::STEP_KINDS,
         }
+    }
+
+    /// The target of step `n` of the multi that `self` edits.
+    pub fn step_target(&self, n: usize) -> ActionTarget {
+        ActionTarget::Step(Box::new(self.target.clone()), n)
     }
 
     /// The action a kind pick starts from: the slot's direction for a dial (a left
@@ -868,6 +893,13 @@ fn test_button(app: &Rc<App>, slot: &ActionSlot, run: ActionRun) -> gtk::Button 
         Action::AppVolume { focused: true, .. } => {
             ("Follows the focused window — here that would be the configurator".to_string(), false)
         }
+        Action::Delay { .. } if matches!(slot.target, ActionTarget::Step(..)) => {
+            ("Nothing to try: a delay only waits".to_string(), false)
+        }
+        Action::Delay { .. } => ("Delay only works inside a multi action".to_string(), false),
+        Action::Multi { steps } if steps.iter().all(|s| matches!(s, Action::Delay { .. })) => {
+            ("Add a step first".to_string(), false)
+        }
         a if a.is_deck_owned() => ("Try it on the deck".to_string(), true),
         a => ("Try it now".to_string(), !a.is_none()),
     };
@@ -921,7 +953,18 @@ fn test_button(app: &Rc<App>, slot: &ActionSlot, run: ActionRun) -> gtk::Button 
             Route::Local => {
                 let a = app.clone();
                 glib::spawn_future_local(async move {
-                    let res = gio::spawn_blocking(move || action::run(&act)).await;
+                    // A multi runs its steps in order here, delays included, off the GTK
+                    // thread; the first failure is toasted with its step number.
+                    let res = gio::spawn_blocking(move || -> anyhow::Result<()> {
+                        match &act {
+                            Action::Multi { steps } => match action::run_multi_blocking(steps).into_iter().next() {
+                                Some((n, e)) => Err(anyhow::anyhow!("Step {}: {e:#}", n + 1)),
+                                None => Ok(()),
+                            },
+                            act => action::run(act),
+                        }
+                    })
+                    .await;
                     match res {
                         Ok(Ok(())) => {}
                         Ok(Err(e)) => a.toast(&format!("{e:#}")),
@@ -1527,7 +1570,7 @@ fn action_rows(app: &Rc<App>, group: &adw::PreferencesGroup, slot: &ActionSlot) 
             group.add(&spin);
         }
 
-        Action::Multi { .. } => {}
+        Action::Multi { steps } => multi_rows(app, group, slot, steps),
 
         Action::AppVolume { app: app_name, focused, change, mute } => {
             group
@@ -1662,12 +1705,199 @@ fn action_rows(app: &Rc<App>, group: &adw::PreferencesGroup, slot: &ActionSlot) 
     }
 }
 
-/// Create a page for key `i` to open, and make the key look like a folder if it's plain.
-fn new_folder(app: &Rc<App>, i: u8) -> String {
-    let label = app.key(i).map(|k| k.label).unwrap_or_default();
+/// A multi action's rows: one per step (↑, ↓, remove; activate to edit it), "Add step",
+/// and the selected step's own editor below them.
+fn multi_rows(app: &Rc<App>, group: &adw::PreferencesGroup, slot: &ActionSlot, steps: &[Action]) {
+    // A hand-edited multi inside a multi: never offered, and it doesn't run.
+    if matches!(slot.target, ActionTarget::Step(..)) {
+        group.add(
+            &adw::ActionRow::builder()
+                .title("Multi-actions can't be nested")
+                .activatable(false)
+                .css_classes(["error"])
+                .build(),
+        );
+        return;
+    }
+    let len = steps.len();
+    let selected = selected_step_in(app, slot, len);
+
+    for (n, step) in steps.iter().enumerate() {
+        let row = adw::ActionRow::builder()
+            .title(format!("{} · {}", n + 1, step.summary()))
+            .use_markup(false)
+            .activatable(true)
+            .build();
+        if matches!(step, Action::Multi { .. }) {
+            row.set_subtitle("Multi-actions can't be nested");
+            row.add_css_class("error");
+        }
+        if selected == Some(n) {
+            row.add_prefix(&gtk::Image::from_icon_name("document-edit-symbolic"));
+        }
+        let buttons = [
+            ("go-up-symbolic", "Move up", StepEdit::Up(n), n > 0),
+            ("go-down-symbolic", "Move down", StepEdit::Down(n), n + 1 < len),
+            ("user-trash-symbolic", "Remove this step", StepEdit::Remove(n), true),
+        ];
+        for (icon, tip, edit, sensitive) in buttons {
+            let b = gtk::Button::builder()
+                .icon_name(icon)
+                .tooltip_text(tip)
+                .valign(gtk::Align::Center)
+                .sensitive(sensitive)
+                .css_classes(["flat"])
+                .build();
+            let a = app.clone();
+            let slot = slot.clone();
+            b.connect_clicked(move |_| change_steps(&a, &slot, edit, None));
+            row.add_suffix(&b);
+        }
+        let a = app.clone();
+        let target = slot.step_target(n);
+        row.connect_activated(move |_: &adw::ActionRow| {
+            // Read in its own statement: the guard must be gone before `replace`.
+            let again = a.selected_step.borrow().as_ref() == Some(&target);
+            a.selected_step.replace(if again { None } else { Some(target.clone()) });
+            a.rebuild_editor();
+        });
+        group.add(&row);
+    }
+
+    // "Add step": a popover of every step kind but Nothing.
+    let list = gtk::Box::builder()
+        .orientation(gtk::Orientation::Vertical)
+        .margin_top(6)
+        .margin_bottom(6)
+        .margin_start(6)
+        .margin_end(6)
+        .build();
+    let pop = gtk::Popover::builder().child(&list).build();
+    for &kind in Action::STEP_KINDS.iter().filter(|&&k| k != 0) {
+        let b = gtk::Button::builder().label(Action::KINDS[kind]).css_classes(["flat"]).build();
+        let a = app.clone();
+        let slot = slot.clone();
+        // Weak: a strong popover inside its own child's handler would keep both alive.
+        let weak = pop.downgrade();
+        b.connect_clicked(move |_| {
+            if let Some(p) = weak.upgrade() {
+                p.popdown();
+            }
+            change_steps(&a, &slot, StepEdit::Add, Some(Action::empty_of_kind(kind)));
+        });
+        list.append(&b);
+    }
+    let add = gtk::MenuButton::builder()
+        .icon_name("list-add-symbolic")
+        .tooltip_text("Add a step")
+        .valign(gtk::Align::Center)
+        .css_classes(["flat"])
+        .popover(&pop)
+        .build();
+    let add_row = adw::ActionRow::builder().title("Add step").build();
+    add_row.add_suffix(&add);
+    add_row.set_activatable_widget(Some(&add));
+    group.add(&add_row);
+    if steps.iter().any(|s| matches!(s, Action::Delay { .. })) || len > 1 {
+        group.add(&hint_row(
+            "Steps start in order without waiting for each other: add a delay where the next step needs the \
+             previous one done (a window moved, an app open).",
+        ));
+    }
+
+    // The selected step's editor: a group of its own, below the list.
+    if let Some(n) = selected {
+        let step = slot.step(n);
+        let step_group = adw::PreferencesGroup::builder().title(format!("Step {}", n + 1)).margin_top(12).build();
+        // Its ▶ runs this step only.
+        step_group.set_header_suffix(Some(&test_button(app, &step, step.get.clone())));
+        action_editor(app, &step_group, "Action", &step);
+        group.add(&step_group);
+    }
+}
+
+/// Which of the multi's `len` steps (at `slot`) is selected, if one is.
+fn selected_step_in(app: &App, slot: &ActionSlot, len: usize) -> Option<usize> {
+    let sel = app.selected_step.borrow();
+    (0..len).find(|&n| sel.as_ref() == Some(&slot.step_target(n)))
+}
+
+/// Change the multi's step list: an owned copy is edited and written back, so no borrow of
+/// the config is held across `set`.
+fn edit_steps(app: &Rc<App>, slot: &ActionSlot, f: impl FnOnce(&mut Vec<Action>)) {
+    let mut act = (slot.get)(app);
+    if let Action::Multi { steps } = &mut act {
+        f(steps);
+        (slot.set)(app, act);
+    }
+}
+
+/// Apply one structural edit (`new` is the step `Add` pushes), keep the selection on the
+/// same step, and rebuild.
+fn change_steps(app: &Rc<App>, slot: &ActionSlot, edit: StepEdit, new: Option<Action>) {
+    let len = match (slot.get)(app) {
+        Action::Multi { steps } => steps.len(),
+        _ => return,
+    };
+    let sel = selected_step_in(app, slot, len);
+    edit_steps(app, slot, |steps| match edit {
+        StepEdit::Up(i) if i > 0 && i < steps.len() => steps.swap(i - 1, i),
+        StepEdit::Down(i) if i + 1 < steps.len() => steps.swap(i, i + 1),
+        StepEdit::Remove(i) if i < steps.len() => {
+            steps.remove(i);
+        }
+        StepEdit::Add => steps.push(new.unwrap_or_default()),
+        _ => {}
+    });
+    // Another multi's selection (a dial's other slot) is left alone.
+    if sel.is_some() || matches!(edit, StepEdit::Add) {
+        let after = selection_after(sel, edit, len).map(|n| slot.step_target(n));
+        app.selected_step.replace(after);
+    }
+    app.rebuild_editor();
+}
+
+/// One structural edit of a step list.
+#[derive(Debug, Clone, Copy)]
+enum StepEdit {
+    Up(usize),
+    Down(usize),
+    Remove(usize),
+    Add,
+}
+
+/// Where the selected step is after `edit` on a list of `len` steps (before the edit).
+/// A moved step stays selected; removing the selected one clears it; removing one above
+/// moves it up; Add selects the new last step. An edit that can't apply (Up on the first
+/// step) changes nothing. Pure, for the test.
+fn selection_after(sel: Option<usize>, edit: StepEdit, len: usize) -> Option<usize> {
+    match edit {
+        StepEdit::Add => Some(len),
+        StepEdit::Up(i) if i > 0 && i < len => sel.map(|s| match s {
+            s if s == i => i - 1,
+            s if s == i - 1 => i,
+            s => s,
+        }),
+        StepEdit::Down(i) if i + 1 < len => sel.map(|s| match s {
+            s if s == i => i + 1,
+            s if s == i + 1 => i,
+            s => s,
+        }),
+        StepEdit::Remove(i) if i < len => match sel {
+            Some(s) if s == i => None,
+            Some(s) if s > i => Some(s - 1),
+            s => s,
+        },
+        _ => sel,
+    }
+}
+
+/// Create a page for the key `at` to open, and make the key look like a folder if it's plain.
+fn new_folder(app: &Rc<App>, at: &KeyRef) -> String {
+    let label = key_label(app, at);
     let name = app.add_page(if label.trim().is_empty() { "Page" } else { &label }, true);
     let n = name.clone();
-    app.edit(i, |k| {
+    app.edit_ref(at, |k| {
         if k.icon.is_none() && k.glyph.is_none() {
             k.glyph = Some("\u{f024b}".into());
         }
@@ -1676,6 +1906,11 @@ fn new_folder(app: &Rc<App>, i: u8) -> String {
         }
     });
     name
+}
+
+/// The label of the key `at`, on its own page; empty if it has none or is gone.
+fn key_label(app: &App, at: &KeyRef) -> String {
+    app.config.borrow().key(at.page(), at.index()).map(|k| k.label.clone()).unwrap_or_default()
 }
 
 /// "omarchy.org" → "Omarchy", "www.youtube.com" → "Youtube".
@@ -1913,5 +2148,32 @@ mod tests {
         assert_eq!(route(&url, Some((3, None)), false), Route::Local);
         assert_eq!(route(&Action::Back, Some((3, None)), false), Route::NeedsDaemon);
         assert_eq!(route(&media, Some((3, None)), false), Route::ShowPage("Media".into()));
+    }
+
+    #[test]
+    fn selection_follows_the_step() {
+        // Moving the selected step up keeps it selected; moving its neighbour shifts it.
+        assert_eq!(selection_after(Some(2), StepEdit::Up(2), 4), Some(1));
+        assert_eq!(selection_after(Some(1), StepEdit::Up(2), 4), Some(2));
+        assert_eq!(selection_after(Some(1), StepEdit::Down(1), 4), Some(2));
+        // Removing it clears the selection; removing one above moves it up.
+        assert_eq!(selection_after(Some(2), StepEdit::Remove(2), 4), None);
+        assert_eq!(selection_after(Some(2), StepEdit::Remove(0), 4), Some(1));
+        assert_eq!(selection_after(Some(0), StepEdit::Remove(3), 4), Some(0));
+        // A new step is selected.
+        assert_eq!(selection_after(None, StepEdit::Add, 4), Some(4));
+        // An edit that can't apply moves nothing.
+        assert_eq!(selection_after(Some(0), StepEdit::Up(0), 4), Some(0));
+        assert_eq!(selection_after(Some(3), StepEdit::Down(3), 4), Some(3));
+    }
+
+    #[test]
+    fn multi_routes() {
+        let multi = Action::Multi { steps: vec![Action::App { command: "a".into() }, Action::Delay { ms: 5 }] };
+        let owned = Action::Multi { steps: vec![Action::Back] };
+        assert_eq!(route(&multi, Some((5, None)), true), Route::Press { index: 5, page: "Home".into() });
+        assert_eq!(route(&multi, None, true), Route::Daemon);
+        assert_eq!(route(&multi, None, false), Route::Local);
+        assert_eq!(route(&owned, None, false), Route::NeedsDaemon);
     }
 }

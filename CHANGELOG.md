@@ -7,6 +7,9 @@ All notable changes to omadeck are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- A `multi` action runs several actions in order from one key or dial, with `delay`
+  steps in between, as in the Elgato app's Multi Action. The configurator edits the steps
+  as a list.
 - `omadeckd page`, `brightness`, `reload` and `state` control the running daemon, e.g.
   from Hyprland binds. `press` and `dial` go through the daemon when it runs, so the key
   flashes and page and brightness keys work. *Try it now* runs through the daemon, so Go
