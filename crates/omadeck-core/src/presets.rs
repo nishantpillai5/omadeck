@@ -110,6 +110,7 @@ fn bluetooth(k: &mut KeyConfig) {
 /// The face shows what a press will do: play while paused, pause while playing. The on
 /// face follows the player (no state command).
 fn play_pause(k: &mut KeyConfig) {
+    start(k);
     k.label = "Play".into();
     set_glyph(k, "f040a");
     k.action = Action::Media { command: MediaCommand::PlayPause, seek: 0, player: None };
