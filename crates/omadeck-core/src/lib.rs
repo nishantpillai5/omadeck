@@ -8,6 +8,7 @@ pub mod device;
 pub mod ipc;
 pub mod live;
 pub mod paths;
+pub mod player;
 pub mod presets;
 pub mod probe;
 pub mod proc;
@@ -24,6 +25,7 @@ pub use config::{
 pub use device::DeckInfo;
 pub use presets::{PRESETS, Preset, apply_service, on_path};
 pub use render::{
-    Align, AppShow, DialStatus, Face, KeyStatus, Level, LiveShow, PANEL_W, PanelStatus, Renderer, tap_to_dial,
+    Align, AppShow, DialStatus, Face, KeyStatus, Level, LiveShow, MediaShow, PANEL_W, PanelStatus, Renderer,
+    tap_to_dial,
 };
 pub use theme::{Rgb, Theme};
