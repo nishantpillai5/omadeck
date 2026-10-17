@@ -21,6 +21,11 @@
 //! reads. Volume changes and reads also run inline, so a clock read due while one runs
 //! waits for it: normally under 100 ms, at most ~2 s per call on a hung PipeWire
 //! (`COMMAND_TIMEOUT`). The minute still turns over, late by that much once.
+//!
+//! The media player (PR 14) is read inline too, one `playerctl` per second while a media
+//! dial or a play/pause key is shown, and a read that only confirms the moving position
+//! isn't sent (`Value::same_as`). Media commands run here in order, then re-read. Covers
+//! are decoded here, never on the deck loop.
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -32,9 +37,10 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use omadeck_core::audio::AppQuery;
+use omadeck_core::player::{self, PlayerRead};
 use omadeck_core::probe::{Probe, Toggle, Value, is_missing, toggle_from_exit};
 use omadeck_core::proc::Job;
-use omadeck_core::{AudioDevice, action, audio, live, sysinfo};
+use omadeck_core::{AudioDevice, MediaCommand, action, audio, live, render, sysinfo};
 
 /// A message the deck loop sends the watcher.
 #[derive(Debug, Clone, PartialEq)]
@@ -59,6 +65,12 @@ pub enum WatchCmd {
     /// `change` already has the steps folded in (±100 at most); 0 with `mute`. Not
     /// acknowledged: the deck keeps no in-flight total for apps.
     AppVolume { query: AppQuery, change: i32, mute: bool },
+    /// Run a media command here, in order with the other changes, then re-read `probe`
+    /// after `probe.refresh_after()` and send those reads even if unchanged. `seek` is
+    /// in seconds with the steps folded in; `target` is a `playerctl --player` instance.
+    // Sent by the daemon from task 6 of PR 14.
+    #[allow(dead_code)]
+    Media { command: MediaCommand, seek: i32, target: Option<String>, probe: Probe },
     /// A runner thread finished. Sent by the runner, not by the daemon. `run` is the id
     /// `run_due` gave the run: a `Done` from a run that was cancelled and replaced (the
     /// probe dropped and watched again meanwhile) doesn't match and is ignored.
@@ -155,6 +167,23 @@ fn app_values(
         .collect()
 }
 
+/// Decode a new cover off the deck loop; keep the old image when the path is unchanged.
+fn with_art(prev: Option<&Value>, mut v: Value) -> Value {
+    if let Value::Player(Ok(Some(t))) = &mut v
+        && let Some(path) = t.art.clone()
+    {
+        let old = match prev {
+            Some(Value::Player(Ok(Some(p)))) if p.art.as_ref() == Some(&path) => p.art_img.clone(),
+            _ => None,
+        };
+        t.art_img = old.or_else(|| render::load_icon(&path, 48).map(Arc::new));
+        if t.art_img.is_none() {
+            t.art = None; // won't decode: draw the glyph, and don't try again every second
+        }
+    }
+    v
+}
+
 /// When `probe` should be read next, after a read at `now` (`wall_ms`: Unix ms).
 fn next_read(probe: &Probe, now: Instant, wall_ms: i64) -> Instant {
     match probe {
@@ -196,6 +225,9 @@ struct Poller {
     read_streams: fn() -> Option<Vec<audio::Stream>>,
     run_commands: fn(&[Vec<String>]),
     find_icon: fn(&[String]) -> Option<PathBuf>,
+    /// The media player's I/O (PR 14): `player::read` and `player::run_argv`.
+    read_player: fn(Option<&str>) -> PlayerRead,
+    run_media: fn(&[String]) -> bool,
 }
 
 impl Default for Poller {
@@ -219,6 +251,8 @@ impl Default for Poller {
             read_streams: audio::streams,
             run_commands: audio::run_commands,
             find_icon: audio::app_icon,
+            read_player: player::read,
+            run_media: player::run_argv,
         }
     }
 }
@@ -325,6 +359,22 @@ impl Poller {
                     self.read_apps(now, out);
                 }
             }
+            WatchCmd::Media { command, seek, target, probe } => {
+                // In order, like volume. `playerctl` and Omarchy's commands answer in a few
+                // ms; each is capped at `COMMAND_TIMEOUT`.
+                let backend = audio::backend();
+                let monitor = (backend == audio::Backend::Omarchy3).then(audio::focused_monitor).flatten();
+                for argv in player::media_argv(backend, command, seek, target.as_deref(), monitor.as_deref()) {
+                    (self.run_media)(&argv);
+                }
+                // The player takes a moment to report its new state: read it back later,
+                // and send even an unchanged read (the deck may be showing a guess).
+                if self.watched.contains(&probe) {
+                    for d in probe.refresh_after() {
+                        self.refresh_at.push((now + *d, probe.clone()));
+                    }
+                }
+            }
             WatchCmd::Stop => {} // the thread loop handles it
             WatchCmd::Done { probe, run, result } => {
                 // Unwatched meanwhile, or a cancelled run whose probe has a new one.
@@ -422,9 +472,10 @@ impl Poller {
                 }
                 // Fed by the Hyprland listener, never watched.
                 Probe::Workspace => {}
-                // Read in task 5 of PR 14; until then, not again for a while.
-                Probe::Player(_) => {
-                    self.next_due.insert(p.clone(), now + p.interval());
+                // Inline: one `playerctl` (under `COMMAND_TIMEOUT`) reads every player.
+                Probe::Player(wanted) => {
+                    let v = with_art(self.last.get(&p), Value::Player((self.read_player)(wanted.as_deref())));
+                    self.record(p, v, now, out, 0);
                 }
                 // One read answers every app probe; the rest of this pass skips (their
                 // `next_due` was just reset).
@@ -469,7 +520,9 @@ impl Poller {
         let next = if fast { now + omadeck_core::probe::FAST_INTERVAL } else { next_read(&p, now, live::wall_ms()) };
         self.next_due.insert(p.clone(), next);
         let forced = self.forced.remove(&p) | expired;
-        if forced || self.last.get(&p) != Some(&v) {
+        // `same_as`, not `==`: a player that simply plays on is not a change. `last` keeps
+        // the old read then, so it stays the anchor the next read is compared with.
+        if forced || !self.last.get(&p).is_some_and(|old| old.same_as(&v)) {
             self.last.insert(p.clone(), v.clone());
             out.push((p, Some(v), applied));
         }
@@ -1417,5 +1470,110 @@ mod tests {
         );
         assert!(out.is_empty());
         assert_eq!(p.next_due(), Some(t2 + Duration::from_secs(5)));
+    }
+
+    fn media_track(position_ms: u64, read_ms: u64) -> player::Track {
+        player::Track {
+            player: "spotify".into(),
+            name: "spotify".into(),
+            status: player::PlayStatus::Playing,
+            position_ms,
+            length_ms: Some(200_000),
+            title: "Song".into(),
+            artist: "Band".into(),
+            art: None,
+            art_img: None,
+            read_ms,
+        }
+    }
+
+    #[test]
+    fn with_art_keeps_decoded_image_for_same_path() {
+        let dir = std::env::temp_dir().join(format!("omadeck-art-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("cover.png");
+        image::RgbaImage::from_pixel(64, 64, image::Rgba([200, 30, 30, 255])).save(&path).unwrap();
+        let track = |art: Option<std::path::PathBuf>| player::Track {
+            player: "mpv".into(),
+            name: "mpv".into(),
+            status: player::PlayStatus::Playing,
+            position_ms: 0,
+            length_ms: None,
+            title: "T".into(),
+            artist: String::new(),
+            art,
+            art_img: None,
+            read_ms: 0,
+        };
+        let first = with_art(None, Value::Player(Ok(Some(track(Some(path.clone()))))));
+        let Value::Player(Ok(Some(t1))) = &first else { panic!() };
+        let img = t1.art_img.clone().expect("decoded");
+        assert!(img.width() <= 48 && img.height() <= 48);
+        let second = with_art(Some(&first), Value::Player(Ok(Some(track(Some(path.clone()))))));
+        let Value::Player(Ok(Some(t2))) = &second else { panic!() };
+        assert!(Arc::ptr_eq(&img, t2.art_img.as_ref().unwrap()), "same path: no second decode");
+        // A file that won't decode drops the art.
+        std::fs::write(&path, b"not a png").unwrap();
+        let bad = with_art(None, Value::Player(Ok(Some(track(Some(path.clone()))))));
+        let Value::Player(Ok(Some(t3))) = &bad else { panic!() };
+        assert!(t3.art.is_none() && t3.art_img.is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn record_ignores_a_playing_tick() {
+        let mut p = Poller { read_player: |_| panic!("not read here"), ..Poller::default() };
+        let probe = Probe::Player(None);
+        let mut out = Vec::new();
+        let t0 = Instant::now();
+        p.handle(WatchCmd::Watch(vec![probe.clone()]), t0, &mut out);
+        let play = |pos, read| Value::Player(Ok(Some(media_track(pos, read))));
+        p.record(probe.clone(), play(10_000, 1_000_000), t0, &mut out, 0);
+        assert_eq!(out.len(), 1, "the first read is sent");
+        out.clear();
+        // One second later, one second further: nothing to send.
+        p.record(probe.clone(), play(11_000, 1_001_000), t0 + Duration::from_secs(1), &mut out, 0);
+        assert!(out.is_empty(), "{out:?}");
+        // The anchor stayed: two seconds on is still the same track playing.
+        p.record(probe.clone(), play(12_000, 1_002_000), t0 + Duration::from_secs(2), &mut out, 0);
+        assert!(out.is_empty(), "{out:?}");
+        // A seek from the player's own UI is sent.
+        p.record(probe.clone(), play(72_000, 1_002_000), t0 + Duration::from_secs(2), &mut out, 0);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].1, Some(play(72_000, 1_002_000)));
+    }
+
+    thread_local! {
+        static MEDIA_RAN: std::cell::RefCell<Vec<Vec<String>>> = const { std::cell::RefCell::new(Vec::new()) };
+    }
+
+    fn record_media(argv: &[String]) -> bool {
+        MEDIA_RAN.with(|r| r.borrow_mut().push(argv.to_vec()));
+        true
+    }
+
+    #[test]
+    fn media_cmd_runs_then_refreshes() {
+        let mut p = Poller { read_player: |_| Ok(None), run_media: record_media, ..Poller::default() };
+        let probe = Probe::Player(None);
+        let mut out = Vec::new();
+        let t0 = Instant::now();
+        p.handle(WatchCmd::Watch(vec![probe.clone()]), t0, &mut out);
+        p.handle(
+            WatchCmd::Media {
+                command: MediaCommand::PlayPause,
+                seek: 5,
+                target: Some("spotify".into()),
+                probe: probe.clone(),
+            },
+            t0,
+            &mut out,
+        );
+        let ran = MEDIA_RAN.with(|r| r.borrow().clone());
+        let v = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert_eq!(ran, vec![v(&["playerctl", "--player=spotify", "position", "5+"])]);
+        assert_eq!(p.refresh_at.len(), 2);
+        assert!(p.refresh_at.iter().all(|(_, pr)| *pr == probe));
+        assert!(out.is_empty(), "nothing read inline");
     }
 }
