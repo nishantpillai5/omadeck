@@ -1022,9 +1022,19 @@ impl App {
                     let cur = self.deck.borrow();
                     cur.rows != deck.rows || cur.cols != deck.cols || cur.model != deck.model || cur.dials != deck.dials
                 };
+                // A replugged deck may be smaller: a selection past its keys or dials
+                // would edit a slot the hardware doesn't have.
+                let stale = match self.selected.get() {
+                    Some(Selection::Key(i)) => i as usize >= deck.key_count() as usize,
+                    Some(Selection::Dial(i)) => i as usize >= deck.dials as usize,
+                    None => false,
+                };
                 *self.deck.borrow_mut() = deck;
                 if relayout {
                     self.rebuild_grid();
+                }
+                if stale {
+                    self.select(None);
                 }
             }
             Msg::Event(Event::Disconnected) => self.connected.set(false),

@@ -251,10 +251,10 @@ fn dial_action_group(
         },
         move |a, t, command, name, _| {
             if let Target::Dial(j) = t {
-                a.edit_dial(*j, |d| {
-                    set3(d, Action::App { command });
-                    d.label = name;
-                });
+                // Only the direction's action changes; the dial's label is shared by its
+                // three actions, so picking an app for one must not rename the dial.
+                let _ = name;
+                a.edit_dial(*j, |d| set3(d, Action::App { command }));
             }
         },
         move |a| {

@@ -19,6 +19,8 @@ All notable changes to omadeck are documented here. The format follows
   configured with `[[dial]]` tables or in the configurator.
 
 ### Fixed
+- Replugging a smaller deck no longer leaves the configurator editing a key or dial the
+  hardware doesn't have.
 - A colour value with a non-ASCII character (in the config or the Omarchy theme) crashed the
   daemon, and systemd restarted it into the same crash.
 - Websites, scripts and terminals opened from the deck ran inside the omadeckd service, so
