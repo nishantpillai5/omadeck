@@ -7,6 +7,15 @@ All notable changes to omadeck are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- Toggle keys: a second face (`[key.on]`) that follows real state — a shell command's
+  exit status polled in the background (exit 0 = on, 75 = busy with a progress line,
+  else off), the mute a volume mute key already changes, or a flip on each press. A
+  `slow = true` toggle shows busy at once and polls fast until the state moves (at most 15
+  seconds); `[key.busy] bar = true` draws a progress bar from the first `NN%`. Any key
+  running a command or script can set `busy_while_running = true` to look busy for as long
+  as it runs (the command keeps running if the daemon stops). The configurator mirrors
+  what the deck shows, edits each face in its own tab, and has toggle presets: mic mute,
+  output mute, night light, stay awake, do-not-disturb, bluetooth, and a service… dialog.
 - Stream Deck +: flicking the touch strip changes page (left is next, right is
   previous, wrapping), and a `page_step` action moves to the next or previous page,
   on a key or per dial turn. Folders are skipped, so a flick can't land inside one;

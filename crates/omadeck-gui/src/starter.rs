@@ -27,11 +27,6 @@ fn key(index: u8, label: &str, icon: Option<String>, action: Action) -> KeyConfi
     KeyConfig { label: label.into(), icon, action, ..KeyConfig::new(index) }
 }
 
-/// A key whose icon is a Nerd Font symbol, tinted with the theme accent.
-fn glyph(index: u8, label: &str, glyph: &str, action: Action) -> KeyConfig {
-    KeyConfig { glyph: Some(glyph.into()), ..key(index, label, None, action) }
-}
-
 fn app(cmd: &str) -> Action {
     Action::App { command: cmd.into() }
 }
@@ -67,9 +62,23 @@ pub fn layout() -> Config {
     for n in 1..=5u8 {
         keys.push(key(4 + n, &n.to_string(), None, Action::Hyprland { dispatch: format!("workspace {n}") }));
     }
+    // The two presets that work everywhere, by name: the output mute toggle (the on
+    // face follows the mute) and the night light (a real state command, when jq is
+    // there; a plain key otherwise, or its state command fails every poll).
+    let preset = |name: &str| omadeck_core::PRESETS.iter().find(|p| p.name == name).expect("a built-in preset");
+    let mut mute = KeyConfig::new(10);
+    (preset("Output mute").apply)(&mut mute);
+    let night_light = preset("Night light");
+    let night = if night_light.needs.is_none_or(omadeck_core::on_path) {
+        let mut k = KeyConfig::new(11);
+        (night_light.apply)(&mut k);
+        k
+    } else {
+        key(11, "Night light", None, app("omarchy-toggle-nightlight"))
+    };
     keys.extend([
-        glyph(10, "Mute", "\u{f075f}", app("omarchy audio output volume mute-toggle")),
-        glyph(11, "Night light", "\u{f0594}", app("omarchy toggle nightlight")),
+        mute,
+        night,
         key(
             12,
             "Wallpaper",
