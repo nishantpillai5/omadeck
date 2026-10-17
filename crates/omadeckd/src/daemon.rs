@@ -1849,6 +1849,19 @@ live = { source = "battery" }
     }
 
     #[test]
+    fn no_deck_loop_sleeps_after_an_unplug_while_media_plays() {
+        // BUGS.md 73: a media tick due before the unplug kept `next_deadline` in the past,
+        // so the no-deck loop never slept.
+        let mut t = test_daemon("");
+        let now = Instant::now();
+        t.media_due = Some(now.checked_sub(Duration::from_secs(1)).unwrap_or(now));
+        assert!(t.next_deadline().is_none_or(|at| at >= now), "{:?}", t.next_deadline());
+        t.detach(&omadeck_core::device::StreamDeckError::NoScreen);
+        assert_eq!(t.media_due, None);
+        assert!(wait_for(Instant::now(), t.next_deadline()) > Duration::ZERO);
+    }
+
+    #[test]
     fn a_reload_that_deletes_the_shown_page_moves_home() {
         // The deck-free half of BUGS.md 79's path: `reload` moves `nav` without
         // `show_page`, and says so. (Its held-key half is in `deck::tests`: a `Deck`
