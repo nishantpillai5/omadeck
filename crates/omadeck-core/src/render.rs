@@ -88,7 +88,7 @@ const B1_VALUE_PX: f32 = 24.0;
 const OUTPUT_GLYPH: &str = "f057e"; // 󰕾 speaker
 const INPUT_GLYPH: &str = "f036c"; // 󰎬 microphone
 const MUTE_GLYPH: &str = "f075f"; // 󰝟 muted
-const BRIGHTNESS_GLYPH: &str = "f00de"; // 󀟎 brightness
+const BRIGHTNESS_GLYPH: &str = "f00de"; // 󰃞 brightness
 
 /// The glyph a volume dial's `$B1` panel shows when it has no icon: the mute glyph when
 /// muted, else the dial's own glyph, else a speaker (output) or a microphone (input).
