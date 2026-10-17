@@ -29,7 +29,7 @@ Written in Rust: a tiny background daemon drives the hardware, and a GTK4/libadw
 
 ## Features
 
-- **Eleven action types**
+- **Twelve action types**
   - **Launch app:** pick from your installed apps; the app's icon and name come along. Apps launch through `uwsm-app`, the same way Omarchy launches them.
   - **Run script:** optionally in a terminal so you can watch the output.
   - **Play sound:** through PipeWire (`pw-play`), with per-key volume.
@@ -226,6 +226,7 @@ Action types:
 | `page_step` | `change` (± pages, default 1) |
 | `brightness` | `change` (±%) and/or `set` (absolute 0–100) |
 | `app_volume` | `app` (a process name, app name, Flatpak id or desktop id), `focused` (follow the focused window instead), `change` (±%), `mute` |
+| `media` | `command` (`play_pause`, the default, `next`, `previous`, `stop`), `seek` (± seconds; wins over `command`), `player` (a `playerctl --player` name; default: the one playing) |
 | `multi` | `steps`: a list of actions, run in order (see [Multi actions](#multi-actions)) |
 | `delay` | `ms`: wait this long before the next step (only inside a `multi`) |
 
