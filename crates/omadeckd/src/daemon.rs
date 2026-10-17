@@ -231,12 +231,32 @@ pub struct Daemon {
     watched: Vec<Probe>,
 }
 
+/// What `Daemon::new` takes from the system: the saved state and the Hyprland threads.
+/// Tests pass their own, so they never read the user's state or talk to Hyprland.
+pub struct Env {
+    pub saved: State,
+    pub hypr: HyprWorker,
+    pub hypr_events: Option<std::sync::mpsc::Receiver<HyprEvent>>,
+}
+
+impl Env {
+    /// The real one: `$XDG_STATE_HOME/omadeck/state.toml` and the running Hyprland.
+    pub fn system() -> Self {
+        Env { saved: State::load(), hypr: HyprWorker::start(), hypr_events: hypr::start() }
+    }
+}
+
 impl Daemon {
     /// `cfg_loaded` is false when config.toml didn't parse and `cfg` is the empty
     /// fallback: its `brightness` is then no edit.
     pub fn new(cfg: Config, cfg_loaded: bool, hub: Hub, watcher: Watcher, saver: StateSaver) -> Self {
+        Self::with_env(cfg, cfg_loaded, hub, watcher, saver, Env::system())
+    }
+
+    /// `new` with the state and Hyprland threads given.
+    pub fn with_env(cfg: Config, cfg_loaded: bool, hub: Hub, watcher: Watcher, saver: StateSaver, env: Env) -> Self {
+        let Env { saved, hypr, hypr_events } = env;
         let renderer = Renderer::new(&cfg.style);
-        let saved = State::load();
         let rt = Runtime::start(saved.clone(), cfg_loaded.then_some(cfg.brightness));
         if rt.state != saved {
             saver.send(rt.state.clone());
@@ -250,8 +270,8 @@ impl Daemon {
             hub,
             watcher,
             saver,
-            hypr: HyprWorker::start(),
-            hypr_events: hypr::start(),
+            hypr,
+            hypr_events,
             rt,
             deck: None,
             published: HashMap::new(),
@@ -319,8 +339,13 @@ impl Daemon {
     /// shouldn't wipe the deck: on a bad file it keeps the last good config, restyles and
     /// repaints as usual, then returns `Config::load`'s error for the caller to report.
     pub fn reload(&mut self) -> Result<()> {
+        self.apply_config(Config::load())
+    }
+
+    /// `reload` with the config given (`Config::load`'s result).
+    fn apply_config(&mut self, load: Result<Config>) -> Result<()> {
         let mut hand_edit = None;
-        let loaded = match Config::load() {
+        let loaded = match load {
             Ok(new_cfg) => {
                 hand_edit = self.rt.state.config_edit(new_cfg.brightness);
                 self.cfg = new_cfg;
@@ -1711,5 +1736,78 @@ live = { source = "battery" }
         let all = config_probes(&cfg, 2);
         assert!(all.contains(&Probe::Player(None)));
         assert!(all.contains(&Probe::Player(Some("spotify".into()))));
+    }
+
+    /// A daemon with no deck, socket, watcher thread, Hyprland or user state: the hub is
+    /// detached, the watcher's commands come out of `cmds`, and the state saver writes
+    /// into a temp dir that is removed on drop.
+    struct TestDaemon {
+        d: Option<Daemon>,
+        cmds: std::sync::mpsc::Receiver<WatchCmd>,
+        dir: std::path::PathBuf,
+    }
+
+    impl std::ops::Deref for TestDaemon {
+        type Target = Daemon;
+        fn deref(&self) -> &Daemon {
+            self.d.as_ref().unwrap()
+        }
+    }
+
+    impl std::ops::DerefMut for TestDaemon {
+        fn deref_mut(&mut self) -> &mut Daemon {
+            self.d.as_mut().unwrap()
+        }
+    }
+
+    impl Drop for TestDaemon {
+        fn drop(&mut self) {
+            // The saver writes what's pending first, so the dir goes after it.
+            if let Some(d) = self.d.take() {
+                d.shutdown();
+            }
+            let _ = std::fs::remove_dir_all(&self.dir);
+        }
+    }
+
+    fn test_daemon(toml: &str) -> TestDaemon {
+        static N: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!("omadeck-daemon-test-{}-{n}", std::process::id()));
+        let saver = crate::saver::start_saver_at(dir.join("state.toml"));
+        let (hub, _requests) = Hub::detached();
+        let (watcher, cmds, _values) = Watcher::detached();
+        let env = Env {
+            saved: State::default(),
+            hypr: HyprWorker::start_with(|d| anyhow::bail!("no Hyprland in tests ({d})")),
+            hypr_events: None,
+        };
+        let d = Daemon::with_env(Config::parse(toml).unwrap(), true, hub, watcher, saver, env);
+        TestDaemon { d: Some(d), cmds, dir }
+    }
+
+    #[test]
+    fn a_test_daemon_publishes_into_its_hub_replay() {
+        let mut t = test_daemon("brightness = 30\n");
+        t.set_brightness(Some(55), 0);
+        t.detach(&omadeck_core::device::StreamDeckError::NoScreen);
+        let lines = t.hub.replay_lines();
+        assert_eq!(lines[0], r#"{"event":"disconnected"}"#);
+        assert!(lines.contains(&r#"{"event":"brightness","value":55}"#.to_string()), "{lines:?}");
+        // No deck: nothing to watch.
+        assert_eq!(t.cmds.try_iter().last(), Some(WatchCmd::Watch(Vec::new())));
+    }
+
+    #[test]
+    fn no_deck_loop_sleeps_after_an_unplug_while_media_plays() {
+        // BUGS.md 73: a media tick due before the unplug kept `next_deadline` in the past,
+        // so the no-deck loop never slept.
+        let mut t = test_daemon("");
+        let now = Instant::now();
+        t.media_due = Some(now.checked_sub(Duration::from_secs(1)).unwrap_or(now));
+        assert!(t.next_deadline().is_none_or(|at| at >= now), "{:?}", t.next_deadline());
+        t.detach(&omadeck_core::device::StreamDeckError::NoScreen);
+        assert_eq!(t.media_due, None);
+        assert!(wait_for(Instant::now(), t.next_deadline()) > Duration::ZERO);
     }
 }
