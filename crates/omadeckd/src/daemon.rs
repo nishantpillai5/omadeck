@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 use anyhow::Result;
 use omadeck_core::config::apply_brightness;
 use omadeck_core::device::{DeviceStateUpdate, StreamDeckError};
-use omadeck_core::ipc::{Command, Event};
+use omadeck_core::ipc::{Command, Event, Reply};
 use omadeck_core::probe::{self, FAST_WINDOW, Probe, SETTLE, Toggle, Value, Values};
 use omadeck_core::proc;
 use omadeck_core::state::State;
@@ -327,11 +327,11 @@ impl Daemon {
     pub fn handle_commands(&mut self) {
         let mut show = None;
         let mut bright = None;
-        for cmd in self.hub.commands() {
-            match cmd {
+        for req in self.hub.commands() {
+            match req.cmd {
                 Command::ShowPage { page } => show = Some(page),
                 Command::SetBrightness { value } => bright = Some(value),
-                _ => {}
+                _ => req.reply.send(&Reply::error("not yet")),
             }
         }
         // With no deck too: it's saved and applied on connect.
