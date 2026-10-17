@@ -1305,3 +1305,25 @@ the code; *(plausible)* needs the machine to confirm. All 32 are fixed on `fix/r
   otherwise the job runs directly, as the code already did when `systemd-run` was
   missing. `run_tracked_streams_lines` now exercises the direct path in CI and the
   scope path on a machine with a bus.
+
+#### 106. The deck preview frame is wider than the deck: blank after the 4th key and 4th dial
+
+- **Status:** fixed in `935fbf7` on `feat/folders`, cherry-picked to `pr/13-folders`
+  (`8aa181e`); the chain rebased (`feat/media-dial` … `fix/review-3`, `pr/14` … `pr/16`,
+  `daily`).
+- **Found:** 2026-10-17, machine pass — first real look at the configurator. The deck
+  frame (the dark body around the keys) stretched well past the 4th column: blank space
+  after the 4th key in each row and after the 4th dial, and the strip stretched wider
+  than the keys. (The "5th dial" some might swear they see is the wallpaper through the
+  translucent window; the device reports 4 dials.)
+- **Branch:** `feat/folders` (PR 13's GUI commit `fa1a6b7` lengthened the hint line under
+  the deck, which is what made it visible).
+- **Where:** `app.rs` `App::new`, the `deck_area` box and its `frame` child.
+- **What goes wrong:** `deck_area` has `halign(Center)`, so it takes the natural width of
+  its widest child — the hint label, one unwrapped line. The `frame` below it has the
+  default `halign(Fill)`, so it stretches to the hint's width; the 4-column key grid and
+  dial grid inside keep their natural 426 px and sit left, leaving the blank. Before
+  `fa1a6b7` the hint was only a little wider than the deck, so the same code looked fine
+  — which is why the installed (older) GUI looked snug in the same window.
+- **Fix:** `frame.set_halign(Center)` — the frame shrink-wraps to the deck (478 px) and
+  centers in the area; the grid, strip and dials all line up at the grid's width.
