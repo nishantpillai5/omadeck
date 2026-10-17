@@ -4,7 +4,7 @@ use std::rc::Rc;
 
 use adw::prelude::*;
 use gtk::{gdk, gio, glib};
-use omadeck_core::{Action, AudioDevice, DialConfig, HOME, KeyConfig, Rgb, action, paths};
+use omadeck_core::{Action, AudioDevice, DialConfig, Direction, HOME, KeyConfig, Rgb, action, paths};
 
 use crate::app::{App, Target};
 use crate::{apps, media};
@@ -77,6 +77,7 @@ pub fn build_key(app: &Rc<App>, i: u8) -> gtk::Widget {
             }
             a.edit(i, |k| k.action = action);
         },
+        Action::empty_of_kind,
         move |a, t, act| {
             if let Target::Key(k) = t {
                 a.edit_ref(&k, |k| k.action = act);
@@ -204,9 +205,20 @@ pub fn build_dial(app: &Rc<App>, i: u8) -> gtk::Widget {
     group.add(&label);
     page.add(&group);
 
-    page.add(&dial_action_group(app, i, "Turn left", |d| d.turn_left.clone(), |d, a| d.turn_left = a));
-    page.add(&dial_action_group(app, i, "Turn right", |d| d.turn_right.clone(), |d, a| d.turn_right = a));
-    page.add(&dial_action_group(app, i, "Press", |d| d.press.clone(), |d, a| d.press = a));
+    // A new volume action starts with the sign the direction implies, not `+5` for all
+    // three slots (turning left used to raise the volume).
+    // A kind pick starts from what the slot implies (`Action::default_for`): turning left
+    // lowers or goes back, a Volume press mutes.
+    page.add(&dial_action_group(app, i, "Turn left", |d| d.turn_left.clone(), |d, a| d.turn_left = a, Direction::Left));
+    page.add(&dial_action_group(
+        app,
+        i,
+        "Turn right",
+        |d| d.turn_right.clone(),
+        |d, a| d.turn_right = a,
+        Direction::Right,
+    ));
+    page.add(&dial_action_group(app, i, "Press", |d| d.press.clone(), |d, a| d.press = a, Direction::Press));
 
     // --- appearance (the strip panel) -----------------------------------------------------
     let look = adw::PreferencesGroup::builder()
@@ -259,6 +271,7 @@ fn dial_action_group(
     title: &str,
     get: impl Fn(&DialConfig) -> Action + Clone + 'static,
     set: impl Fn(&mut DialConfig, Action) + Clone + 'static,
+    dir: Direction,
 ) -> adw::PreferencesGroup {
     let group = adw::PreferencesGroup::builder().title(title).build();
 
@@ -296,6 +309,7 @@ fn dial_action_group(
         move |_| Target::Dial(i),
         move |a| a.config.borrow().dial(i).map(&get).unwrap_or_default(),
         move |a, act| a.edit_dial(i, |d| set1(d, act)),
+        move |kind| Action::default_for(kind, dir),
         move |a, t, act| {
             if let Target::Dial(j) = t {
                 a.edit_dial(j, |d| set2(d, act));
@@ -335,6 +349,9 @@ fn action_editor(
     target: impl Fn(&Rc<App>) -> Target + Clone + 'static,
     get: impl Fn(&Rc<App>) -> Action + Clone + 'static,
     edit: impl Fn(&Rc<App>, Action) + Clone + 'static,
+    // The action a kind pick starts from (usually `Action::empty_of_kind`; a dial
+    // direction adjusts the volume's sign).
+    default_for: impl Fn(usize) -> Action + Clone + 'static,
     edit_at: impl Fn(&Rc<App>, Target, Action) + Clone + 'static,
     on_app_picked: impl Fn(&Rc<App>, &Target, String, String, Option<String>) + Clone + 'static,
     on_new_page: impl Fn(&Rc<App>) -> String + Clone + 'static,
@@ -353,11 +370,12 @@ fn action_editor(
     kind_row.connect_selected_notify({
         let get = get.clone();
         let edit = edit.clone();
+        let default_for = default_for.clone();
         move |row| {
             let sel = row.selected() as usize;
             let cur = get(&a).kind_index();
             if sel != cur {
-                edit(&a, Action::empty_of_kind(sel));
+                edit(&a, default_for(sel));
                 a.rebuild_editor();
             }
         }
