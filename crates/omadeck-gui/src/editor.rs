@@ -10,7 +10,7 @@ use omadeck_core::{
     StateChoice, action, audio, ipc, paths,
 };
 
-use crate::app::{ActionTarget, App, Target};
+use crate::app::{ActionTarget, App, KeyRef, Target};
 use crate::{apps, media};
 
 pub fn build_key(app: &Rc<App>, i: u8) -> gtk::Widget {
@@ -33,20 +33,30 @@ pub fn build_key(app: &Rc<App>, i: u8) -> gtk::Widget {
         ))
         .build();
 
+    // The rows read and write the key they were built for, through its page, like the
+    // dial and step slots: an edit that lands after the page changed (a spin committing
+    // as it loses focus) must not touch the new page's key `i` (BUGS.md 104).
+    let key_at = app.key_ref(i);
     let slot = ActionSlot {
-        target: ActionTarget::Key(app.key_ref(i)),
+        target: ActionTarget::Key(key_at.clone()),
         dir: None,
-        get: Rc::new(move |a| a.key(i).map(|k| k.action).unwrap_or_default()),
-        set: Rc::new(move |a, act| {
-            let mut action = act;
-            if let Action::Page { page } = &mut action {
-                // Nothing to choose from yet: make the page, like creating a folder.
-                let others = a.config.borrow().pages.iter().any(|p| Some(&p.name) != a.current_page().as_ref());
-                if !others {
-                    *page = new_folder(a, i);
+        get: Rc::new({
+            let at = ActionTarget::Key(key_at.clone());
+            move |a| a.action_at(&at).unwrap_or_default()
+        }),
+        set: Rc::new({
+            let k = key_at.clone();
+            move |a, act| {
+                let mut action = act;
+                if let Action::Page { page } = &mut action {
+                    // Nothing to choose from yet: make the page, like creating a folder.
+                    let others = a.config.borrow().pages.iter().any(|p| Some(p.name.as_str()) != k.page());
+                    if !others {
+                        *page = new_folder(a, &k);
+                    }
                 }
+                a.set_action_at(&ActionTarget::Key(k.clone()), action);
             }
-            a.edit(i, |k| k.action = action);
         }),
         own_page: app.current_page(),
         on_app_picked: Rc::new(|a, at, command, name, icon| {
@@ -60,7 +70,10 @@ pub fn build_key(app: &Rc<App>, i: u8) -> gtk::Widget {
                 });
             }
         }),
-        on_new_page: Rc::new(move |a| new_folder(a, i)),
+        on_new_page: Rc::new({
+            let k = key_at.clone();
+            move |a| new_folder(a, &k)
+        }),
         on_favicon: Some(Rc::new(move |a, at, icon, name| {
             if let ActionTarget::Key(k) = at {
                 a.edit_ref(&k, |k| {
@@ -223,16 +236,20 @@ pub fn build_key(app: &Rc<App>, i: u8) -> gtk::Widget {
             });
             toggle.add(&slow);
         }
+        // Through the key's page, like the key's own slot (BUGS.md 104).
+        let on_at = ActionTarget::KeyOn(key_at.clone());
         let on_slot = ActionSlot {
-            target: ActionTarget::KeyOn(app.key_ref(i)),
+            target: on_at.clone(),
             dir: None,
-            get: Rc::new(move |a| a.key(i).and_then(|k| k.on).map(|f| f.action).unwrap_or_default()),
-            set: Rc::new(move |a, act| {
-                a.edit(i, |k| {
-                    if let Some(on) = &mut k.on {
-                        on.action = act;
-                    }
-                });
+            get: Rc::new({
+                let at = on_at.clone();
+                move |a| a.action_at(&at).unwrap_or_default()
+            }),
+            set: Rc::new({
+                let at = on_at.clone();
+                move |a, act| {
+                    a.set_action_at(&at, act);
+                }
             }),
             own_page: app.current_page(),
             on_app_picked: Rc::new(|a, at, command, _, _| {
@@ -246,9 +263,12 @@ pub fn build_key(app: &Rc<App>, i: u8) -> gtk::Widget {
             }),
             // A folder for the on action only: the key keeps its own look (`new_folder`
             // would make the key itself look like a folder).
-            on_new_page: Rc::new(move |a| {
-                let label = a.key(i).map(|k| k.label).unwrap_or_default();
-                a.add_page(if label.trim().is_empty() { "Page" } else { label.as_str() }, true)
+            on_new_page: Rc::new({
+                let k = key_at.clone();
+                move |a| {
+                    let label = key_label(a, &k);
+                    a.add_page(if label.trim().is_empty() { "Page" } else { label.as_str() }, true)
+                }
             }),
             on_favicon: None,
             kinds: Action::KEY_KINDS,
@@ -1874,12 +1894,12 @@ fn selection_after(sel: Option<usize>, edit: StepEdit, len: usize) -> Option<usi
     }
 }
 
-/// Create a page for key `i` to open, and make the key look like a folder if it's plain.
-fn new_folder(app: &Rc<App>, i: u8) -> String {
-    let label = app.key(i).map(|k| k.label).unwrap_or_default();
+/// Create a page for the key `at` to open, and make the key look like a folder if it's plain.
+fn new_folder(app: &Rc<App>, at: &KeyRef) -> String {
+    let label = key_label(app, at);
     let name = app.add_page(if label.trim().is_empty() { "Page" } else { &label }, true);
     let n = name.clone();
-    app.edit(i, |k| {
+    app.edit_ref(at, |k| {
         if k.icon.is_none() && k.glyph.is_none() {
             k.glyph = Some("\u{f024b}".into());
         }
@@ -1888,6 +1908,11 @@ fn new_folder(app: &Rc<App>, i: u8) -> String {
         }
     });
     name
+}
+
+/// The label of the key `at`, on its own page; empty if it has none or is gone.
+fn key_label(app: &App, at: &KeyRef) -> String {
+    app.config.borrow().key(at.page(), at.index()).map(|k| k.label.clone()).unwrap_or_default()
 }
 
 /// "omarchy.org" → "Omarchy", "www.youtube.com" → "Youtube".
