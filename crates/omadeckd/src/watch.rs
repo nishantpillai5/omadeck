@@ -68,8 +68,6 @@ pub enum WatchCmd {
     /// Run a media command here, in order with the other changes, then re-read `probe`
     /// after `probe.refresh_after()` and send those reads even if unchanged. `seek` is
     /// in seconds with the steps folded in; `target` is a `playerctl --player` instance.
-    // Sent by the daemon from task 6 of PR 14.
-    #[allow(dead_code)]
     Media { command: MediaCommand, seek: i32, target: Option<String>, probe: Probe },
     /// A runner thread finished. Sent by the runner, not by the daemon. `run` is the id
     /// `run_due` gave the run: a `Done` from a run that was cancelled and replaced (the
