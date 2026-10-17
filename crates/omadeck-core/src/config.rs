@@ -197,6 +197,14 @@ impl AudioDevice {
     }
 }
 
+/// One of a dial's three action slots.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Direction {
+    Left,
+    Right,
+    Press,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Action {
@@ -287,6 +295,19 @@ impl Action {
             7 => Action::Back,
             8 => Action::Volume { device: AudioDevice::Output, change: 5, mute: false },
             _ => Action::None,
+        }
+    }
+
+    /// The action a kind pick starts from in one of a dial's slots. Turning left gets
+    /// the opposite sign of turning right (lower the volume), and a Volume press mutes,
+    /// as on Elgato's volume dial. Everything else is `empty_of_kind`.
+    pub fn default_for(kind: usize, dir: Direction) -> Self {
+        match (Self::empty_of_kind(kind), dir) {
+            (Action::Volume { device, .. }, Direction::Press) => Action::Volume { device, change: 0, mute: true },
+            (Action::Volume { device, change, mute }, Direction::Left) => {
+                Action::Volume { device, change: -change, mute }
+            }
+            (act, _) => act,
         }
     }
 
@@ -649,6 +670,26 @@ mod tests {
         c.remove_page("Music");
         assert_eq!(c.dial(0).unwrap().press, Action::None);
         assert_eq!(c.links_to("Music"), 0);
+    }
+
+    #[test]
+    fn default_for_follows_direction() {
+        let volume = Action::Volume { device: AudioDevice::Output, change: 5, mute: false }.kind_index();
+        assert_eq!(
+            Action::default_for(volume, Direction::Left),
+            Action::Volume { device: AudioDevice::Output, change: -5, mute: false }
+        );
+        assert_eq!(
+            Action::default_for(volume, Direction::Right),
+            Action::Volume { device: AudioDevice::Output, change: 5, mute: false }
+        );
+        assert_eq!(
+            Action::default_for(volume, Direction::Press),
+            Action::Volume { device: AudioDevice::Output, change: 0, mute: true }
+        );
+        for kind in 0..Action::KINDS.len() {
+            assert_eq!(Action::default_for(kind, Direction::Right), Action::empty_of_kind(kind));
+        }
     }
 
     #[test]
