@@ -31,6 +31,16 @@ pub fn on_path(bin: &str) -> bool {
     which(bin)
 }
 
+/// What every preset does first, applied in place: drop what would fight the new
+/// toggle. A live value would still decide the key's text, and a leftover busy look or
+/// `busy_while_running` would come back on the new action (BUGS.md 90). The index,
+/// background and colours stay.
+fn start(k: &mut KeyConfig) {
+    k.live = None;
+    k.busy = None;
+    k.busy_while_running = false;
+}
+
 /// A preset's glyph replaces the key's icon too: an icon would beat the glyph on the off
 /// face (and the on face's glyph would then be the only one shown).
 fn set_glyph(k: &mut KeyConfig, glyph: &str) {
@@ -50,6 +60,7 @@ fn on_face(label: &str, glyph: Option<&str>, state: Option<&str>) -> OnFace {
 /// The mute presets use the built-in volume action: the key toggles the mute, and `on`
 /// with no state follows it.
 fn mic_mute(k: &mut KeyConfig) {
+    start(k);
     k.label = "Mic".into();
     set_glyph(k, "f036c");
     k.action = Action::Volume { device: AudioDevice::Input, change: 0, mute: true };
@@ -57,6 +68,7 @@ fn mic_mute(k: &mut KeyConfig) {
 }
 
 fn output_mute(k: &mut KeyConfig) {
+    start(k);
     k.label = "Sound".into();
     set_glyph(k, "f057e");
     k.action = Action::Volume { device: AudioDevice::Output, change: 0, mute: true };
@@ -64,6 +76,7 @@ fn output_mute(k: &mut KeyConfig) {
 }
 
 fn night_light(k: &mut KeyConfig) {
+    start(k);
     k.label = "Night light".into();
     set_glyph(k, "f18e");
     k.action = Action::App { command: "omarchy-toggle-nightlight".into() };
@@ -71,12 +84,14 @@ fn night_light(k: &mut KeyConfig) {
 }
 
 fn stay_awake(k: &mut KeyConfig) {
+    start(k);
     k.label = "Stay awake".into();
     k.action = Action::App { command: "omarchy-toggle-idle".into() };
     k.on = Some(on_face("Awake", None, Some("omarchy-toggle-idle --status | jq -e .enabled")));
 }
 
 fn do_not_disturb(k: &mut KeyConfig) {
+    start(k);
     k.label = "Do Not Disturb".into();
     k.action = Action::App { command: "omarchy-toggle-notification-silencing".into() };
     // The command has no --status; the state is the file it writes on every change.
@@ -84,6 +99,7 @@ fn do_not_disturb(k: &mut KeyConfig) {
 }
 
 fn bluetooth(k: &mut KeyConfig) {
+    start(k);
     k.label = "Bluetooth".into();
     k.action = Action::App { command: "omarchy-bluetooth-power".into() };
     k.on = Some(on_face("BT on", None, Some("omarchy-bluetooth-power is-on")));
@@ -92,6 +108,7 @@ fn bluetooth(k: &mut KeyConfig) {
 /// The face shows what a press will do: play while paused, pause while playing. The on
 /// face follows the player (no state command).
 fn play_pause(k: &mut KeyConfig) {
+    start(k);
     k.label = "Play".into();
     set_glyph(k, "f040a");
     k.action = Action::Media { command: MediaCommand::PlayPause, seek: 0, player: None };
@@ -111,6 +128,7 @@ pub fn apply_service(k: &mut KeyConfig, unit: &str, health_url: Option<&str>) ->
     {
         bail!("the health URL has a control character in it");
     }
+    start(k);
     k.label = unit.into();
     set_glyph(k, "f048b");
     k.action = Action::App {
@@ -178,15 +196,28 @@ mod tests {
 
     #[test]
     fn presets_keep_the_key_and_replace_its_icon() {
-        for p in PRESETS {
-            let mut k =
-                KeyConfig { icon: Some("old.png".into()), background: Some("#112233".into()), ..KeyConfig::new(7) };
-            (p.apply)(&mut k);
-            assert_eq!(k.index, 7, "{}", p.name);
-            assert_eq!(k.background.as_deref(), Some("#112233"), "{}", p.name);
+        // A CPU key with a busy look, made a preset in place: the live value and the busy
+        // settings go (BUGS.md 90), the slot and colours stay.
+        let old = || KeyConfig {
+            icon: Some("old.png".into()),
+            background: Some("#112233".into()),
+            busy_while_running: true,
+            busy: Some(crate::config::BusyFace { label: Some("Wait".into()), ..Default::default() }),
+            live: Some(crate::config::Live::Cpu),
+            ..KeyConfig::new(7)
+        };
+        let service = |k: &mut KeyConfig| apply_service(k, "llm.service", None).unwrap();
+        for (name, apply) in PRESETS.iter().map(|p| (p.name, p.apply)).chain([("Service", service as fn(&mut _))]) {
+            let mut k = old();
+            apply(&mut k);
+            assert_eq!(k.index, 7, "{name}");
+            assert_eq!(k.background.as_deref(), Some("#112233"), "{name}");
             if k.glyph.is_some() {
-                assert_eq!(k.icon, None, "{}: its glyph would hide behind the old icon", p.name);
+                assert_eq!(k.icon, None, "{name}: its glyph would hide behind the old icon");
             }
+            assert_eq!(k.live, None, "{name}: the live value would still decide the face");
+            assert_eq!(k.busy, None, "{name}");
+            assert!(!k.busy_while_running, "{name}");
         }
     }
 
