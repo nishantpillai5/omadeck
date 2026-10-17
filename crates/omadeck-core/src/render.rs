@@ -65,8 +65,10 @@ pub struct Level {
 /// and skipped when default, so fields can be added.
 #[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct KeyStatus {
+    /// Drawn with the press ring.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub pressed: bool,
+    /// Off, on or busy; drawn by `KeyConfig::face_for`.
     #[serde(default, skip_serializing_if = "crate::probe::Toggle::is_off")]
     pub state: crate::probe::Toggle,
 }
@@ -147,6 +149,11 @@ pub struct Renderer {
     pub load_attempts: std::cell::Cell<u32>,
 }
 
+/// The bundled test font: a JetBrains Mono Bold subset (OFL, printable ASCII plus `–`
+/// and `…`), for [`Renderer::with_font_bytes`]. Draw `"A"` where a test needs a glyph.
+#[cfg(any(test, feature = "test-support"))]
+pub const TEST_FONT: &[u8] = include_bytes!("../tests/fixtures/test-font.ttf");
+
 /// A file's identity for the background cache: its mtime and length, `None` when it
 /// can't be stat'ed. Taken when an image is loaded and compared only on `clear_cache`.
 type Stamp = Option<(std::time::SystemTime, u64)>;
@@ -182,8 +189,10 @@ impl Renderer {
 
     /// A renderer that draws with this font file instead of fontconfig's choice, so pixel
     /// tests give the same result on every machine. The theme is the built-in default.
-    #[cfg(test)]
-    pub(crate) fn with_font_bytes(style: &Style, data: &[u8]) -> Self {
+    /// For tests only: other crates get it with the `test-support` feature (pass
+    /// [`TEST_FONT`]).
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn with_font_bytes(style: &Style, data: &[u8]) -> Self {
         Self {
             font: Some(FontVec::try_from_vec(data.to_vec()).expect("a valid test font")),
             font_pattern: style.font.clone(),
@@ -192,7 +201,9 @@ impl Renderer {
             theme: Theme::default(),
             icons: HashMap::new(),
             backdrops: HashMap::new(),
+            #[cfg(test)]
             decode_count: std::cell::Cell::new(0),
+            #[cfg(test)]
             load_attempts: std::cell::Cell::new(0),
         }
     }
@@ -281,16 +292,70 @@ impl Renderer {
         }
     }
 
-    /// Render one key face at `size`×`size`.
-    pub fn render(&mut self, key: Option<&KeyConfig>, style: &Style, size: u32, pressed: bool) -> RgbaImage {
+    /// Render one key face at `size`×`size`, in the state `st` says it is in (off, on,
+    /// busy — and pressed over any of them).
+    pub fn render(&mut self, key: Option<&KeyConfig>, style: &Style, size: u32, st: &KeyStatus) -> RgbaImage {
+        use crate::probe::{Toggle, progress};
         let key = key.filter(|k| !k.is_blank());
-        let face = key.as_ref().map(|k| k.face());
+        let mut face = key.as_ref().map(|k| k.face_for(&st.state));
         let bg = self.background(face.as_ref(), style);
-        let out = match key {
-            None => solid(size, bg.mix(Rgb(0, 0, 0), 0.55)),
-            Some(k) => self.render_face(&k.face(), style, size, bg),
+        // An on face without its own background is tinted towards the accent, so a bare
+        // [key.on] is still visibly different.
+        let bg = if matches!(st.state, Toggle::On)
+            && key.is_some_and(|k| k.on.as_ref().is_some_and(|on| on.background.is_none()))
+        {
+            let a = if style.follow_theme { self.theme.accent } else { self.label_color(face.as_ref(), style, bg) };
+            bg.mix(a, ON_TINT)
+        } else {
+            bg
         };
-        if pressed { self.pressed(out, bg, size) } else { out }
+        // A busy key with no label colour of its own takes the accent, so the progress
+        // reads as a state, not as the off label. The hex is held in a local for the
+        // whole of the function: the (owned) face borrows it.
+        let accent;
+        if matches!(st.state, Toggle::Busy(_))
+            && face.as_ref().is_some_and(|f| f.label_color.is_none())
+            && style.label_color.as_deref().is_none_or(|s| s.trim().is_empty())
+            && style.follow_theme
+        {
+            accent = self.theme.accent.hex();
+            if let Some(f) = face.as_mut() {
+                f.label_color = Some(&accent);
+            }
+        }
+        let out = match (key, face) {
+            (None, None) => solid(size, bg.mix(Rgb(0, 0, 0), 0.55)),
+            (Some(k), Some(f)) => {
+                // A busy face with a percentage gets a progress bar in a zone at the
+                // bottom; the face moves up to make room.
+                let bar = match &st.state {
+                    Toggle::Busy(t) if k.busy.as_ref().is_some_and(|b| b.bar) => progress(t),
+                    _ => None,
+                };
+                match bar {
+                    Some(p) => {
+                        let s = size as f32;
+                        let inner = (s * (1.0 - BAR_ZONE)) as u32;
+                        let mut img = solid(size, bg);
+                        imageops::overlay(
+                            &mut img,
+                            &self.render_face(&f, style, inner, bg),
+                            ((size - inner) / 2) as i64,
+                            0,
+                        );
+                        let fg = self.label_color(Some(&f), style, bg);
+                        let bh = (s * 0.07).max(4.0) as u32;
+                        let bx = (s * 0.10) as u32;
+                        let by = size - bh - (s * 0.08) as u32;
+                        draw_bar(&mut img, (bx, by, (s * 0.80) as u32, bh), p as f32 / 100.0, fg, bg.mix(fg, 0.22));
+                        img
+                    }
+                    None => self.render_face(&f, style, size, bg),
+                }
+            }
+            _ => unreachable!("a face is built exactly when a key is"),
+        };
+        if st.pressed { self.pressed(out, bg, size) } else { out }
     }
 
     fn render_face(&mut self, face: &Face, style: &Style, size: u32, bg: Rgb) -> RgbaImage {
@@ -747,6 +812,11 @@ struct B1Colors {
     track: Rgb,
 }
 
+/// How far an on face without its own background is mixed towards the accent.
+const ON_TINT: f32 = 0.30;
+/// The zone at the bottom of a busy key face that the progress bar sits in.
+const BAR_ZONE: f32 = 0.22;
+
 /// A groove bar in `rect` (x, y, w, h): the track, then the fill up to `value`, clamped
 /// to 0–1 here (a NaN draws no fill). A fill never shrinks below a round end cap.
 fn draw_bar(img: &mut RgbaImage, rect: (u32, u32, u32, u32), value: f32, fill: Rgb, track: Rgb) {
@@ -950,10 +1020,13 @@ fn load_font_with(c: char) -> Option<FontVec> {
 #[cfg(test)]
 mod tests {
     use super::{
-        B1_BAR, DialStatus, Level, PanelStatus, Renderer, RgbaImage, X1_ICON, X1_TITLE, fit_cover, glyph_char,
-        load_cover, tap_to_dial,
+        B1_BAR, DialStatus, Level, PanelStatus, Renderer, RgbaImage, TEST_FONT, X1_ICON, X1_TITLE, fit_cover,
+        glyph_char, load_cover, tap_to_dial,
     };
-    use crate::config::{Action, AudioDevice, Config, DialConfig, KeyConfig, Style};
+    use crate::KeyStatus;
+    use crate::config::{Action, AudioDevice, BusyFace, Config, DialConfig, KeyConfig, OnFace, Style};
+    use crate::probe::Toggle;
+    use crate::render::ON_TINT;
     use crate::theme::Rgb;
     use image::Rgba;
 
@@ -975,7 +1048,7 @@ mod tests {
     /// A renderer with the bundled test font (an OFL subset, `tests/fixtures/test-font.ttf`),
     /// so text pixels don't depend on the machine's fonts. Never skips.
     fn renderer_with_font() -> Renderer {
-        Renderer::with_font_bytes(&test_style(), include_bytes!("../tests/fixtures/test-font.ttf"))
+        Renderer::with_font_bytes(&test_style(), TEST_FONT)
     }
 
     /// Compare `img` with the golden PNG `name` in `tests/fixtures`, or rewrite the golden
@@ -1000,7 +1073,7 @@ mod tests {
         let mut r = renderer_with_font();
         let style = test_style();
         let key = KeyConfig { label: String::new(), glyph: Some("A".into()), ..KeyConfig::new(0) };
-        let img = r.render(Some(&key), &style, 72, false);
+        let img = r.render(Some(&key), &style, 72, &KeyStatus::default());
         let box_px = (72.0 * 0.80) as u32;
         let off = (72 - box_px) / 2;
         for y in 0..72 {
@@ -1014,7 +1087,7 @@ mod tests {
 
     #[test]
     fn strip_is_800x100_for_a_plus() {
-        let mut r = Renderer::new(&test_style());
+        let mut r = Renderer::with_font_bytes(&test_style(), TEST_FONT);
         let cfg = Config::default();
         let status = vec![DialStatus::default(); 4];
         let img = r.render_strip(&cfg, &status, (800, 100));
@@ -1023,7 +1096,7 @@ mod tests {
 
     #[test]
     fn strip_scaled() {
-        let mut r = Renderer::new(&test_style());
+        let mut r = Renderer::with_font_bytes(&test_style(), TEST_FONT);
         let cfg = Config::default();
         let status = vec![DialStatus::default(); 4];
         assert_eq!(r.render_strip(&cfg, &status, (400, 50)).dimensions(), (400, 50));
@@ -1065,11 +1138,11 @@ mod tests {
 
     #[test]
     fn strip_empty_slot_matches_empty_key() {
-        let mut r = Renderer::new(&test_style());
+        let mut r = Renderer::with_font_bytes(&test_style(), TEST_FONT);
         let style = test_style();
         let cfg = Config { style: test_style(), ..Default::default() };
         let panel = r.render_strip_panel(&cfg, 0, 4, DialStatus::default());
-        let key = r.render(None, &style, 100, false);
+        let key = r.render(None, &style, 100, &KeyStatus::default());
         assert_eq!(*panel.get_pixel(100, 50), *key.get_pixel(50, 50));
     }
 
@@ -1093,7 +1166,7 @@ mod tests {
 
     #[test]
     fn strip_panel_isolation() {
-        let mut r = Renderer::new(&test_style());
+        let mut r = Renderer::with_font_bytes(&test_style(), TEST_FONT);
         let mut cfg = Config { style: test_style(), ..Default::default() };
         cfg.dials.push(DialConfig { label: "One".into(), glyph: Some("A".into()), ..DialConfig::new(0) });
         cfg.dials.push(DialConfig { label: "Two".into(), glyph: Some("B".into()), ..DialConfig::new(2) });
@@ -1185,7 +1258,7 @@ mod tests {
 
     #[test]
     fn label_color_contrast_kept() {
-        let r = Renderer::new(&Style { follow_theme: false, ..Default::default() });
+        let r = Renderer::with_font_bytes(&Style { follow_theme: false, ..Default::default() }, TEST_FONT);
         // White label on a white background flips dark; on black it keeps its contrast.
         assert_eq!(r.label_color(None, &test_style(), Rgb(255, 255, 255)), Rgb(16, 16, 16));
         assert_eq!(r.label_color(None, &test_style(), Rgb(0, 0, 0)), Rgb(255, 255, 255));
@@ -1261,7 +1334,7 @@ mod tests {
 
     #[test]
     fn clear_cache_keeps_unchanged_backdrop() {
-        let mut r = Renderer::new(&test_style());
+        let mut r = Renderer::with_font_bytes(&test_style(), TEST_FONT);
         let path = tmp_image("keep", &solid_img(4, 2, Rgba([9, 9, 9, 255])));
         assert!(r.backdrop_image(&path, 4, 2).is_some());
         let decodes = r.decode_count.get();
@@ -1273,7 +1346,7 @@ mod tests {
 
     #[test]
     fn failed_decode_is_cached() {
-        let mut r = Renderer::new(&test_style());
+        let mut r = Renderer::with_font_bytes(&test_style(), TEST_FONT);
         let dir = std::env::temp_dir().join(format!("omadeck-cover-garbage-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("broken.png");
@@ -1325,7 +1398,7 @@ mod tests {
 
     #[test]
     fn touched_file_is_reloaded() {
-        let mut r = Renderer::new(&test_style());
+        let mut r = Renderer::with_font_bytes(&test_style(), TEST_FONT);
         let path = tmp_image("touch", &solid_img(4, 2, Rgba([9, 9, 9, 255])));
         assert!(r.backdrop_image(&path, 4, 2).is_some());
         let decodes = r.decode_count.get();
@@ -1343,6 +1416,94 @@ mod tests {
         assert_eq!(r.decode_count.get(), decodes + 1, "a touched file is re-decoded");
         assert_eq!(*img.get_pixel(0, 0), Rgba([200, 1, 1, 255]));
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn off_face_ignores_on_table() {
+        let style = test_style();
+        let mut r = Renderer::with_font_bytes(&style, TEST_FONT);
+        let plain = KeyConfig { label: "Mic".into(), glyph: Some("A".into()), ..KeyConfig::new(0) };
+        let toggle =
+            KeyConfig { on: Some(OnFace { label: Some("Muted".into()), ..OnFace::default() }), ..plain.clone() };
+        let off = KeyStatus::default();
+        assert_eq!(r.render(Some(&plain), &style, 72, &off), r.render(Some(&toggle), &style, 72, &off));
+        let on = KeyStatus { state: Toggle::On, ..KeyStatus::default() };
+        assert_ne!(
+            r.render(Some(&toggle), &style, 72, &on),
+            r.render(Some(&plain), &style, 72, &off),
+            "the on face is tinted even without a font"
+        );
+    }
+
+    #[test]
+    fn on_face_without_background_is_tinted() {
+        let style = test_style(); // follow_theme false, background #334455
+        let mut r = Renderer::with_font_bytes(&style, TEST_FONT);
+        let k = KeyConfig { label: "Mic".into(), on: Some(OnFace::default()), ..KeyConfig::new(0) };
+        let on = r.render(Some(&k), &style, 72, &KeyStatus { state: Toggle::On, ..KeyStatus::default() });
+        // No on background: the key's background mixed 30% towards the label colour
+        // (white, the default for an unfollowed style on this dark background).
+        let want = Rgb::parse("#334455").unwrap().mix(Rgb(255, 255, 255), ON_TINT);
+        assert_eq!(on.get_pixel(0, 0).0[..3], [want.0, want.1, want.2]);
+        // A key without an on face is not tinted.
+        let plain = KeyConfig { label: "Mic".into(), ..KeyConfig::new(0) };
+        let off = r.render(Some(&plain), &style, 72, &KeyStatus::default());
+        assert_eq!(off.get_pixel(0, 0).0[..3], [0x33, 0x44, 0x55]);
+    }
+
+    #[test]
+    fn busy_face_uses_accent_label_by_default() {
+        let style = Style { follow_theme: true, ..Default::default() };
+        let mut r = Renderer::with_font_bytes(&style, TEST_FONT);
+        let k = KeyConfig { label: "LLM".into(), ..KeyConfig::new(0) };
+        let busy = KeyStatus { state: Toggle::Busy("Loading 43%".into()), ..KeyStatus::default() };
+        let img = r.render(Some(&k), &style, 72, &busy);
+        // The label is drawn in the theme accent; check a pixel of the label area
+        // against a re-render with the accent forced as the key's label colour.
+        let forced = KeyConfig { label: "LLM".into(), label_color: Some(r.theme.accent.hex()), ..KeyConfig::new(0) };
+        let forced_img = r.render(Some(&forced), &style, 72, &busy);
+        let with_color = KeyConfig { label: "LLM".into(), label_color: Some("#ff0000".into()), ..KeyConfig::new(0) };
+        let colored = r.render(Some(&with_color), &style, 72, &busy);
+        assert_ne!(img, colored, "a key label colour wins over the accent");
+        assert_eq!(img, forced_img, "the default busy label is the accent");
+    }
+
+    #[test]
+    fn busy_bar_only_when_enabled_and_percent_present() {
+        let style = test_style();
+        let mut r = Renderer::with_font_bytes(&style, TEST_FONT);
+        let key = |bar: bool, label: Option<String>| KeyConfig {
+            label: "LLM".into(),
+            busy: Some(BusyFace { bar, label, ..BusyFace::default() }),
+            ..KeyConfig::new(0)
+        };
+        let status = |t: &str| KeyStatus { state: Toggle::Busy(t.into()), ..KeyStatus::default() };
+        let plain = KeyConfig { label: "LLM".into(), ..KeyConfig::new(0) };
+        let off = r.render(Some(&plain), &style, 100, &KeyStatus::default());
+
+        // Bar off, with a percentage: no bar zone, the rows where a bar would be are
+        // plain background.
+        let no_bar = r.render(Some(&key(false, None)), &style, 100, &status("Loading 43%"));
+        let want_bg = Rgb::parse("#334455").unwrap();
+        for y in 85..92 {
+            assert_eq!(no_bar.get_pixel(0, y).0[..3], [want_bg.0, want_bg.1, want_bg.2], "row {y}");
+        }
+        // Bar on, no percentage: no bar either.
+        let no_pct = r.render(Some(&key(true, None)), &style, 100, &status("Starting"));
+        for y in 85..92 {
+            assert_eq!(no_pct.get_pixel(0, y).0[..3], [want_bg.0, want_bg.1, want_bg.2], "row {y}");
+        }
+        // Bar on, 50%: the bar's row shows the fill at 30% of its width and the track
+        // at 80%. The bar is x 10..90, y 85..91 (h 6, bottom margin 8).
+        let half = r.render(Some(&key(true, None)), &style, 100, &status("Loading 50%"));
+        assert_ne!(half, off, "the bar is drawn");
+        // fill = the label colour (white for this style), track = bg mixed 22% towards it.
+        let fill = Rgb(255, 255, 255);
+        let track = want_bg.mix(fill, 0.22);
+        assert_eq!(half.get_pixel(20, 88).0[..3], [fill.0, fill.1, fill.2], "inside the fill");
+        assert_eq!(half.get_pixel(80, 88).0[..3], [track.0, track.1, track.2], "inside the track");
+        // A corner of the bar zone (outside the bar) is plain background.
+        assert_eq!(half.get_pixel(0, 99).0[..3], [want_bg.0, want_bg.1, want_bg.2]);
     }
 
     #[test]
@@ -1365,7 +1526,7 @@ mod tests {
 
     #[test]
     fn backdrop_is_shared_and_only_rechecked_on_clear_cache() {
-        let mut r = Renderer::with_font_bytes(&test_style(), include_bytes!("../tests/fixtures/test-font.ttf"));
+        let mut r = Renderer::with_font_bytes(&test_style(), TEST_FONT);
         let path = tmp_image("stamp", &solid_img(4, 2, Rgba([9, 9, 9, 255])));
         let first = r.backdrop_image(&path, 4, 2).unwrap();
         // A bigger file under the same name: a paint doesn't look, so the cached one stays.
@@ -1392,7 +1553,7 @@ mod tests {
 
     #[test]
     fn strip_image_slices_per_panel() {
-        let mut r = Renderer::new(&test_style());
+        let mut r = Renderer::with_font_bytes(&test_style(), TEST_FONT);
         let path = tmp_image("quarters", &quarters_strip());
         let mut cfg = Config { style: test_style(), ..Default::default() };
         cfg.strip.background_image = Some(path.to_string_lossy().into());
@@ -1406,7 +1567,7 @@ mod tests {
 
     #[test]
     fn dial_image_wins_over_strip() {
-        let mut r = Renderer::new(&test_style());
+        let mut r = Renderer::with_font_bytes(&test_style(), TEST_FONT);
         let strip = tmp_image("win-strip", &quarters_strip());
         let dial = tmp_image("win-dial", &solid_img(200, 100, Rgba([1, 2, 3, 255])));
         let mut cfg = Config { style: test_style(), ..Default::default() };
@@ -1419,7 +1580,7 @@ mod tests {
 
     #[test]
     fn transparent_dial_image_shows_strip() {
-        let mut r = Renderer::new(&test_style());
+        let mut r = Renderer::with_font_bytes(&test_style(), TEST_FONT);
         let strip = tmp_image("trans-strip", &quarters_strip());
         let dial = tmp_image("trans-dial", &solid_img(200, 100, Rgba([0, 0, 0, 0])));
         let mut cfg = Config { style: test_style(), ..Default::default() };
@@ -1431,7 +1592,7 @@ mod tests {
 
     #[test]
     fn dial_colour_covers_strip_image() {
-        let mut r = Renderer::new(&test_style());
+        let mut r = Renderer::with_font_bytes(&test_style(), TEST_FONT);
         let strip = tmp_image("colour-strip", &quarters_strip());
         let mut cfg = Config { style: test_style(), ..Default::default() };
         cfg.strip.background_image = Some(strip.to_string_lossy().into());
@@ -1442,7 +1603,7 @@ mod tests {
 
     #[test]
     fn empty_slot_shows_strip_undimmed() {
-        let mut r = Renderer::new(&test_style());
+        let mut r = Renderer::with_font_bytes(&test_style(), TEST_FONT);
         let strip = tmp_image("empty-strip", &quarters_strip());
         let mut cfg = Config { style: test_style(), ..Default::default() };
         cfg.strip.background_image = Some(strip.to_string_lossy().into());
@@ -1453,7 +1614,7 @@ mod tests {
 
     #[test]
     fn missing_image_falls_back_to_colour() {
-        let mut r = Renderer::new(&test_style());
+        let mut r = Renderer::with_font_bytes(&test_style(), TEST_FONT);
         let mut cfg = Config { style: test_style(), ..Default::default() };
         let with = r.render_strip_panel(&cfg, 0, 4, DialStatus::default());
         cfg.strip.background_image = Some("/nonexistent/omadeck-strip-test.png".into());
@@ -1491,7 +1652,7 @@ mod tests {
 
     #[test]
     fn panel_isolation_with_strip_image() {
-        let mut r = Renderer::new(&test_style());
+        let mut r = Renderer::with_font_bytes(&test_style(), TEST_FONT);
         let strip = tmp_image("iso", &quarters_strip());
         let mut cfg = Config { style: test_style(), ..Default::default() };
         cfg.strip.background_image = Some(strip.to_string_lossy().into());

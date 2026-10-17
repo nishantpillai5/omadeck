@@ -283,7 +283,9 @@ fn snapshot(out: &Path, page: Option<&str>) -> Result<()> {
     let h = grid_h + if strip_h > 0 { gap + strip_h } else { 0 } + if dial_r > 0 { gap + dial_r * 2 } else { 0 };
     let mut canvas = image::RgbaImage::from_pixel(w, h, image::Rgba([10, 10, 12, 255]));
     for i in 0..info.key_count() {
-        let face = renderer.render(keys.get(i), &cfg.style, size, false);
+        // Off faces: a snapshot can't run the state commands.
+        let face =
+            renderer.render(keys.get(i), &cfg.style, size, &probe::key_status(keys.get(i), &Values::default(), false));
         let (r, c) = (i as u32 / info.cols as u32, i as u32 % info.cols as u32);
         image::imageops::overlay(&mut canvas, &face, (gap + c * (size + gap)) as i64, (gap + r * (size + gap)) as i64);
     }

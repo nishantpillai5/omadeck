@@ -6,8 +6,8 @@ use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use omadeck_core::device::{self, DeviceStateReader, HidApi, ImageRect, Kind, StreamDeck};
-use omadeck_core::probe::{self, Values};
-use omadeck_core::{Config, DeckInfo, DialStatus, PANEL_W, Renderer};
+use omadeck_core::probe::{self, Toggle, Values};
+use omadeck_core::{Config, DeckInfo, DialStatus, KeyStatus, PANEL_W, Renderer};
 
 /// How long a panel stays highlighted after a tap on the strip.
 pub const DIAL_FLASH: Duration = Duration::from_millis(150);
@@ -174,7 +174,8 @@ fn write_panel(d: &Deck, cfg: &Config, renderer: &mut Renderer, values: &Values,
 }
 
 fn write_key(d: &Deck, cfg: &Config, page: Option<&str>, renderer: &mut Renderer, i: u8, pressed: bool) -> Result<()> {
-    let face = renderer.render(cfg.key(page, i), &cfg.style, d.info.key_size, pressed);
+    let st = KeyStatus { pressed, state: Toggle::Off };
+    let face = renderer.render(cfg.key(page, i), &cfg.style, d.info.key_size, &st);
     d.dev.set_button_image(i, image::DynamicImage::ImageRgba8(face))?;
     Ok(())
 }
