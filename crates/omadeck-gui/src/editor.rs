@@ -71,6 +71,7 @@ pub fn build_key(app: &Rc<App>, i: u8) -> gtk::Widget {
                 });
             }
         })),
+        kinds: Action::KEY_KINDS,
     };
 
     let buttons = gtk::Box::new(gtk::Orientation::Horizontal, 6);
@@ -247,6 +248,7 @@ pub fn build_key(app: &Rc<App>, i: u8) -> gtk::Widget {
                 a.add_page(if label.trim().is_empty() { "Page" } else { label.as_str() }, true)
             }),
             on_favicon: None,
+            kinds: Action::KEY_KINDS,
         };
         // ▶ here runs the on action only, whatever state the key is in: no flip.
         toggle.set_header_suffix(Some(&test_button(app, &on_slot, on_slot.get.clone())));
@@ -709,9 +711,9 @@ fn service_dialog(app: &Rc<App>, i: u8) {
 }
 
 /// One action an editor edits: a key's action, one of a dial's three, and later a
-/// toggle's on action (PR 8), a multi-action step (PR 12) or a long press (PR 16).
-/// Every action editor takes one, so editors nest: PR 12's step editor builds a slot
-/// for a step and calls `action_editor` again.
+/// toggle's on action, a multi-action step, and later a long press (PR 16). Every action
+/// editor takes one, so editors nest: a multi's step editor builds a slot for the step
+/// (`ActionSlot::step`) and calls `action_editor` again.
 #[derive(Clone)]
 #[allow(clippy::type_complexity)]
 pub(crate) struct ActionSlot {
@@ -731,6 +733,9 @@ pub(crate) struct ActionSlot {
     pub on_new_page: Rc<dyn Fn(&Rc<App>) -> String>,
     /// Handle a fetched website icon; `None` hides the Fetch row.
     pub on_favicon: Option<FaviconHandler>,
+    /// The kinds its combo offers (indexes into `Action::KINDS`): `KEY_KINDS` for a key or
+    /// dial, `STEP_KINDS` for a multi's step.
+    pub kinds: &'static [usize],
 }
 
 impl ActionSlot {
@@ -755,6 +760,31 @@ impl ActionSlot {
                 a.add_page(if label.trim().is_empty() { "Page" } else { label.as_str() }, true)
             }),
             on_favicon: None,
+            kinds: Action::KEY_KINDS,
+        }
+    }
+
+    /// The slot for step `n` of the multi that `self` edits. Reads and writes go through
+    /// its target, like a dial slot's.
+    pub fn step(&self, n: usize) -> Self {
+        let target = ActionTarget::Step(Box::new(self.target.clone()), n);
+        let (t1, t2) = (target.clone(), target.clone());
+        ActionSlot {
+            target,
+            dir: None,
+            get: Rc::new(move |a| a.action_at(&t1).unwrap_or_default()),
+            set: Rc::new(move |a, act| {
+                a.set_action_at(&t2, act);
+            }),
+            own_page: self.own_page.clone(),
+            // A step's app pick sets only the step: the key's label and icon aren't its.
+            on_app_picked: Rc::new(|a, at, command, _, _| {
+                a.set_action_at(at, Action::App { command });
+            }),
+            // A new page for a step doesn't restyle the key as a folder (new_folder would).
+            on_new_page: Rc::new(|a| a.add_page("Page", true)),
+            on_favicon: None,
+            kinds: Action::STEP_KINDS,
         }
     }
 
@@ -902,22 +932,28 @@ fn test_button(app: &Rc<App>, slot: &ActionSlot, run: ActionRun) -> gtk::Button 
 /// through `slot`.
 fn action_editor(app: &Rc<App>, group: &adw::PreferencesGroup, combo_title: &str, slot: &ActionSlot) {
     let action = (slot.get)(app);
-    let kinds = gtk::StringList::new(&Action::KINDS);
+    // Only the slot's kinds: a key has no Delay, a step no Multi.
+    let names: Vec<&str> = slot.kinds.iter().map(|&k| Action::KINDS[k]).collect();
+    let kinds = gtk::StringList::new(&names);
     let kind_row = adw::ComboRow::builder().title(combo_title).model(&kinds).build();
-    kind_row.set_selected(action.kind_index() as u32);
+    // A kind not offered here (a hand-edited nested multi, a top-level delay) shows no
+    // item rather than the wrong one.
+    kind_row.set_selected(Action::kind_position(slot.kinds, action.kind_index()).unwrap_or(gtk::INVALID_LIST_POSITION));
     match action {
         Action::Page { .. } => kind_row.set_subtitle("Shows another page of keys on the deck"),
         Action::Back => kind_row.set_subtitle("Returns to the page shown before this one, or Home"),
         Action::PageStep { .. } => kind_row.set_subtitle("The next or previous page, for flicks and dial turns"),
+        Action::Multi { .. } => kind_row.set_subtitle("Runs its steps in order, top to bottom"),
+        Action::Delay { .. } => kind_row.set_subtitle("Waits before the next step"),
         _ => {}
     }
     let a = app.clone();
     kind_row.connect_selected_notify({
         let slot = slot.clone();
-        move |row| {
-            let sel = row.selected() as usize;
-            if sel != (slot.get)(&a).kind_index() {
-                (slot.set)(&a, slot.default_action(sel));
+        move |row: &adw::ComboRow| {
+            let Some(&kind) = slot.kinds.get(row.selected() as usize) else { return };
+            if kind != (slot.get)(&a).kind_index() {
+                (slot.set)(&a, slot.default_action(kind));
                 a.rebuild_editor();
             }
         }
@@ -1468,8 +1504,26 @@ fn action_rows(app: &Rc<App>, group: &adw::PreferencesGroup, slot: &ActionSlot) 
 
         Action::Back => {}
 
-        // Task 6 fills these in.
-        Action::Multi { .. } | Action::Delay { .. } => {}
+        Action::Delay { ms } => {
+            let spin = adw::SpinRow::with_range(0.0, 600_000.0, 100.0);
+            spin.set_title("Wait (ms)");
+            spin.set_value(f64::from(*ms));
+            spin.set_subtitle(&action.summary());
+            spin.connect_value_notify({
+                let a = app.clone();
+                let set_spin = slot.set.clone();
+                // Edits in place: a rebuild would take the focus from the spin.
+                move |r: &adw::SpinRow| {
+                    let act = Action::Delay { ms: r.value().round().max(0.0) as u32 };
+                    r.set_subtitle(&act.summary());
+                    (set_spin)(&a, act);
+                }
+            });
+            group.add(&spin);
+        }
+
+        // Task 6 fills this in.
+        Action::Multi { .. } => {}
 
         Action::AppVolume { app: app_name, focused, change, mute } => {
             group
