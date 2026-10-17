@@ -46,8 +46,9 @@ const AUDIO_REFRESH_DELAY: Duration = Duration::from_millis(150);
 enum AudioCmd {
     /// Which devices some dial shows; polled every second while non-empty.
     Watch(Vec<AudioDevice>),
-    /// Re-read now (we just changed the volume ourselves).
-    Refresh,
+    /// We just changed this device; re-read it soon and send the result even if it's
+    /// unchanged, so an optimistic guess that was wrong gets corrected.
+    Refresh(AudioDevice),
 }
 
 /// The audio worker: reads the watched devices' levels off the deck loop and sends
@@ -74,7 +75,12 @@ fn start_audio_worker() -> AudioWorker {
                             last.clear();
                             next_poll = Instant::now();
                         }
-                        Ok(AudioCmd::Refresh) => next_poll = Instant::now() + AUDIO_REFRESH_DELAY,
+                        Ok(AudioCmd::Refresh(dev)) => {
+                            // Drop the last known value so the next read is sent even
+                            // when it equals what we already knew.
+                            last.remove(&dev);
+                            next_poll = Instant::now() + AUDIO_REFRESH_DELAY;
+                        }
                         Err(mpsc::TryRecvError::Empty) => break,
                         Err(mpsc::TryRecvError::Disconnected) => return,
                     }
@@ -126,6 +132,9 @@ struct Deck {
     dial_levels: Vec<Option<LevelSource>>,
     /// The last known level per volume device, for the strip panels.
     device_levels: HashMap<AudioDevice, Level>,
+    /// Panels a volume or brightness change dirtied this pass; painted once at the end
+    /// of the pass, so a fast spin can't queue a write per detent on the loop.
+    dirty_panels: Vec<bool>,
     /// The panel brightness, 0–100: the config value at start, changed by brightness actions.
     brightness: u8,
 }
@@ -377,7 +386,7 @@ fn run() -> Result<()> {
         if let Some(v) = bright
             && let Some(d) = &mut deck
         {
-            do_brightness(d, &cfg, &mut renderer, &brightness_tx, Some(v), 0);
+            do_brightness(d, &brightness_tx, Some(v), 0);
         }
         if let Some(page) = show {
             wanted_page = None;
@@ -459,7 +468,7 @@ fn run() -> Result<()> {
                                 log::warn!("key {i}: {e:#}");
                                 hub.publish(Event::ActionFailed { index: i, message: format!("{e:#}") });
                             }
-                            after_volume(d, &cfg, &mut renderer, &audio, &k.action, 1);
+                            after_volume(d, &audio, &k.action, 1);
                         }
                         DeviceStateUpdate::ButtonUp(i) => {
                             paint(d, &cfg, nav.current(), &mut renderer, i, false);
@@ -487,7 +496,7 @@ fn run() -> Result<()> {
                                         log::warn!("dial {i}: {e:#}");
                                         hub.publish(Event::DialActionFailed { index: i, message: format!("{e:#}") });
                                     }
-                                    after_volume(d, &cfg, &mut renderer, &audio, act, steps);
+                                    after_volume(d, &audio, act, steps);
                                 }
                             }
                         }
@@ -515,7 +524,7 @@ fn run() -> Result<()> {
                                     log::warn!("dial {i}: {e:#}");
                                     hub.publish(Event::DialActionFailed { index: i, message: format!("{e:#}") });
                                 }
-                                after_volume(d, &cfg, &mut renderer, &audio, &dc.press, 1);
+                                after_volume(d, &audio, &dc.press, 1);
                             }
                         }
                         DeviceStateUpdate::EncoderUp(i) => {
@@ -561,7 +570,7 @@ fn run() -> Result<()> {
                                             message: format!("{e:#}"),
                                         });
                                     }
-                                    after_volume(d, &cfg, &mut renderer, &audio, &dc.press, 1);
+                                    after_volume(d, &audio, &dc.press, 1);
                                 }
                             }
                         }
@@ -588,6 +597,13 @@ fn run() -> Result<()> {
                         // Neo touch points; nothing reacts to them yet.
                         _ => {}
                     }
+                    // One write per pass for what this batch of events dirtied.
+                    for (i, &dirty) in d.dirty_panels.iter().enumerate() {
+                        if dirty {
+                            paint_dial(d, &cfg, &mut renderer, i as u8);
+                        }
+                    }
+                    d.dirty_panels.fill(false);
                 }
             }
             Err(_) if term.load(Ordering::Relaxed) => break,
@@ -655,6 +671,7 @@ fn connect(hid: &mut HidApi, cfg: &Config, page: Option<&str>, renderer: &mut Re
         flash_until: vec![None; n_dials],
         dial_levels: (0..n_dials).map(|i| cfg.dial(i as u8).and_then(|d| d.level_source())).collect(),
         device_levels: HashMap::new(),
+        dirty_panels: vec![false; n_dials],
         // The state file wins over the config's start value once the deck has run.
         brightness: State::load().brightness.unwrap_or(cfg.brightness),
     };
@@ -676,7 +693,6 @@ fn dispatch(
     d: &mut Deck,
     cfg: &Config,
     nav: &mut Nav,
-    renderer: &mut Renderer,
     brightness: &mpsc::Sender<u8>,
     act: &Action,
     steps: u8,
@@ -698,7 +714,7 @@ fn dispatch(
         Action::Brightness { change, set } => {
             // A relative turn changes the brightness per detent; `set` applies once.
             let change = if set.is_none() { i32::from(*change) * steps as i32 } else { 0 };
-            do_brightness(d, cfg, renderer, brightness, *set, change);
+            do_brightness(d, brightness, *set, change);
             Ok(false)
         }
         a => action::run_steps(a, steps).map(|_| false),
@@ -707,14 +723,7 @@ fn dispatch(
 
 /// Apply a brightness action: set the panel, remember it in the state file (so it
 /// survives a restart, as in the Elgato app), and repaint the brightness dials' panels.
-fn do_brightness(
-    d: &mut Deck,
-    cfg: &Config,
-    renderer: &mut Renderer,
-    brightness: &mpsc::Sender<u8>,
-    set: Option<u8>,
-    change: i32,
-) {
+fn do_brightness(d: &mut Deck, brightness: &mpsc::Sender<u8>, set: Option<u8>, change: i32) {
     let next = apply_brightness(d.brightness, set, change);
     if next == d.brightness {
         return;
@@ -727,7 +736,7 @@ fn do_brightness(
     let _ = brightness.send(next);
     for (i, src) in d.dial_levels.iter().enumerate().take(d.info.dials as usize) {
         if *src == Some(LevelSource::Brightness) {
-            paint_dial(d, cfg, renderer, i as u8);
+            d.dirty_panels[i] = true;
         }
     }
 }
@@ -737,7 +746,7 @@ fn do_brightness(
 /// same reason). The value is the last known level plus the change, clamped 0–100; the
 /// audio worker's refresh re-reads the true value a moment later and corrects it, which
 /// for a relative change is the same number.
-fn after_volume(d: &mut Deck, cfg: &Config, renderer: &mut Renderer, audio: &AudioWorker, act: &Action, steps: u8) {
+fn after_volume(d: &mut Deck, audio: &AudioWorker, act: &Action, steps: u8) {
     let Action::Volume { device, change, mute } = act else { return };
     let cur = d.device_levels.get(device).cloned().unwrap_or(Level { value: 0.0, text: "–".into(), muted: false });
     let pct = (cur.value * 100.0).round() as i32;
@@ -752,10 +761,10 @@ fn after_volume(d: &mut Deck, cfg: &Config, renderer: &mut Renderer, audio: &Aud
     d.device_levels.insert(*device, next);
     for (i, src) in d.dial_levels.iter().enumerate().take(d.info.dials as usize) {
         if *src == Some(LevelSource::Volume(*device)) {
-            paint_dial(d, cfg, renderer, i as u8);
+            d.dirty_panels[i] = true;
         }
     }
-    let _ = audio.cmd.send(AudioCmd::Refresh);
+    let _ = audio.cmd.send(AudioCmd::Refresh(*device));
 }
 
 /// Write the brightness to the state file, debounced: one write per burst of turns,
@@ -790,7 +799,7 @@ fn run_deck_action(
     act: &Action,
     steps: u8,
 ) -> Result<bool> {
-    let moved = dispatch(d, cfg, nav, renderer, brightness, act, steps)?;
+    let moved = dispatch(d, cfg, nav, brightness, act, steps)?;
     if moved {
         show_page(Some(d), cfg, nav, renderer, hub);
     }
@@ -840,8 +849,8 @@ fn write_panel(d: &Deck, cfg: &Config, renderer: &mut Renderer, i: u8) -> Result
     Ok(())
 }
 
-/// Redraw one 200×100 dial panel. Fast spins never reach this: turns don't change the
-/// panel in this PR, so a spin can't queue a write per detent.
+/// Redraw one 200×100 dial panel. Volume and brightness changes mark the panel dirty
+/// instead of calling this directly, so a fast spin coalesces to one write per loop pass.
 fn paint_dial(d: &Deck, cfg: &Config, renderer: &mut Renderer, i: u8) {
     if d.info.strip.is_none() || i >= d.info.dials {
         return;
