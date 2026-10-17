@@ -156,7 +156,7 @@ mod tests {
         roundtrip(&Event::Brightness { value: 40 });
         roundtrip(&Event::DialStatus { index: 1, status: PanelStatus::default() });
         let level = Some(crate::Level { value: 0.5, text: "50%".into(), muted: false });
-        roundtrip(&Event::DialStatus { index: 2, status: PanelStatus { level, live: None } });
+        roundtrip(&Event::DialStatus { index: 2, status: PanelStatus { level, ..Default::default() } });
         assert_eq!(Event::Brightness { value: 40 }.to_line(), "{\"event\":\"brightness\",\"value\":40}\n");
         assert_eq!(
             Event::DialStatus { index: 1, status: PanelStatus::default() }.to_line(),
@@ -213,6 +213,19 @@ mod tests {
         let none = Event::KeyState { page: None, index: 1, status: KeyStatus::default() }.to_line();
         assert!(!none.contains("live"), "{none}");
         let bat = crate::LiveShow { text: "50%".into(), bar: Some(0.5), charging: true };
-        roundtrip(&Event::DialStatus { index: 0, status: PanelStatus { level: None, live: Some(bat) } });
+        roundtrip(&Event::DialStatus { index: 0, status: PanelStatus { live: Some(bat), ..Default::default() } });
+    }
+
+    #[test]
+    fn dial_status_event_carries_app() {
+        let app = crate::AppShow { title: "Spotify".into(), icon: None, dimmed: false };
+        let st = PanelStatus { app: Some(app), ..Default::default() };
+        let line = Event::DialStatus { index: 1, status: st.clone() }.to_line();
+        assert!(line.contains("\"status\":{\"app\":{\"title\":\"Spotify\"}}"), "{line}");
+        roundtrip(&Event::DialStatus { index: 1, status: st });
+        let dimmed = crate::AppShow { title: "A".into(), icon: Some("/i.png".into()), dimmed: true };
+        roundtrip(&Event::DialStatus { index: 1, status: PanelStatus { app: Some(dimmed), ..Default::default() } });
+        let none = Event::DialStatus { index: 1, status: PanelStatus::default() }.to_line();
+        assert!(!none.contains("app"), "{none}");
     }
 }

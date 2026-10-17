@@ -51,6 +51,22 @@ pub struct PanelStatus {
     /// A live dial's value (PR 9): `$B1` when it has a bar, else `$A1`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub live: Option<LiveShow>,
+    /// The app on an app volume panel (PR 10); its level is in `level`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub app: Option<AppShow>,
+}
+
+/// The app on an app volume panel (PR 10).
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct AppShow {
+    /// The dial's label or the app's name (`probe::app_show` decides).
+    pub title: String,
+    /// The app's icon file, found by the daemon.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub icon: Option<PathBuf>,
+    /// No stream now (or not read yet): the panel is drawn faded with a dash.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub dimmed: bool,
 }
 
 /// What a live key or strip panel shows (PR 9).
@@ -1282,6 +1298,7 @@ mod tests {
             panel: PanelStatus {
                 level: Some(Level { value: v, text: if muted { "Muted".into() } else { "50%".into() }, muted }),
                 live: None,
+                app: None,
             },
         }
     }
@@ -1758,7 +1775,10 @@ mod tests {
         cfg.dials.push(DialConfig { glyph: Some("A".into()), ..volume_dial() });
         let st = DialStatus {
             pressed: false,
-            panel: PanelStatus { level: Some(Level { value: 0.4, text: "40%".into(), muted: false }), live: None },
+            panel: PanelStatus {
+                level: Some(Level { value: 0.4, text: "40%".into(), muted: false }),
+                ..Default::default()
+            },
         };
         golden(&r.render_strip_panel(&cfg, 0, 4, st), "strip-b1.png");
     }

@@ -23,5 +23,7 @@ pub use config::{
 };
 pub use device::DeckInfo;
 pub use presets::{PRESETS, Preset, apply_service, on_path};
-pub use render::{Align, DialStatus, Face, KeyStatus, Level, LiveShow, PANEL_W, PanelStatus, Renderer, tap_to_dial};
+pub use render::{
+    Align, AppShow, DialStatus, Face, KeyStatus, Level, LiveShow, PANEL_W, PanelStatus, Renderer, tap_to_dial,
+};
 pub use theme::{Rgb, Theme};
