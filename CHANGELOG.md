@@ -55,6 +55,7 @@ All notable changes to omadeck are documented here. The format follows
   socket can no longer hold up the deck.
 
 ### Fixed
+- Hyprland actions never hold up the deck.
 - `hyprctl` and `pactl` calls time out, so a stalled Hyprland or audio server can't hang
   the deck.
 - A tapped strip panel's highlight ends on time.
