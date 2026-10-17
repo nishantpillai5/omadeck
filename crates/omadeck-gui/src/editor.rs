@@ -661,33 +661,35 @@ fn action_rows(
             });
             group.add(&mute_row);
 
-            if !*mute {
-                let dev_kinds = gtk::StringList::new(&["Output", "Input"]);
-                let dev_row = adw::ComboRow::builder().title("Device").model(&dev_kinds).build();
-                dev_row.set_selected(if device.is_output() { 0 } else { 1 });
-                dev_row.connect_selected_notify({
-                    let a = app.clone();
-                    let get = get.clone();
-                    let edit = edit.clone();
-                    move |row| {
-                        let sel = row.selected() as usize;
-                        let cur = match get(&a) {
-                            Action::Volume { device, .. } => usize::from(!device.is_output()),
-                            _ => 0,
-                        };
-                        if sel != cur {
-                            let device = if sel == 1 { AudioDevice::Input } else { AudioDevice::Output };
-                            let mut act = get(&a);
-                            if let Action::Volume { device: d, .. } = &mut act {
-                                *d = device;
-                            }
-                            edit(&a, act);
-                            a.rebuild_editor();
+            // A mute action has a device too (a mic-mute key), so the row shows either
+            // way; only the level change is irrelevant while muting.
+            let dev_kinds = gtk::StringList::new(&["Output", "Input"]);
+            let dev_row = adw::ComboRow::builder().title("Device").model(&dev_kinds).build();
+            dev_row.set_selected(if device.is_output() { 0 } else { 1 });
+            dev_row.connect_selected_notify({
+                let a = app.clone();
+                let get = get.clone();
+                let edit = edit.clone();
+                move |row| {
+                    let sel = row.selected() as usize;
+                    let cur = match get(&a) {
+                        Action::Volume { device, .. } => usize::from(!device.is_output()),
+                        _ => 0,
+                    };
+                    if sel != cur {
+                        let device = if sel == 1 { AudioDevice::Input } else { AudioDevice::Output };
+                        let mut act = get(&a);
+                        if let Action::Volume { device: d, .. } = &mut act {
+                            *d = device;
                         }
+                        edit(&a, act);
+                        a.rebuild_editor();
                     }
-                });
-                group.add(&dev_row);
+                }
+            });
+            group.add(&dev_row);
 
+            if !*mute {
                 let spin = adw::SpinRow::with_range(-25.0, 25.0, 1.0);
                 spin.set_title("Change per turn (%)");
                 spin.set_value(*change as f64);

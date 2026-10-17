@@ -70,9 +70,12 @@ pub fn run_steps(action: &Action, steps: u8) -> Result<()> {
 /// falls back to `wpctl`.
 fn run_volume(device: AudioDevice, change: i8, mute: bool) -> Result<()> {
     let backend = audio::backend();
-    let monitor = (backend == audio::Backend::Omarchy3).then(audio::focused_monitor).flatten();
-    let cmds = volume_command(backend, device, change, mute, monitor.as_deref());
-    spawn_seq(cmds)?;
+    // The command is built on the helper thread, because Omarchy 3's pop-up needs the
+    // focused monitor and finding it runs `hyprctl`, which must not block the caller.
+    spawn_seq(move || {
+        let monitor = (backend == audio::Backend::Omarchy3).then(audio::focused_monitor).flatten();
+        volume_command(backend, device, change, mute, monitor.as_deref())
+    })?;
     // Omarchy 4 has no command to change the mic's volume, so show its pop-up ourselves.
     if backend == audio::Backend::Omarchy4 && device == AudioDevice::Input && !mute {
         thread::spawn(|| {
@@ -146,19 +149,22 @@ fn signed(n: i8) -> String {
 }
 
 /// A relative percent step, `5%+` / `5%-`, as `wpctl set-volume` takes it.
+/// `unsigned_abs` so a hand-edited `-128` can't panic on `i8::abs`.
 fn wpctl_rel(n: i8) -> String {
-    format!("{}%{}", n.abs(), if n >= 0 { '+' } else { '-' })
+    format!("{}%{}", n.unsigned_abs(), if n >= 0 { '+' } else { '-' })
 }
 
-/// Run a sequence of commands in order on one helper thread, so e.g. a volume change is
-/// applied before a follow-up reads the new value.
-fn spawn_seq(cmds: Vec<Vec<String>>) -> Result<()> {
-    if cmds.is_empty() {
-        return Ok(());
-    }
-    let joined = cmds.iter().map(|a| format!("{a:?}")).collect::<Vec<_>>().join(" ; ");
-    log::info!("exec {joined}");
+/// Build and run a sequence of commands in order on one helper thread, so e.g. a volume
+/// change is applied before a follow-up reads the new value. `job` builds the commands
+/// there, so anything it runs stays off the caller's thread.
+fn spawn_seq(job: impl FnOnce() -> Vec<Vec<String>> + Send + 'static) -> Result<()> {
     thread::spawn(move || {
+        let cmds = job();
+        if cmds.is_empty() {
+            return;
+        }
+        let joined = cmds.iter().map(|a| format!("{a:?}")).collect::<Vec<_>>().join(" ; ");
+        log::info!("exec {joined}");
         for argv in cmds {
             let desc = format!("{argv:?}");
             let mut c = Command::new(&argv[0]);
@@ -474,5 +480,8 @@ mod tests {
         assert_eq!(signed(-5), "-5");
         assert_eq!(wpctl_rel(5), "5%+");
         assert_eq!(wpctl_rel(-5), "5%-");
+        // A hand-edited `change = -128` must not panic.
+        assert_eq!(wpctl_rel(i8::MIN), "128%-");
+        assert_eq!(wpctl_rel(i8::MAX), "127%+");
     }
 }
