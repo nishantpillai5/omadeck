@@ -639,51 +639,48 @@ Review 3 bugs brought in here (BUGS.md): 78 (`Msg`), 101.
 Commits: `942a058` (task 1, core and daemon), `13597e8` (task 2, GUI and docs, GUI not
 compiled).
 
-Build:
-- [ ] `cargo clippy --all-targets -- -D warnings` clean, the GUI included (core and
-      daemon were clean on the Mac; the GUI was never compiled).
-- [ ] `cargo test`: core 265 (+3: `config::tests::{long_press_falls_back_to_press_and_is_omitted,
-      long_press_counts_for_the_panel_level, rename_page_follows_long_press}`; also
-      `walkers_visit_every_slot_in_order` and `example_dial_parses` now check the long
-      press), omadeckd 101 (unchanged: `source_names_its_key_or_dial` gains a line), gui 7
-      (unchanged).
-- [ ] The three socket tests still fail here only on bind; no new socket test.
-- [ ] `git diff --stat feat/app-pages -- Cargo.lock` is empty (no new crates).
+Build (2026-10-17, machine):
+- [x] `cargo clippy --all-targets -- -D warnings` clean, the GUI included.
+- [x] `cargo test`: core 265, gui 7, omadeckd 102 (= 101 + the live-keys test inherited
+      from below).
+- [x] The three socket tests pass here.
+- [x] `git diff --stat feat/app-pages -- Cargo.lock` is empty.
+- [x] CI run 39071257078 `success`.
 
-Capture first (pr16-strip-long-press.md, "Capture on the machine first"; nothing was
-captured):
-- [ ] `systemctl --user stop omadeckd`, `cargo run -p omadeckd 2>&1 | grep -E "strip
-      (tap|long press|swipe)"`, then tap a panel, hold one about a second, and hold one
-      while drifting sideways. A hold must log **only** `strip long press at`; if a
-      `strip tap at` comes first, a hold runs `press` and then `long_press`: stop and
-      rethink. Note how long the hold takes and whether a drifting hold is a long press
-      or a swipe.
+Capture first (2026-10-17, machine; `RUST_LOG=debug omadeckd`, dev build):
+- [x] Taps log `strip tap at`, holds log **only** `strip long press at` — no `strip tap
+      at` before any of the three holds in the first pass, so a hold does not run `press`
+      and then `long_press`. A drifting hold is a long press, not a swipe (no
+      `strip swipe`/`strip flick` during a hold).
 
-Task 1 (core and daemon), on the deck:
-- [ ] Hold each of the four panels: that dial's `long_press` runs, once, and the panel
-      flashes (log: `strip long press on dial N`). A short tap still runs `press`.
-- [ ] A dial without `long_press`: holding its panel runs `press`, once.
-- [ ] A hold that drifts sideways doesn't change page.
-- [ ] A long press that fails (e.g. a missing script) shows the configurator's toast.
-- [ ] A long press that opens a page: renaming that page in the configurator keeps it
-      working; deleting the page clears it.
-- [ ] A dial whose only volume action is a long-press mute shows the volume on its panel.
+Task 1 (core and daemon), on the deck (2026-10-17, machine; dial 3 temporarily given
+      `[dial.long_press]` volume-mute, then reverted):
+- [x] Hold each of the four panels: `strip long press on dial N` routes to the right
+      panel (0, 1, 2, 3 all hit; strip is 800 px, panels 200 px each). Dial 3's
+      `long_press` runs — `dial 3: Toggle mute`, once, panel flashes (user). Short taps
+      still run `press`.
+- [x] A dial without `long_press`: holding its panel runs `press`, once — panel 0
+      `Toggle mute`, panel 1 `Toggle mute (focused app)`, panel 2 `Play/Pause`, each
+      exactly once.
+- [x] A hold that drifts sideways doesn't change page (no flick events during holds).
+- [ ] A long press that fails shows the configurator's toast. *(user skipped — GUI)*
+- [ ] A long press that opens a page: rename keeps it working; deleting clears it.
+      *(user skipped — GUI; the core half is `rename_page_follows_long_press`, passing)*
+- [x] A dial whose only volume action is a long-press mute shows the volume on its panel
+      (user: panel 3 shows the volume level, and it follows dial 0).
 
-Task 2 (GUI):
-- [ ] It compiles: check first `editor.rs` (`ActionSlot::for_dial`/`dial_long_press`,
-      `long_press_group`) and `app.rs` (`action_at`/`set_action_at`'s `DialLongPress`
-      arms, `dial_slot`, `refresh_dial`'s guarded match arm).
-- [ ] The "Long press on the strip" group's ▶ runs the long press action only: the panel
-      doesn't flash.
-- [ ] The group is missing on a deck without a strip.
-- [ ] A kind picked in the group starts from the press defaults (Volume mutes).
-- [ ] The dial button's tooltip reads `… — press: … · hold: …` once a long press is set.
-- [ ] A config without `long_press` saves byte-identical from the GUI.
+Task 2 (GUI) — 2026-10-17, machine:
+- [x] It compiles (clippy, GUI included).
+- [ ] The group's ▶ runs the long press only (no flash); missing on a deck without a
+      strip; press defaults; the `press: … · hold: …` tooltip. *(user skipped)*
+- [x] A config without `long_press` saves byte-identical. (Daemon-side round trip:
+      `Config::parse` → `save()` on the pre-`long_press` file is byte-identical; the GUI
+      half was skipped.)
 
 Assumptions and changes from the plan:
-- Nothing from "Capture on the machine first" was run; the plan's assumptions are taken:
-  the firmware sends a hold as one `TouchScreenLongPress` with no tap before it, and its
-  threshold is whatever it is (no timer of ours).
+- The capture was run (see above) and **confirms** the plan's assumption: the firmware
+  sends a hold as one `TouchScreenLongPress` with no tap before it, and its threshold is
+  whatever it is (no timer of ours).
 - The `strip tap on dial N` / `strip long press on dial N` log line is in `strip_touch`
   (as the old arm had it) rather than in `tap_dial`, so ctl's `dial N press` doesn't log
   it; `tap_dial` keeps PR 11's `unwrap_or_default` + `is_none` shape.
