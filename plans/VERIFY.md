@@ -324,7 +324,7 @@ need a real `[[page]]` in the config (create one in the GUI).
       last good config. (Appended a bad line → `TOML parse error at line 204 … key with no value` + `; keeping the previous config`, exit 1; restored the file, daemon stayed healthy.)
 - [x] `omadeckd state | jq .page` with the deck plugged. (`page: null`. The unplugged half is user.)
 - [x] 50× `omadeckd state` in a tight loop: no fails, no 3 s hang. (50 calls in ~5 s, zero failures. The fast-dial-spin half is user.)
-- [ ] An old configurator build still shows status and key presses against the new daemon. *(user — the old installed GUI is running against the feat/ctl dev daemon right now)*
+- [~] An old configurator build still shows status and key presses against the new daemon. *(skipped by the user, 2026-10-17: on this machine both binaries are installed from the same build at once, so a mixed GUI/daemon version can't occur)*
 
 Task 6 (GUI):
 - [ ] It compiles: check first `editor.rs` `test_button` (the `gio::spawn_blocking`
