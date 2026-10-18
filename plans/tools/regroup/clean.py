@@ -135,7 +135,24 @@ def clean_trailing(line):
         return code
     return line if t == text else f"{code}{sp}// {t}"
 
+# Comments said once is enough: later copies in the same file are dropped.
+ONCE = [re.compile(r"\n[ \t]*// A preset defines the whole dial: a long press left over would keep running\n"
+                   r"[ \t]*// and could decide what the panel shows\.\n")]
+
+
+def _once(src):
+    for rx in ONCE:
+        first = rx.search(src)
+        if first:
+            src = src[:first.end()] + rx.sub("\n", src[first.end():])
+    return src
+
+
 def clean(src):
+    return _once(_clean(src))
+
+
+def _clean(src):
     lines = src.split("\n")
     out, i = [], 0
     while i < len(lines):

@@ -7,19 +7,32 @@ description has to say it builds on that branch, or wait for it to land on `mast
 
 | # | Branch | Tip | What | From | Commits | Size |
 |---|--------|-----|------|------|---------|------|
-| 1 | `up/01-plus-support` | `7fd7d3b` | Stream Deck + support: dial and strip input, dial actions, the strip drawn with `$X1` | PR 1, 2, 3 | 3 | +1682 −246 |
-| 2 | `up/02-dials-and-strip` | `e26bfdf` | Volume and brightness dials with live levels, strip flick and `page_step`, background images | PR 4, 5, 6, 7 | 6 | +2906 −162 |
-| 3 | `up/03-groundwork` | `e5c2916` | The watcher, the daemon split, a hub that never blocks, the state file | PR 7b | 12 | +2459 −1229 |
-| 4 | `up/04-toggle-keys` | `e9708c9` | Toggle keys, busy faces, presets | PR 8 | 12 | +3754 −250 |
-| 5 | `up/05-live-keys` | `6319f49` | Live keys and panels; the Hyprland event listener | PR 9 | 8 | +2138 −83 |
-| 6 | `up/06-app-volume` | `be45ea1` | Per-app volume | PR 10 | 9 | +2114 −94 |
-| 7 | `up/07-ctl-and-multi-actions` | `8bbab9d` | `omadeckd` control commands; multi and delay actions | PR 11, 12 | 12 | +2246 −208 |
-| 8 | `up/08-media-dial` | `6b65d9e` | The media dial and media keys | PR 14 | 8 | +2436 −66 |
-| 9 | `up/09-page-navigation` | `0000ec6` | Folder gestures (hold Back for Home, nested page steps) and pages that follow apps | PR 13, 15 | 6 | +1164 −59 |
-| 10 | `up/10-strip-long-press` | `b799a1f` | A second action per dial on a held strip panel | PR 16 | 2 | +187 −40 |
+| 1 | `up/01-plus-support` | `9f69519` | Stream Deck + support: dial and strip input, dial actions, the strip drawn with `$X1` | PR 1, 2, 3 | 3 | +1703 −246 |
+| 2 | `up/02-volume-dial` | `46b9b61` | The volume action; a volume dial's level on the strip | PR 4 | 1 | +1101 −80 |
+| 3 | `up/03-strip-flick` | `8c211ff` | Flick the strip to change page; `page_step` | PR 5 | 1 | +328 −49 |
+| 4 | `up/04-brightness` | `c820286` | The brightness action, the state file; the daemon drains input and paints once per pass | PR 6 | 2 | +676 −81 |
+| 5 | `up/05-strip-backgrounds` | `1a7d50e` | Background images on the strip and dials | PR 7 | 2 | +966 −86 |
+| 6 | `up/06-groundwork` | `fff8403` | The watcher, the daemon split, a hub that never blocks, the state file whole | PR 7b | 12 | +2430 −1243 |
+| 7 | `up/07-toggle-keys` | `62a648d` | Toggle keys, busy faces, presets; Hyprland actions on a worker | PR 8 | 12 | +3753 −250 |
+| 8 | `up/08-live-keys` | `f6e6760` | Live keys and panels; the Hyprland event listener | PR 9 | 8 | +2136 −82 |
+| 9 | `up/09-app-volume` | `e7fe09d` | Per-app volume | PR 10 | 9 | +2122 −94 |
+| 10 | `up/10-ctl` | `fc1c659` | `omadeckd` control commands | PR 11 | 6 | +1196 −150 |
+| 11 | `up/11-multi-actions` | `29aec45` | Multi and delay actions | PR 12 | 6 | +1125 −66 |
+| 12 | `up/12-media-dial` | `0fb61e7` | The media dial and media keys; a test daemon | PR 14 | 8 | +2428 −66 |
+| 13 | `up/13-folder-gestures` | `128baa7` | Hold Back for Home, Back on release, page steps from nested folders | PR 13 | 3 | +338 −49 |
+| 14 | `up/14-app-pages` | `ac18125` | Pages that follow the focused app | PR 15 | 3 | +835 −27 |
+| 15 | `up/15-strip-long-press` | `812f088` | A second action per dial on a held strip panel | PR 16 | 2 | +181 −40 |
 
-Not for upstream: `up/captures` (`b62e45f`) = `up/10` + the capture script and the dated
-machine captures (they hold private data). `daily` = `up/captures` since 2026-10-18.
+**`daily` = `up/15-strip-long-press`** (2026-10-18): the 15 PRs and nothing else. The
+capture script and the machine captures are only on `up/captures` (PR 15 + them,
+`4474b21`), never upstream.
+
+**Split (2026-10-18):** the three combined PRs went back to one feature each (each split on
+the original per-feature groups, whose fix commits were already separate). Groundwork
+stays one PR: its four parts are interleaved and don't split on commit boundaries. In the
+split, the brightness PR carries the volume bars' "update at once, keep on reload" work
+(its original commits did); the deck-frame fix folds into folder gestures.
+
 
 ## How it was built
 
@@ -72,34 +85,14 @@ buggy version is left; changed files run through rustfmt):
 Checked again: all 75 commits type-check on their own; every tip passes fmt, clippy
 `-D warnings` and the tests (385 at PR 10).
 
-**Not done (needs a decision):**
-
-- **Scope.** Every reviewer said the combined PRs break "one feature per PR": PR 2 is
-  four features, PR 7 and PR 9 two each, and PR 3 carries setup only later PRs use.
-  Splitting gives about 14 PRs; each split is on a commit boundary.
-- ~~Code in the wrong commits~~ **moved (2026-10-18)**, by patch (`tools/regroup/moves.py`,
-  `patches/`; the tips are unchanged):
-  - PR 2: the daemon's own fixes (draining queued input, painting once per pass, the
-    volume refresh, brightness handling) are a commit of their own before background
-    images, which keep only their two daemon hunks.
-  - PR 4: the Hyprland worker is its own last commit, "Run Hyprland actions on a worker
-    thread", with its CHANGELOG line; the progress-bar doc fix ("first NN%") is in PR 4.
-  - PR 5: the event-socket fallback, the transcript test and its fixture are in "Listen to
-    Hyprland's event socket"; the presets change is with the live field.
-  - PR 6: the unused `activewindow-empty.json` left the series (only the capture tests
-    read it; it is in `up/captures`).
-  - PR 8: the test daemon is its own last commit.
-  - PR 9: the deck-frame fix is in the folders' configurator commit, which is retitled
-    for the folder-gesture docs it carries.
-
-  Checked: all 78 commits type-check, and the core and daemon tests pass at every commit
-  (not only the tips).
-- **CHANGELOG:** no groundwork entry; Back-on-release and the strip hold are "Changed",
-  not "Added"; PR 1's "Fixed" entry describes a bug upstream doesn't have; PR 2 lists
-  fixes to its own new feature.
-- **Smaller:** PR 8's docs say media keys go through Omarchy's commands, but with a
-  watched player they go to `playerctl` directly; ctl multis share one run slot and an
-  ignored press still answers OK; spun next/previous queue up to 8 commands per event.
+**Done since (2026-10-18):** the scope split above; the code moves (`moves.py`); the
+CHANGELOG (a Changed section for Back on release and the strip hold, the groundwork's
+user-visible changes, two entries dropped that described fixes to the series' own new
+features or a bug upstream doesn't have); the media docs (a command goes to `playerctl`
+directly when a panel or key shows a player); and the small leftovers (`omadeckd press`
+on a busy key and an ignored ctl multi are errors, not "ok"; a spun media dial sends one
+command per turn; a comment said once). Checked: all 78 commits type-check and pass the
+core and daemon tests; every tip passes fmt and clippy `-D warnings`.
 
 ## Still to do before PR 1
 

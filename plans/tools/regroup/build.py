@@ -14,6 +14,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from clean import clean
 from fixes import FIXES
 from moves import PATCHES, DROP_PATHS
+import docs
 
 TRAILER = "\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\n"
 BASE = "fb9052f"          # upstream/pages-and-folders
@@ -99,11 +100,15 @@ GROUPS = [
   (["1332fc9"], lambda: orig_msg("1332fc9")),
   (["2b7012c"], lambda: orig_msg("2b7012c")),
  ]),
- ("up/02-dials-and-strip", [
+ ("up/02-volume-dial", [
   (["f60161f", "cf1912a"], lambda: orig_msg("f60161f") + "\n\n"
    "On Omarchy 4 the mic has no clamping command of its own, so its bare\n"
    "wpctl call gets -l 1.0 and stops at 100% like the output."),
+ ]),
+ ("up/03-strip-flick", [
   (["9f4acc9"], lambda: M("Page with a strip flick or a page_step action", orig_msg("9f4acc9").split("\n", 1)[1])),
+ ]),
+ ("up/04-brightness", [
   (["44e0664"], lambda: orig_msg("44e0664", [("Running it surfaced three fixes:", "Along the way:"),
    ("touched by the daemon.", "touched by the daemon. A brightness edited in config.toml while the daemon\nwas stopped wins at the next start.")])),
   ([], lambda: M("Daemon: drain queued input and paint once per pass",
@@ -115,11 +120,13 @@ GROUPS = [
    "hot-reloaded field, a configurator slider works with no deck (the value is\n"
    "saved and applied on connect), and on exit the saver writes a value that\n"
    "is still settling.")),
+ ]),
+ ("up/05-strip-backgrounds", [
   (["5c56a4b", "5b07435", "006a48a", "a6dfb1a"], lambda: M("Draw background images on the touch strip and dials", orig_msg("a6dfb1a").split("\n", 1)[1])),
   (["a9dc7f0", "e5e61f2"], lambda: M("Pick strip and dial background images in the configurator",
    orig_msg("a9dc7f0").split("\n", 1)[1] + "\n\nThe README and changelog document both settings.")),
  ]),
- ("up/03-groundwork", [
+ ("up/06-groundwork", [
   (["35b284e"], lambda: M("Run commands with a timeout; volume changes that can be waited for", orig_msg("35b284e").split("\n", 1)[1])),
   (["9afc26a"], lambda: M("Add probes, values and one panel builder", orig_msg("9afc26a", [("so Task 8 can send\npanels to the configurator", "so the daemon can send\npanels to the configurator")]).split("\n", 1)[1])),
   (["a01ed2c"], lambda: M("Keep the deck-owned actions in one list; address dial slots by direction", orig_msg("a01ed2c").split("\n", 1)[1])),
@@ -140,7 +147,7 @@ GROUPS = [
    "in-flight total can't drift; and Disconnected is published once, from\n"
    "detach, not on every scan.")),
  ]),
- ("up/04-toggle-keys", [
+ ("up/07-toggle-keys", [
   (["f3cb8c8"], lambda: M("Add command probes, toggle values and a non-blocking job", orig_msg("f3cb8c8", [("The pieces PR 8's watcher and daemon build on:", "The pieces toggle keys build on:"), ("fields added later (PR 9's\n  live) join it with serde(default)", "fields added later join it\n  with serde(default)")]).split("\n", 1)[1])),
   (["ccceb77"], lambda: M("Add toggle faces to the config, and the key status builder", orig_msg("ccceb77").split("\n", 1)[1])),
   (["1fa45a0"], lambda: M("Draw keys in their state: off, on, busy, pressed", orig_msg("1fa45a0").split("\n", 1)[1])),
@@ -159,7 +166,7 @@ GROUPS = [
    "loop: a spin's dispatches stay in order, and a failure comes back to the\n"
    "loop and is reported against the key or dial that asked.")),
  ]),
- ("up/05-live-keys", [
+ ("up/08-live-keys", [
   (["0e79a38"], lambda: M("Add clock formatting and CPU, memory and battery readers",
    "live.rs formats clocks with jiff's strftime and works out when the next\n"
    "tick is due (on the minute or second, at most 5 s away). sysinfo.rs reads\n"
@@ -195,7 +202,7 @@ GROUPS = [
    "examples/config.toml, a README feature line, the roadmap item ticked,\n"
    "and the changelog.")),
  ]),
- ("up/06-app-volume", [
+ ("up/09-app-volume", [
   (["eed0109"], lambda: M("Read playback streams from pactl",
    "pactl -f json list sink-inputs, where ids and pids may be strings or\nnumbers.")),
   (["30fa8f5"], lambda: M("Match playback streams to an app or the focused window", "Also the app's icon names and the wpctl commands that change a stream.")),
@@ -211,7 +218,7 @@ GROUPS = [
   (["e8f8354"], lambda: M("Configurator: app volume rows, an app picker and dial presets")),
   (["93ad767"], lambda: M("Document per-app volume", "README, example config and changelog.")),
  ]),
- ("up/07-ctl-and-multi-actions", [
+ ("up/10-ctl", [
   (["1d914ac"], lambda: M("Add control commands and replies, and a request client")),
   (["cbb12aa"], lambda: M("Hub: carry replies back to the client that asked; make the socket 0600",
    "A reply is never dropped, even when that client's event queue is full.")),
@@ -220,6 +227,8 @@ GROUPS = [
   (["9dd70d8"], lambda: M("omadeckd: page, brightness, reload and state commands", "press and dial go through the running daemon too.")),
   (["4ad077f"], lambda: M("Configurator: Try it now goes through the daemon; document ctl",
    "A key's own ▶ presses the key. README, site and changelog.")),
+ ]),
+ ("up/11-multi-actions", [
   (["cfb26c8"], lambda: M("Add multi and delay actions",
    "A multi runs its steps in order; a delay step waits between them. Step\n"
    "kinds, summaries and the action walker's multi arm.")),
@@ -233,7 +242,7 @@ GROUPS = [
    "Add, move, remove and edit a step; Try it now runs the whole multi.\n"
    "README, example config and changelog.")),
  ]),
- ("up/08-media-dial", [
+ ("up/12-media-dial", [
   (["9fd5fc8"], lambda: M("Add the media action: play/pause, next, previous, stop and seek")),
   (["3823516"], lambda: M("Read and pick a media player through playerctl", "Local cover art, the same-track test, and the media commands per audio\nbackend.")),
   (["0307a8c"], lambda: M("Add the player probe and value; play/pause keys follow the player")),
@@ -247,7 +256,7 @@ GROUPS = [
    "the socket and the watcher thread. Tests for the no-deck loop with media\n"
    "playing and for the hub's replay use it.")),
  ]),
- ("up/09-page-navigation", [
+ ("up/13-folder-gestures", [
   (["b661698"], lambda: M("Step pages from nested folders, starting at the page they hang off",
    "Config::opener and page_path find the page a folder opens from;\nNav::nearest starts a page step there.")),
   (["5928c98"], lambda: M("Back acts on release; hold it for half a second to go Home",
@@ -255,7 +264,11 @@ GROUPS = [
   (["fc5dbdf"], lambda: M("Configurator: open folders by double-click; document folder gestures",
    "Double-click a folder key to open it or a Back key to go up; the page\n"
    "switcher shows a folder with its path. The README and changelog document\n"
-   "the folder gestures, Back acting on release included.")),
+   "the folder gestures, Back acting on release included.\n\n"
+   "The deck preview's frame now hugs the deck: the longer hint line under it\n"
+   "had stretched the frame past the last key and dial.")),
+ ]),
+ ("up/14-app-pages", [
   (["e97842e"], lambda: M("Let pages follow apps: apps on [[page]], class globs, open windows",
    "The first non-folder page that lists the focused window's class wins.")),
   (["c580b89"], lambda: M("Daemon: show a page while its app is focused, and go back after",
@@ -263,7 +276,7 @@ GROUPS = [
    "page picked by hand stays; a reload decides again.")),
   (["0042e25"], lambda: M("Configurator: a Follow apps dialog in the page bar; document app pages")),
  ]),
- ("up/10-strip-long-press", [
+ ("up/15-strip-long-press", [
   (["f7cef95"], lambda: M("Run a dial's long_press when its strip panel is held",
    "Without one, a hold runs the press. A long press shares the press's run\nand its failure report.")),
   (["1bf8c07"], lambda: M("Configurator: a Long press row on decks with a strip; document it")),
@@ -272,25 +285,25 @@ GROUPS = [
 
 # file -> branch-relative new-commit index (0-based) to place it at instead
 OVERRIDE = {
-    "1:crates/omadeck-core/tests/fixtures/test-font.ttf": 4,
-    "1:crates/omadeck-core/tests/fixtures/test-font-OFL.txt": 4,
-    "1:crates/omadeckd/src/main.rs": 3,
-    "2:crates/omadeckd/src/main.rs": 11,
-    "2:crates/omadeckd/src/watch.rs": 11,
-    "3:crates/omadeck-core/src/probe.rs": 6,
-    "3:crates/omadeckd/src/hypr_worker.rs": 11,
-    "3:crates/omadeckd/Cargo.toml": 6,
-    "3:crates/omadeck-gui/src/editor.rs": 10,
-    "6:crates/omadeck-core/src/ipc.rs": 1,
-    "4:crates/omadeckd/src/hypr.rs": 4,
-    "4:crates/omadeckd/tests/fixtures/socket2.txt": 4,
-    "4:crates/omadeck-core/src/presets.rs": 1,
-    "3:crates/omadeck-core/src/action.rs": 6,
-    "7:crates/omadeck-core/src/player.rs": 5,
-    "7:crates/omadeck-core/tests/fixtures/playerctl-two.txt": 5,
-    "7:crates/omadeck-core/src/action.rs": 5,
-    "7:crates/omadeckd/src/hub.rs": 5,
-    "7:crates/omadeckd/src/hypr_worker.rs": 5,
+    "4:crates/omadeck-core/tests/fixtures/test-font.ttf": 0,
+    "4:crates/omadeck-core/tests/fixtures/test-font-OFL.txt": 0,
+    "3:crates/omadeckd/src/main.rs": 1,
+    "5:crates/omadeckd/src/main.rs": 11,
+    "5:crates/omadeckd/src/watch.rs": 11,
+    "6:crates/omadeck-core/src/probe.rs": 6,
+    "6:crates/omadeckd/src/hypr_worker.rs": 11,
+    "6:crates/omadeckd/Cargo.toml": 6,
+    "6:crates/omadeck-gui/src/editor.rs": 10,
+    "9:crates/omadeck-core/src/ipc.rs": 1,
+    "7:crates/omadeckd/src/hypr.rs": 4,
+    "7:crates/omadeckd/tests/fixtures/socket2.txt": 4,
+    "7:crates/omadeck-core/src/presets.rs": 1,
+    "6:crates/omadeck-core/src/action.rs": 6,
+    "11:crates/omadeck-core/src/player.rs": 5,
+    "11:crates/omadeck-core/tests/fixtures/playerctl-two.txt": 5,
+    "11:crates/omadeck-core/src/action.rs": 5,
+    "11:crates/omadeckd/src/hub.rs": 5,
+    "11:crates/omadeckd/src/hypr_worker.rs": 5,
 }
 FORMATTED = {}
 
@@ -429,6 +442,16 @@ def main():
                 mode, blob = meta.split()[0], meta.split()[1]
                 nb = cleaned_blob(blob)
                 if nb != blob:
+                    git("update-index", "--cacheinfo", f"{mode},{nb},{f}", env=E)
+            for f in ["CHANGELOG.md", "README.md", "examples/config.toml"]:
+                ent = out("ls-files", "-s", "--", f, env=E)
+                if not ent:
+                    continue
+                mode, blob = ent.split()[0], ent.split()[1]
+                data = git("cat-file", "blob", blob).decode()
+                new = docs.transform(f, data, gi, k)
+                if new != data:
+                    nb = out("hash-object", "-w", "--stdin", input=new.encode())
                     git("update-index", "--cacheinfo", f"{mode},{nb},{f}", env=E)
             tree = out("write-tree", env=E)
             if shas:

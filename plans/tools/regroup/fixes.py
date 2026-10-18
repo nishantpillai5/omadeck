@@ -32,7 +32,7 @@ DIAL_PRESS_OLD = (0, 0, 'crates/omadeckd/src/main.rs', [
 ], ["action::run(&d.press)"])
 
 # PR 2 on: no hard-coded monitor when the focused one is unknown.
-MONITOR = (1, 9, "crates/omadeck-core/src/action.rs", [
+MONITOR = (1, 14, "crates/omadeck-core/src/action.rs", [
     ('swayosd(monitor.unwrap_or("HDMI-A-1"), device, change, mute)', "swayosd(monitor, device, change, mute)"),
     ("""fn swayosd(monitor: &str, device: AudioDevice, change: i8, mute: bool) -> Vec<Vec<String>> {
     let which = if device.is_output() { "--output-volume" } else { "--input-volume" };
@@ -53,7 +53,7 @@ MONITOR = (1, 9, "crates/omadeck-core/src/action.rs", [
 
 # PR 2: a brightness edited in config.toml while the daemon was stopped lost to the state
 # file. The rule groundwork has, brought forward.
-STATE_RULE = (1, 2, "crates/omadeck-core/src/state.rs", [
+STATE_RULE = (1, 5, "crates/omadeck-core/src/state.rs", [
     ("""/// The daemon's state, in `$XDG_STATE_HOME/omadeck/state.toml`. The config's
 /// `brightness` is the start value; once the deck has run, this file wins.
 #[derive(Serialize, Deserialize, Default, Debug, PartialEq)]
@@ -124,7 +124,7 @@ impl State {
     }"""),
 ], [])
 
-STATE_USE = (1, 1, "crates/omadeckd/src/main.rs", [
+STATE_USE = (1, 4, "crates/omadeckd/src/main.rs", [
     ("State::load().brightness.unwrap_or(cfg.brightness)", "State::load().start_brightness(cfg.brightness)"),
     ("use nav::Nav;\n",
      "use nav::Nav;\n\n/// The config's `brightness` as the daemon last read it, saved with the brightness.\nstatic CONFIG_BRIGHTNESS: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);\n"),
@@ -149,7 +149,7 @@ STATE_USE = (1, 1, "crates/omadeckd/src/main.rs", [
 
 # PR 2: the audio worker woke every 50 ms forever; now it sleeps until a poll is due, or
 # until a command while nothing is watched.
-AUDIO_IDLE = (1, 1, "crates/omadeckd/src/main.rs", [
+AUDIO_IDLE = (1, 4, "crates/omadeckd/src/main.rs", [
     ("""            loop {
                 loop {
                     match cmd_rx.try_recv() {
@@ -204,7 +204,7 @@ AUDIO_IDLE = (1, 1, "crates/omadeckd/src/main.rs", [
 
 # PR 2: the configurator read both volumes every second on any deck; now only while its
 # strip preview shows a volume dial.
-GUI_LEVELS = (1, 1, "crates/omadeck-gui/src/app.rs", [
+GUI_LEVELS = (1, 4, "crates/omadeck-gui/src/app.rs", [
     ("use crate::{editor, media};\n",
      "use crate::{editor, media};\n\n/// Whether the strip preview shows a volume level, so the level poller has work.\nstatic LEVELS_WANTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);\n"),
     ("""                loop {
@@ -223,9 +223,9 @@ GUI_LEVELS = (1, 1, "crates/omadeck-gui/src/app.rs", [
         let shows_volume = (0..n).any(|i| cfg.dial(i as u8).and_then(|d| d.volume_device()).is_some());
         LEVELS_WANTED.store(shows_volume, std::sync::atomic::Ordering::Relaxed);
         let levels = self.strip_levels.borrow();"""),
-], [])
+], ["                loop {\n                    let mut cur = Vec::new();"])
 
-AUDIO_IDLE_OLD = (1, 1, "crates/omadeckd/src/main.rs", [
+AUDIO_IDLE_OLD = (1, 4, "crates/omadeckd/src/main.rs", [
     ("""            loop {
                 loop {
                     match cmd_rx.try_recv() {
@@ -270,7 +270,7 @@ AUDIO_IDLE_OLD = (1, 1, "crates/omadeckd/src/main.rs", [
             }"""),
 ], [])
 
-STATE_USE_OLD = (1, 1, "crates/omadeckd/src/main.rs", [
+STATE_USE_OLD = (1, 4, "crates/omadeckd/src/main.rs", [
     ("use nav::Nav;\n",
      "use nav::Nav;\n\n/// The config's `brightness` as the daemon last read it, saved with the brightness.\nstatic CONFIG_BRIGHTNESS: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);\n"),
     ("State::load().brightness.unwrap_or(cfg.brightness)", "State::load().start_brightness(cfg.brightness)"),
@@ -290,14 +290,14 @@ STATE_USE_OLD = (1, 1, "crates/omadeckd/src/main.rs", [
 ], [])
 
 # PR 5 on: a live command's run is bounded by 10 s, not by its interval.
-LIVE_TIMEOUT = (4, 9, "crates/omadeckd/src/watch.rs", [
+LIVE_TIMEOUT = (7, 14, "crates/omadeckd/src/watch.rs", [
     ("""                // At least 1 s (the interval's floor), at most 10 s.
                 Probe::Output { command, .. } => (command.clone(), probe.interval().min(LIVE_COMMAND_TIMEOUT)),""",
      """                Probe::Output { command, .. } => (command.clone(), LIVE_COMMAND_TIMEOUT),"""),
 ], ["probe.interval().min(LIVE_COMMAND_TIMEOUT)"])
 
 # PR 6–8: a retitle of the focused window re-read pactl (PR 9 has this already).
-RETITLE = (5, 7, "crates/omadeckd/src/daemon.rs", [
+RETITLE = (8, 11, "crates/omadeckd/src/daemon.rs", [
     ("""                HyprEvent::ActiveWindow(w) => {
                     // Always, nothing focused included: the watcher only remembers it
                     // when no focused dial is watched, and a focused dial with no window
@@ -336,7 +336,7 @@ fn window_identity(w: &hypr::ActiveWindow) -> (&str, &str, Option<u32>) {
 ], ["// Always, nothing focused included: the watcher only remembers it"])
 
 # PR 7 on: `omadeckd press N` with no page is the shown page, as documented.
-PRESS_PAGE = (6, 9, "crates/omadeckd/src/daemon.rs", [
+PRESS_PAGE = (9, 14, "crates/omadeckd/src/daemon.rs", [
     ("""                let page = match page {
                     Some(p) if p.eq_ignore_ascii_case(omadeck_core::HOME) => None,
                     Some(p) if !self.cfg.has_page(&p) => {
@@ -357,7 +357,7 @@ PRESS_PAGE = (6, 9, "crates/omadeckd/src/daemon.rs", [
 ], ["                    page => page,\n                };\n                let shown = self.nav.current()"])
 
 # PR 7 on: a client that closes its write side still gets the replies it is owed.
-REPLY_HUB = (6, 9, "crates/omadeckd/src/hub.rs", [
+REPLY_HUB = (9, 14, "crates/omadeckd/src/hub.rs", [
     ("use std::sync::mpsc::{self, SyncSender, TrySendError};\n",
      "use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};\nuse std::sync::mpsc::{self, SyncSender, TrySendError};\n"),
     ("""pub struct ReplyTo {
@@ -450,7 +450,7 @@ REPLY_HUB = (6, 9, "crates/omadeckd/src/hub.rs", [
 """),
 ], ["    let _ = reply.queue.try_send(Arc::from(\"\"));\n}"])
 
-REPLY_DAEMON = (6, 9, "crates/omadeckd/src/daemon.rs", [
+REPLY_DAEMON = (9, 14, "crates/omadeckd/src/daemon.rs", [
     ("req.reply.send(&r);", "req.reply.answer(&r);"),
     ("""                Command::ShowPage { page } => show = Some(page),
                 Command::SetBrightness { value } => bright = Some(value),""",
@@ -465,35 +465,87 @@ REPLY_DAEMON = (6, 9, "crates/omadeckd/src/daemon.rs", [
 ], ["req.reply.send(&r);"])
 
 # PR 7 on: a delay is capped at the configurator's limit, so a typo can't hold a key.
-DELAY_CORE = (6, 9, "crates/omadeck-core/src/config.rs", [
+DELAY_CORE = (9, 14, "crates/omadeck-core/src/config.rs", [
     ("""/// `Wait 500 ms` below a second;""",
      """/// The longest a `delay` step waits (the configurator's limit too).
 pub const MAX_DELAY_MS: u32 = 600_000;
 
 /// `Wait 500 ms` below a second;"""),
 ], [])
-DELAY_BLOCKING = (6, 9, "crates/omadeck-core/src/action.rs", [
+DELAY_BLOCKING = (9, 14, "crates/omadeck-core/src/action.rs", [
     ("thread::sleep(Duration::from_millis(u64::from(*ms)));",
      "thread::sleep(Duration::from_millis(u64::from((*ms).min(crate::config::MAX_DELAY_MS))));"),
 ], ["thread::sleep(Duration::from_millis(u64::from(*ms)));"])
-DELAY_SEQ = (6, 9, "crates/omadeckd/src/sequence.rs", [
+DELAY_SEQ = (9, 14, "crates/omadeckd/src/sequence.rs", [
     ("Action::Delay { ms } => run.due += Duration::from_millis(u64::from(*ms)),",
      "Action::Delay { ms } => {\n                        run.due += Duration::from_millis(u64::from((*ms).min(omadeck_core::config::MAX_DELAY_MS)))\n                    }"),
 ], ["run.due += Duration::from_millis(u64::from(*ms)),"])
-DELAY_GUI = (6, 9, "crates/omadeck-gui/src/editor.rs", [
+DELAY_GUI = (9, 14, "crates/omadeck-gui/src/editor.rs", [
     ("adw::SpinRow::with_range(0.0, 600_000.0, 100.0)",
      "adw::SpinRow::with_range(0.0, f64::from(omadeck_core::config::MAX_DELAY_MS), 100.0)"),
 ], ["adw::SpinRow::with_range(0.0, 600_000.0, 100.0)"])
 
-STATE_USE_GW = (2, 2, STATE_USE[2], STATE_USE[3], [])
+STATE_USE_GW = (5, 5, STATE_USE[2], STATE_USE[3], [])
 
-AUDIO_IDLE_GW = (2, 2, AUDIO_IDLE[2], AUDIO_IDLE[3], [])
-GUI_LEVELS_GW = (2, 2, GUI_LEVELS[2], GUI_LEVELS[3], [])
+AUDIO_IDLE_GW = (5, 5, AUDIO_IDLE[2], AUDIO_IDLE[3], [])
+GUI_LEVELS_GW = (5, 5, GUI_LEVELS[2], GUI_LEVELS[3], [])
 
 # PR 4 (and PR 5's commits before the fix lands): the progress bar takes the first NN%.
-BUSY_BAR_DOC = (3, 4, "crates/omadeck-core/src/config.rs", [
+BUSY_BAR_DOC = (6, 7, "crates/omadeck-core/src/config.rs", [
     ("(the last `NN%`).", "(the first `NN%`)."),
 ], ["(the last `NN%`)."])
 
-FIXES = [BUSY_BAR_DOC, STATE_USE_GW, AUDIO_IDLE_GW, GUI_LEVELS_GW, DIAL_TURN, DIAL_PRESS, DIAL_PRESS_OLD, MONITOR, STATE_RULE, STATE_USE_OLD, STATE_USE, AUDIO_IDLE_OLD, AUDIO_IDLE, GUI_LEVELS, LIVE_TIMEOUT, RETITLE, PRESS_PAGE,
+# Control commands on: a press the key would ignore (still running) is an error to ctl,
+# not "ok". With multi actions, a running multi counts too, and an ignored ctl multi
+# says so (the deck's own inputs stay quiet).
+PRESS_BUSY_CTL = (9, 14, "crates/omadeckd/src/daemon.rs", [
+    ("""                let res = self.key_down(index, false);""",
+     """                if self.rt.jobs.contains_key(&KeyId { page: shown.clone(), index }) {
+                    return Reply::error(format!("key {index} is still running"));
+                }
+                let res = self.key_down(index, false);"""),
+], [])
+PRESS_BUSY_MULTI = (10, 14, "crates/omadeckd/src/daemon.rs", [
+    ("""                if self.rt.jobs.contains_key(&KeyId { page: shown.clone(), index }) {
+                    return Reply::error(format!("key {index} is still running"));
+                }""",
+     """                let id = KeyId { page: shown.clone(), index };
+                if self.rt.jobs.contains_key(&id) || self.seq.is_running(&RunOf::Key(id)) {
+                    return Reply::error(format!("key {index} is still running"));
+                }"""),
+    ("""        if !self.seq.start(of.clone(), steps.to_vec(), now) {
+            log::info!("{of}: multi action still running; ignored");
+            return Ok(());
+        }""",
+     """        if !self.seq.start(of.clone(), steps.to_vec(), now) {
+            log::info!("{of}: multi action still running; ignored");
+            if of == RunOf::Ctl {
+                anyhow::bail!("a multi action from omadeckd is still running");
+            }
+            return Ok(());
+        }"""),
+    ("""    /// once). Ignored, and Ok, while that input's last run is still going.""",
+     """    /// once). Ignored while that input's last run is still going (an error for omadeckd,
+    /// which is answered)."""),
+], ["            log::info!(\"{of}: multi action still running; ignored\");\n            return Ok(());"])
+
+# Media dial on: one next/previous per turn event, not one per detent queued on the
+# watcher behind the volume reads.
+MEDIA_ONE = (11, 14, "crates/omadeckd/src/daemon.rs", [
+    ("""                // Next/previous on a turn: once per detent (steps is already capped at 8).
+                let times =
+                    if seek == 0 && matches!(command, MediaCommand::Next | MediaCommand::Previous) { steps } else { 1 };
+                for _ in 0..times {
+                    let _ = self.watcher.cmd.send(WatchCmd::Media {
+                        command: *command,
+                        seek,
+                        target: target.clone(),
+                        probe: probe.clone(),
+                    });
+                }""",
+     """                // One command per input: a spun dial skips one track, not a queue of them.
+                let _ = self.watcher.cmd.send(WatchCmd::Media { command: *command, seek, target, probe });"""),
+], ["let times =\n                    if seek == 0 && matches!(command, MediaCommand::Next"])
+
+FIXES = [PRESS_BUSY_CTL, PRESS_BUSY_MULTI, MEDIA_ONE, BUSY_BAR_DOC, STATE_USE_GW, AUDIO_IDLE_GW, GUI_LEVELS_GW, DIAL_TURN, DIAL_PRESS, DIAL_PRESS_OLD, MONITOR, STATE_RULE, STATE_USE_OLD, STATE_USE, AUDIO_IDLE_OLD, AUDIO_IDLE, GUI_LEVELS, LIVE_TIMEOUT, RETITLE, PRESS_PAGE,
          REPLY_HUB, REPLY_DAEMON, DELAY_CORE, DELAY_BLOCKING, DELAY_SEQ, DELAY_GUI]
