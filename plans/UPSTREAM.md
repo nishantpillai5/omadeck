@@ -7,18 +7,18 @@ description has to say it builds on that branch, or wait for it to land on `mast
 
 | # | Branch | Tip | What | From | Commits | Size |
 |---|--------|-----|------|------|---------|------|
-| 1 | `up/01-plus-support` | `0b9232d` | Stream Deck + support: dial and strip input, dial actions, the strip drawn with `$X1` | PR 1, 2, 3 | 3 | +1682 −246 |
-| 2 | `up/02-dials-and-strip` | `a5202d9` | Volume and brightness dials with live levels, strip flick and `page_step`, background images | PR 4, 5, 6, 7 | 5 | +2906 −162 |
-| 3 | `up/03-groundwork` | `1d3a139` | The watcher, the daemon split, a hub that never blocks, the state file | PR 7b | 12 | +2459 −1229 |
-| 4 | `up/04-toggle-keys` | `13dacb2` | Toggle keys, busy faces, presets | PR 8 | 11 | +3754 −250 |
-| 5 | `up/05-live-keys` | `7af2e29` | Live keys and panels; the Hyprland event listener | PR 9 | 8 | +2138 −83 |
-| 6 | `up/06-app-volume` | `4ebd169` | Per-app volume | PR 10 | 9 | +2114 −94 |
-| 7 | `up/07-ctl-and-multi-actions` | `b63d36f` | `omadeckd` control commands; multi and delay actions | PR 11, 12 | 12 | +2246 −208 |
-| 8 | `up/08-media-dial` | `9b6dc38` | The media dial and media keys | PR 14 | 7 | +2436 −66 |
-| 9 | `up/09-page-navigation` | `4a388db` | Folder gestures (hold Back for Home, nested page steps) and pages that follow apps | PR 13, 15 | 6 | +1164 −59 |
-| 10 | `up/10-strip-long-press` | `3d03a84` | A second action per dial on a held strip panel | PR 16 | 2 | +187 −40 |
+| 1 | `up/01-plus-support` | `7fd7d3b` | Stream Deck + support: dial and strip input, dial actions, the strip drawn with `$X1` | PR 1, 2, 3 | 3 | +1682 −246 |
+| 2 | `up/02-dials-and-strip` | `e26bfdf` | Volume and brightness dials with live levels, strip flick and `page_step`, background images | PR 4, 5, 6, 7 | 6 | +2906 −162 |
+| 3 | `up/03-groundwork` | `e5c2916` | The watcher, the daemon split, a hub that never blocks, the state file | PR 7b | 12 | +2459 −1229 |
+| 4 | `up/04-toggle-keys` | `e9708c9` | Toggle keys, busy faces, presets | PR 8 | 12 | +3754 −250 |
+| 5 | `up/05-live-keys` | `6319f49` | Live keys and panels; the Hyprland event listener | PR 9 | 8 | +2138 −83 |
+| 6 | `up/06-app-volume` | `be45ea1` | Per-app volume | PR 10 | 9 | +2114 −94 |
+| 7 | `up/07-ctl-and-multi-actions` | `8bbab9d` | `omadeckd` control commands; multi and delay actions | PR 11, 12 | 12 | +2246 −208 |
+| 8 | `up/08-media-dial` | `6b65d9e` | The media dial and media keys | PR 14 | 8 | +2436 −66 |
+| 9 | `up/09-page-navigation` | `0000ec6` | Folder gestures (hold Back for Home, nested page steps) and pages that follow apps | PR 13, 15 | 6 | +1164 −59 |
+| 10 | `up/10-strip-long-press` | `b799a1f` | A second action per dial on a held strip panel | PR 16 | 2 | +187 −40 |
 
-Not for upstream: `up/captures` (`f9d37be`) = `up/10` + the capture script and the dated
+Not for upstream: `up/captures` (`b62e45f`) = `up/10` + the capture script and the dated
 machine captures (they hold private data). `daily` = `up/captures` since 2026-10-18.
 
 ## How it was built
@@ -77,9 +77,23 @@ Checked again: all 75 commits type-check on their own; every tip passes fmt, cli
 - **Scope.** Every reviewer said the combined PRs break "one feature per PR": PR 2 is
   four features, PR 7 and PR 9 two each, and PR 3 carries setup only later PRs use.
   Splitting gives about 14 PRs; each split is on a commit boundary.
-- **Code in the wrong commits** (from the fold's placement rule): the socket2 test fails
-  at its own commit (the fixture lands in the docs commit), the Hyprland worker sits in a
-  toggle-keys commit, unrelated daemon changes in the backgrounds commit. Tips are right.
+- ~~Code in the wrong commits~~ **moved (2026-10-18)**, by patch (`tools/regroup/moves.py`,
+  `patches/`; the tips are unchanged):
+  - PR 2: the daemon's own fixes (draining queued input, painting once per pass, the
+    volume refresh, brightness handling) are a commit of their own before background
+    images, which keep only their two daemon hunks.
+  - PR 4: the Hyprland worker is its own last commit, "Run Hyprland actions on a worker
+    thread", with its CHANGELOG line; the progress-bar doc fix ("first NN%") is in PR 4.
+  - PR 5: the event-socket fallback, the transcript test and its fixture are in "Listen to
+    Hyprland's event socket"; the presets change is with the live field.
+  - PR 6: the unused `activewindow-empty.json` left the series (only the capture tests
+    read it; it is in `up/captures`).
+  - PR 8: the test daemon is its own last commit.
+  - PR 9: the deck-frame fix is in the folders' configurator commit, which is retitled
+    for the folder-gesture docs it carries.
+
+  Checked: all 78 commits type-check, and the core and daemon tests pass at every commit
+  (not only the tips).
 - **CHANGELOG:** no groundwork entry; Back-on-release and the strip hold are "Changed",
   not "Added"; PR 1's "Fixed" entry describes a bug upstream doesn't have; PR 2 lists
   fixes to its own new feature.

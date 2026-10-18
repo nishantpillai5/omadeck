@@ -13,6 +13,7 @@ import json, os, re, subprocess, sys, tempfile
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from clean import clean
 from fixes import FIXES
+from moves import PATCHES, DROP_PATHS
 
 TRAILER = "\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\n"
 BASE = "fb9052f"          # upstream/pages-and-folders
@@ -62,6 +63,7 @@ MSG_SUBS = [
     ("(the daemon's real state lands in the next tasks)", "(the daemon's real state lands in the next commits)"),
     ("by the daemon (next PR tasks).", "by the daemon (in a later commit)."),
     ("edits the config as upstream.", "edits the config as before."),
+    ("progress (the last NN%, clamped)", "progress (the first NN%, clamped)"),
 ]
 
 def rewrap(msg):
@@ -104,6 +106,15 @@ GROUPS = [
   (["9f4acc9"], lambda: M("Page with a strip flick or a page_step action", orig_msg("9f4acc9").split("\n", 1)[1])),
   (["44e0664"], lambda: orig_msg("44e0664", [("Running it surfaced three fixes:", "Along the way:"),
    ("touched by the daemon.", "touched by the daemon. A brightness edited in config.toml while the daemon\nwas stopped wins at the next start.")])),
+  ([], lambda: M("Daemon: drain queued input and paint once per pass",
+   "A read now takes the HID reports already queued behind it, and the panels\n"
+   "a pass dirtied are painted once at its end, so a fast spin is one pass and\n"
+   "one write per panel. A volume change re-reads its own device, and right\n"
+   "after connect it waits for that read instead of guessing from zero. A\n"
+   "brightness edited in config.toml while the daemon runs wins like any other\n"
+   "hot-reloaded field, a configurator slider works with no deck (the value is\n"
+   "saved and applied on connect), and on exit the saver writes a value that\n"
+   "is still settling.")),
   (["5c56a4b", "5b07435", "006a48a", "a6dfb1a"], lambda: M("Draw background images on the touch strip and dials", orig_msg("a6dfb1a").split("\n", 1)[1])),
   (["a9dc7f0", "e5e61f2"], lambda: M("Pick strip and dial background images in the configurator",
    orig_msg("a9dc7f0").split("\n", 1)[1] + "\n\nThe README and changelog document both settings.")),
@@ -141,6 +152,12 @@ GROUPS = [
   (["de8f5cb"], lambda: M("Configurator: a Toggle group makes any key a toggle", orig_msg("de8f5cb").split("\n", 1)[1])),
   (["a66a14f"], lambda: M("Add toggle presets: one click makes a key a working toggle", orig_msg("a66a14f", [("from the commands captured on the\nmachine (plans/pr8-toggle-keys.md, \"Captured\")", "from commands checked on\nOmarchy")]).split("\n", 1)[1])),
   (["05ff183"], lambda: M("Use toggle keys in the starter layout; document them", orig_msg("05ff183").split("\n", 1)[1])),
+  ([], lambda: M("Run Hyprland actions on a worker thread",
+   "`hyprctl dispatch` waits for Hyprland's answer, up to 2 s (twice on a Lua\n"
+   "config) when Hyprland is stalled. The daemon now queues every Hyprland\n"
+   "dispatch on one ordered worker thread instead of running it on the deck\n"
+   "loop: a spin's dispatches stay in order, and a failure comes back to the\n"
+   "loop and is reported against the key or dial that asked.")),
  ]),
  ("up/05-live-keys", [
   (["0e79a38"], lambda: M("Add clock formatting and CPU, memory and battery readers",
@@ -224,14 +241,21 @@ GROUPS = [
   (["5869950"], lambda: M("Watcher: read the player once a second; run media commands in order", "Covers are decoded here, and only real changes are sent.")),
   (["11fbbbc"], lambda: M("Daemon: dispatch media commands; repaint a playing panel", "The shown track moves at once and holds until a read settles it; a\nplaying panel repaints every second; a reload keeps the track.")),
   (["b13d5d8"], lambda: M("Configurator: media actions and presets; document the media dial", "Media action rows, Media dial and Play/Pause presets, and a preview that\nmoves the track. README, example config and changelog.")),
+  ([], lambda: M("Daemon: build one in tests without a socket, deck or user state",
+   "Env carries what Daemon::new takes from the system (the saved state and\n"
+   "the Hyprland threads); Hub::detached and Watcher::detached stand in for\n"
+   "the socket and the watcher thread. Tests for the no-deck loop with media\n"
+   "playing and for the hub's replay use it.")),
  ]),
  ("up/09-page-navigation", [
   (["b661698"], lambda: M("Step pages from nested folders, starting at the page they hang off",
    "Config::opener and page_path find the page a folder opens from;\nNav::nearest starts a page step there.")),
   (["5928c98"], lambda: M("Back acts on release; hold it for half a second to go Home",
    "Held keys stay drawn pressed until they are released.")),
-  (["fc5dbdf"], lambda: M("Configurator: double-click to open folders; folder paths in the switcher",
-   "Double-click a folder key to open it or a Back key to go up. README and\nchangelog.")),
+  (["fc5dbdf"], lambda: M("Configurator: open folders by double-click; document folder gestures",
+   "Double-click a folder key to open it or a Back key to go up; the page\n"
+   "switcher shows a folder with its path. The README and changelog document\n"
+   "the folder gestures, Back acting on release included.")),
   (["e97842e"], lambda: M("Let pages follow apps: apps on [[page]], class globs, open windows",
    "The first non-folder page that lists the focused window's class wins.")),
   (["c580b89"], lambda: M("Daemon: show a page while its app is focused, and go back after",
@@ -248,15 +272,19 @@ GROUPS = [
 
 # file -> branch-relative new-commit index (0-based) to place it at instead
 OVERRIDE = {
-    "1:crates/omadeck-core/tests/fixtures/test-font.ttf": 3,
-    "1:crates/omadeck-core/tests/fixtures/test-font-OFL.txt": 3,
+    "1:crates/omadeck-core/tests/fixtures/test-font.ttf": 4,
+    "1:crates/omadeck-core/tests/fixtures/test-font-OFL.txt": 4,
+    "1:crates/omadeckd/src/main.rs": 3,
     "2:crates/omadeckd/src/main.rs": 11,
     "2:crates/omadeckd/src/watch.rs": 11,
     "3:crates/omadeck-core/src/probe.rs": 6,
-    "3:crates/omadeckd/src/hypr_worker.rs": 6,
+    "3:crates/omadeckd/src/hypr_worker.rs": 11,
     "3:crates/omadeckd/Cargo.toml": 6,
     "3:crates/omadeck-gui/src/editor.rs": 10,
     "6:crates/omadeck-core/src/ipc.rs": 1,
+    "4:crates/omadeckd/src/hypr.rs": 4,
+    "4:crates/omadeckd/tests/fixtures/socket2.txt": 4,
+    "4:crates/omadeck-core/src/presets.rs": 1,
     "3:crates/omadeck-core/src/action.rs": 6,
     "7:crates/omadeck-core/src/player.rs": 5,
     "7:crates/omadeck-core/tests/fixtures/playerctl-two.txt": 5,
@@ -306,12 +334,16 @@ def main():
     for gi, (branch, commits) in enumerate(GROUPS):
         lo, hi = firsts[gi], ends[gi]
         tasks = {full(t) for c in commits for t in c[0]}
+        # A commit with no tasks of its own (a move's new home) builds on the previous
+        # commit's source tree.
         allc = series[lo:hi + 1]
         fixes = [c for c in allc if c not in tasks]
         newidx = {full(t): k for k, c in enumerate(commits) for t in c[0]}
-        last_task = {k: max(pos[full(t)] for t in c[0]) for k, c in enumerate(commits)}
+        last_task = {}
+        for k, c in enumerate(commits):
+            last_task[k] = max(pos[full(t)] for t in c[0]) if c[0] else last_task[k - 1]
         for k in range(1, len(commits)):
-            assert last_task[k] > last_task[k - 1], (branch, k)
+            assert last_task[k] >= last_task[k - 1], (branch, k)
         touched_by = {}
         for t in tasks:
             for f in changed(t):
@@ -325,7 +357,8 @@ def main():
             if f in touched_by:
                 target[f] = touched_by[f]
             else:
-                before = [k for k in range(len(commits)) if last_task[k] < last_fix]
+                # Never a commit with no tasks: it holds only what a move puts there.
+                before = [k for k in range(len(commits)) if commits[k][0] and last_task[k] < last_fix]
                 target[f] = before[-1] if before else 0
             if f"{gi}:{f}" in OVERRIDE:
                 target[f] = OVERRIDE[f"{gi}:{f}"]
@@ -343,6 +376,15 @@ def main():
                     git("update-index", "--add", "--cacheinfo", f"{mode},{blob},{f}", env=E)
                 else:
                     git("update-index", "--force-remove", "--", f, env=E)
+            for f in DROP_PATHS:
+                git("update-index", "--force-remove", "--", f, env=E)
+            for g, k_lo, k_hi, patch, reverse in PATCHES:
+                if g != gi or not k_lo <= k <= k_hi:
+                    continue
+                args = ["apply", "--cached", "--whitespace=nowarn"] + (["-R"] if reverse else []) + [patch]
+                r = subprocess.run(["git", *args], capture_output=True, env={**os.environ, **E})
+                if r.returncode != 0:
+                    sys.exit(f"{branch} commit {k}: {os.path.basename(patch)} didn't apply: {r.stderr.decode()[:400]}")
             for lo_g, hi_g, f, hunks, gone in FIXES:
                 if not lo_g <= gi <= hi_g:
                     continue
@@ -389,9 +431,10 @@ def main():
                 if nb != blob:
                     git("update-index", "--cacheinfo", f"{mode},{nb},{f}", env=E)
             tree = out("write-tree", env=E)
-            first = full(shas[0])
-            a = out("log", "-1", "--format=%an%x00%ae%x00%ad", "--date=raw", first).split("\x00")
-            env = {"GIT_AUTHOR_NAME": a[0], "GIT_AUTHOR_EMAIL": a[1], "GIT_AUTHOR_DATE": a[2]}
+            if shas:
+                first = full(shas[0])
+                a = out("log", "-1", "--format=%an%x00%ae%x00%ad", "--date=raw", first).split("\x00")
+                env = {"GIT_AUTHOR_NAME": a[0], "GIT_AUTHOR_EMAIL": a[1], "GIT_AUTHOR_DATE": a[2]}
             body = msgf().rstrip()
             for x, y in MSG_SUBS:
                 body = body.replace(x, y)
@@ -399,7 +442,7 @@ def main():
             parent = out("commit-tree", tree, "-p", parent, "-F", "-", input=msg.encode(), env=env)
             report.append(f"{branch} {k} {parent[:7]} {msg.splitlines()[0]}")
         git("branch", "-f", branch, parent)
-        placed = {f: commits[t][0][0] for f, t in sorted(target.items())}
+        placed = {f: (commits[t][0] or ["new"])[0] for f, t in sorted(target.items())}
         report.append(f"  placements: {json.dumps(placed)}")
     os.unlink(tmpidx)
     print("\n".join(report))
