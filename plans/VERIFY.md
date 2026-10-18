@@ -1,6 +1,11 @@
 # What to verify on the Omarchy machine
 
-Part of [PLAN.md](PLAN.md). From `fix/review-2` on, the branches were built on a Mac
+Part of [PLAN.md](PLAN.md).
+
+**GUI checks (2026-10-18):** the open GUI click-throughs below are collected, ordered and
+mapped to the test-config elements in [GUI-CHECKLIST.md](GUI-CHECKLIST.md) — run them from
+there. The up/15 GUI now builds, links and runs on the machine (previously only
+type-checked on the Mac), and the stop-daemon banner is confirmed. From `fix/review-2` on, the branches were built on a Mac
 with no deck and no gtk4. On the Mac:
 
 - core and daemon were built and tested (`cargo test`, `cargo clippy --all-targets -- -D
@@ -94,8 +99,11 @@ linked and runs (Tasks 5–6 exercised it), but these editor click-throughs were
 Task 8 (GUI) — **skipped at the user's request (2026-10-17)**:
 - [ ] A key set to Volume keeps "Home · Row 1 · Column 2" under its title, and the
       volume explanation is a dim row.
-- [ ] `systemctl --user stop omadeckd` with the GUI open: the banner shows, and the
-      previews don't repaint every 2 s (`GTK_DEBUG=updates`).
+- [~] `systemctl --user stop omadeckd` with the GUI open: the banner shows, and the
+      previews don't repaint every 2 s (`GTK_DEBUG=updates`). (2026-10-18, machine: banner
+      "The omadeck service isn't running, so your deck won't respond" + Start service button
+      confirmed, title → "Service not running". The "no 2 s repaint" half still needs the GUI
+      relaunched with `GTK_DEBUG=updates`. See [GUI-CHECKLIST.md](GUI-CHECKLIST.md).)
 - [ ] Break config.toml, then finish a strip-background pick: nothing changes. Fixing
       the file shows the old background.
 - [ ] On a toggle, set "When pressed while on" to Open page → **New page**: a folder is
