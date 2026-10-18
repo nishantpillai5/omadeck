@@ -98,6 +98,11 @@ core and daemon tests; every tip passes fmt and clippy `-D warnings`.
 
 1. CI on each `up/*` tip (the GUI links there).
 2. On the machine: reset to the new `daily`, build, smoke-test (the code is the verified
-   code, so this is a quick pass, not VERIFY.md again).
+   code, so this is a quick pass, not VERIFY.md again). **Done (2026-10-18, machine):**
+   `daily` reset to `origin/daily` = `up/15-strip-long-press` (`812f088`); `cargo
+   fmt --check`, `clippy --all-targets -- -D warnings` and `cargo test` clean (core 274,
+   omadeck 9, omadeckd 114); release built and installed to `~/.local/bin`; daemon started
+   and connected the Stream Deck + (`A00WA5081LZEYC`), `state` served, brightness set/read
+   round-tripped (55 → 40), a `dial 0 right` volume step and a 50× `state` loop all fine.
 3. The GUI checks VERIFY.md still has open; they were skipped.
 4. Contact the author first (PLAN.md, "Order of work with upstream").
