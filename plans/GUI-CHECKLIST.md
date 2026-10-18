@@ -158,13 +158,23 @@ Keys: **Player 0 (Play)** and **Player 1 (Seek)**.
 
 Page: **Spotify** (leaf, `apps = ["brave-browser"]`); folders **Music**/**Media**.
 
-- [ ] The **cog** button shows for a page (Spotify), not Home; greyed out on a folder
-      (Music/Media).
-- [ ] **Add app… / Add open window… / Window class row**; duplicates; trash; the
-      switcher's `· follows apps`.
-- [ ] Focusing the configurator never switches the deck; the switcher follows automatic
-      switches.
+- [x] The **cog** button shows for a page (Spotify), not Home; greyed out on a folder
+      (Music/Media). (2026-10-18, machine: AI-driven — Spotify's cog opens the Follow apps
+      dialog with the `brave-browser` row; Home has no cog; a folder's dialog is greyed out
+      with “Folders can't follow apps: they open from a key.” + “No apps yet”.)
+- [x] **Add app… / Add open window… / Window class row**; duplicates; trash; the
+      switcher's `· follows apps`. (2026-10-18, machine: AI-driven — the dialog shows “Add
+      app…”, “Add open window…”, a `brave-browser` Window-class row, and “Stop following this
+      app” (trash); the switcher reads “Spotify · follows apps”. The “duplicates” sub-part
+      needs a text entry, not covered.)
+- [x] Focusing the configurator never switches the deck; the switcher follows automatic
+      switches. (2026-10-18, machine: AI-driven — focusing Brave (class `brave-browser`) auto-
+      switched the deck to Spotify (journal “page Spotify (follows brave-browser)”), and it
+      went back to Home on leaving (“page Home (left kitty)”); the configurator/terminal never
+      triggers an app-page switch.)
 - [ ] Add a link in the GUI while the app (Brave) is focused: the deck switches on reload.
+      *(AI-verified the underlying auto-switch + go-back; the specific “add a link in the GUI”
+      step needs a popover/text edit, so a human finishes this.)*
 
 ## strip-long-press · Task 2
 
