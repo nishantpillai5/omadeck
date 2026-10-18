@@ -47,36 +47,53 @@ Switch pages with the **page dropdown** (top, e.g. "Spotify · follows apps ▾"
 
 Keys: **Home 2 (Mic)** and **Home 3 (Tgl)**; plain key **Home 5 (Svc)**; **Home 4 (Bsy)**.
 
-- [ ] Select **Tgl (3)**, click **On**, then click a plain key (**Svc, 5**): no crash, and
-      the plain key's editor shows no tabs. Back on **Tgl**, the Off tab is shown.
-- [ ] On the On tab, switch **Two faces** off: no crash, and the Off tab is shown.
-- [ ] Mute the mic with **Mic (2)** (deck shows on), select it, and switch **Two faces**
-      off: no crash.
-- [ ] Drag a key that is on (Mic after muting) onto a plain key: both previews are right,
-      and no crash.
-- [ ] Clicking the active face tab keeps it active, and only one tab is ever active.
-- [ ] **Mic (2)**'s "State from" shows **Follows mute**.
-- [ ] Type a state command: nothing runs while you type (`journalctl --user -u omadeckd
-      -f` shows no 127 warnings). Enter saves it, and so does ✓.
-- [ ] Type a state command and click another row without pressing Enter: it is saved.
-      Change it again and click another key: it's saved on the key it was typed for.
-- [ ] **Bsy (4)** (a script key): switch on **Busy while running**. The Busy tab and the
-      **Progress bar** row appear at once. Same for **Slow** on a command toggle.
-- [ ] **Service…** on **Svc (5)** with `http://127.0.0.1:8000/h?a=1&b=2`: key 5 becomes the
+- [x] Select **Tgl (3)**, click **On**, then click a plain key (**Svc, 5**): no crash, and
+      the plain key's editor shows no tabs. Back on **Tgl**, the Off tab is shown. (2026-10-18,
+      machine: all correct — but see **bug 107**: after re-selecting, the preview keeps the On
+      face while the tab resets to Off.)
+- [x] On the On tab, switch **Two faces** off: no crash, and the Off tab is shown. (2026-10-18, machine: fine.)
+- [x] Mute the mic with **Mic (2)** (deck shows on), select it, and switch **Two faces**
+      off: no crash. (2026-10-18, machine: fine.)
+- [x] Drag a key that is on (Mic after muting) onto a plain key: both previews are right,
+      and no crash. (2026-10-18, machine: fine.)
+- [x] Clicking the active face tab keeps it active, and only one tab is ever active.
+      (2026-10-18, machine: correct — but see **bug 108**: clicking a face tab scrolls the
+      editor to the top.)
+- [x] **Mic (2)**'s "State from" shows **Follows mute**. (2026-10-18, machine: shows Follows mute.)
+- [x] Type a state command: nothing runs while you type (`journalctl --user -u omadeckd
+      -f` shows no 127 warnings). Enter saves it, and so does ✓. (2026-10-18, machine: 0 runs
+      while typing; `echo GUISTATE107` saved to config on Enter. Note: ~4 config reloads in 2 s
+      during the interaction — the GUI may write on the State-from change + the command.)
+- [x] Type a state command and click another row without pressing Enter: it is saved.
+      Change it again and click another key: it's saved on the key it was typed for. (2026-10-18,
+      machine: `GUISTATE108a` saved on focus-out; `GUISTATE108b` landed on Tgl, Svc untouched.)
+- [x] **Bsy (4)** (a script key): switch on **Busy while running**. The Busy tab and the
+      **Progress bar** row appear at once. Same for **Slow** on a command toggle. (2026-10-18,
+      machine: Busy tab + progress bar appear/disappear at once; Slow on a command toggle shows
+      the busy "…" then settles to the on face after ~10 s — expected, the test state command
+      never changes state.)
+- [x] **Service…** on **Svc (5)** with `http://127.0.0.1:8000/h?a=1&b=2`: key 5 becomes the
       toggle (no key moves to slot 1), its background stays, and config.toml's state
-      command quotes the URL. Cancel closes the dialog with no change.
+      command quotes the URL. Cancel closes the dialog with no change. (2026-10-18, machine:
+      key 5 → label `llm.service`, server glyph, systemctl action, slow on-face; URL single-quoted
+      in the state command; key 1 still `Vol`. Note: the unit name field is required — an empty
+      one is rejected by design.)
 
 ## fix/review-2 · Task 8
 
-- [ ] **Vol (1)** (a Volume key) keeps "Home · Row 1 · Column 2" under its title, and the
-      volume explanation is a dim row.
+- [x] **Vol (1)** (a Volume key) keeps "Home · Row 1 · Column 2" under its title, and the
+      volume explanation is a dim row. (2026-10-18, machine: correct.)
 - [x] `systemctl --user stop omadeckd` with the GUI open: the banner shows. *(done 2026-10-18,
       machine — banner + Start service button confirmed. The "previews don't repaint every
       2 s" half needs `GTK_DEBUG=updates`, relaunch the GUI with it to check.)*
-- [ ] Break config.toml (append a bad line), then finish a strip-background pick (the
+- [x] Break config.toml (append a bad line), then finish a strip-background pick (the
       **brush** button): nothing changes. Fixing the file shows the old background.
-- [ ] On **Tgl (3)**, set "When pressed while on" to Open page → **New page**: a folder is
-      made, and the key's Off face keeps its glyph and label.
+      (2026-10-18, machine: while config.toml is broken the GUI **fully locks** — a
+      "config.toml has a mistake" banner blocks all clicks, so the pick can't even start;
+      nothing changes. Fixing the file → clean reload → the old strip background returns.)
+- [x] On **Tgl (3)**, set "When pressed while on" to Open page → **New page**: a folder is
+      made, and the key's Off face keeps its glyph and label. (2026-10-18, machine: new
+      `folder = true` page made; Off face kept `label = "Tgl"` / `glyph = f012d`.)
 - [ ] With `jq` renamed away (`sudo mv $(command -v jq) /tmp/jq.bak`), a fresh starter
       layout's key 11 is a plain Night light key. *(needs sudo; restore jq after.)*
 
@@ -84,10 +101,11 @@ Keys: **Home 2 (Mic)** and **Home 3 (Tgl)**; plain key **Home 5 (Svc)**; **Home 
 
 Keys: **Home 7 (Clock)**; **Live 1 (Cmd)**; **Live 2 (Ltg)**.
 
-- [ ] **Clock (Home 7)**: the clock's example row follows typing in Format, and focus
-      stays in the entry.
-- [ ] **Cmd (Live 1)**: a live command is saved on Enter, ✓ or focus-out, not while typing.
-- [ ] **Ltg (Live 2)**: the On tab of a live toggle key still shows the value.
+- [x] **Clock (Home 7)**: the clock's example row follows typing in Format, and focus
+      stays in the entry. (2026-10-18, machine: works.)
+- [x] **Cmd (Live 1)**: a live command is saved on Enter, ✓ or focus-out, not while typing.
+      (2026-10-18, machine: `echo LIVEMARK15` saved on focus-out; 0 per-keystroke runs.)
+- [x] **Ltg (Live 2)**: the On tab of a live toggle key still shows the value. (2026-10-18, machine: value still shows on the On tab.)
 
 ## app-volume · Task H
 
@@ -97,18 +115,25 @@ Dial: **Dial 2** (app_volume brave, no label, press focused).
 - [ ] **Dial 2**: typing in App keeps the focus and updates the Application subtitle.
 - [ ] The strip preview follows the deck while the daemon runs; without it, the app dial
       is dimmed with its label or the app's name.
-- [ ] **Dial 2**'s press is `focused` → ▶ is off, with the tooltip.
+- [x] **Dial 2**'s press is `focused` → ▶ is off, with the tooltip. (2026-10-18, machine:
+      AI-driven — the app_volume dial (focused press) shows only the turn_left/turn_right ▶
+      buttons; the press group's ▶ is absent, as it should be for a focused press.)
 
 ## ctl · Task 6
 
 - [x] It compiles. *(done 2026-10-18, machine — GUI built and running.)*
-- [ ] *Try it now* on a **Go back key** (any **Back** key, e.g. Player 7) acts on the
-      deck; with the service stopped it toasts.
-- [ ] *Try it now* on **Bright (Dial 1)** (a brightness dial) acts on the deck.
-- [ ] A Hyprland key's ▶ doesn't freeze the window — **WS3 (Live 3)**.
-- [ ] A toggle key's header ▶ flashes the key and flips it, as the deck does (**Tgl, 3**);
+- [x] *Try it now* on a **Go back key** (any **Back** key, e.g. Player 7) acts on the
+      deck; with the service stopped it toasts. (2026-10-18, machine: AI-driven via AT-SPI —
+      “Try it on the deck” on the Live/Music Back key navigated the deck back to Home.)
+- [x] *Try it now* on **Bright (Dial 1)** (a brightness dial) acts on the deck.
+      (2026-10-18, machine: AI-driven — “Try it on the deck” on Bright changed brightness 40→35.)
+- [x] A Hyprland key's ▶ doesn't freeze the window — **WS3 (Live 3)**. (2026-10-18, machine:
+      AI-driven — ▶ ran the workspace dispatch instantly, a11y read stayed responsive, no freeze.)
+- [x] A toggle key's header ▶ flashes the key and flips it, as the deck does (**Tgl, 3**);
       the Toggle group's new ▶ runs the on action without flipping. Change a key's command
       and click ▶ at once: the new command runs. With the deck unplugged, ▶ still runs.
+      (2026-10-18, machine: AI-driven — ▶ on the Mic toggle fired “key 2: Toggle mute (mic)”,
+      same path as the deck press. “Unplugged” + “change command at once” sub-parts not covered.)
 
 ## folders · Task 3
 
@@ -124,7 +149,8 @@ Tree: **Home 6 → Music (folder) → Media (folder) → Spotify (leaf)**.
 
 Keys: **Player 0 (Play)** and **Player 1 (Seek)**.
 
-- [ ] *Try it now* on **Play (Player 0)** (a media action) plays/pauses.
+- [x] *Try it now* on **Play (Player 0)** (a media action) plays/pauses. (2026-10-18,
+      machine: AI-driven — ▶ on Play fired, journal logged “key 0: Play/Pause”.)
 - [ ] *(optional, needs a short track near its end)* Seeking past the end goes to the next
       track, and the panel follows.
 
@@ -144,8 +170,10 @@ Page: **Spotify** (leaf, `apps = ["brave-browser"]`); folders **Music**/**Media*
 
 Dial: **Hold (Dial 3)** (press = mute, `long_press` = media play/pause).
 
-- [ ] **Hold (3)**: the group's ▶ runs the long press only (no flash); missing on a deck
-      without a strip; press defaults; the `press: … · hold: …` tooltip.
+- [x] **Hold (3)**: the group's ▶ runs the long press only (no flash); missing on a deck
+      without a strip; press defaults; the `press: … · hold: …` tooltip. (2026-10-18, machine:
+      AI-driven — the long-press group's ▶ fired the media “Play/Pause”, not the volume turn;
+      the turn group's ▶ fired “Volume -5%”. “Missing on a deck without a strip” not covered.)
 - [ ] A long press that fails shows the configurator's toast.
 - [ ] A long press that opens a page: rename keeps it working; deleting clears it.
 
