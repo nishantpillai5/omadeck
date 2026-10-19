@@ -37,19 +37,19 @@ series (deleted from the fork on 2026-10-18). Base: upstream's
 | 4 | `up/04-brightness` | `fbf1873` | The brightness action, the state file; the daemon drains input and paints once per pass | PR 6 | 2 | +676 −81 |
 | 5 | `up/05-strip-backgrounds` | `d50e6cc` | Background images on the strip and dials | PR 7 | 2 | +966 −86 |
 | 6 | `up/06-groundwork` | `9955b48` | The watcher, the daemon split, a hub that never blocks, the state file whole | PR 7b | 12 | +2430 −1243 |
-| 7 | `up/07-toggle-keys` | `858a220` | Toggle keys, busy faces, presets; Hyprland actions on a worker | PR 8 | 12 | +3753 −250 |
-| 8 | `up/08-live-keys` | `3686f9c` | Live keys and panels; the Hyprland event listener | PR 9 | 8 | +2136 −82 |
-| 9 | `up/09-app-volume` | `aae5964` | Per-app volume | PR 10 | 9 | +2122 −94 |
-| 10 | `up/10-ctl` | `c0040ca` | `omadeckd` control commands | PR 11 | 6 | +1196 −150 |
-| 11 | `up/11-multi-actions` | `88c6af0` | Multi and delay actions | PR 12 | 6 | +1125 −66 |
-| 12 | `up/12-media-dial` | `552a8ab` | The media dial and media keys; a test daemon | PR 14 | 8 | +2428 −66 |
-| 13 | `up/13-folder-gestures` | `e525b65` | Hold Back for Home, Back on release, page steps from nested folders | PR 13 | 3 | +338 −49 |
-| 14 | `up/14-app-pages` | `72c24b5` | Pages that follow the focused app | PR 15 | 3 | +835 −27 |
-| 15 | `up/15-strip-long-press` | `7b2b54e` | A second action per dial on a held strip panel | PR 16 | 2 | +181 −40 |
+| 7 | `up/07-toggle-keys` | `01f8e05` | Toggle keys, busy faces, presets; Hyprland actions on a worker | PR 8 | 12 | +3753 −250 |
+| 8 | `up/08-live-keys` | `0e5af31` | Live keys and panels; the Hyprland event listener | PR 9 | 8 | +2136 −82 |
+| 9 | `up/09-app-volume` | `7f0645e` | Per-app volume | PR 10 | 9 | +2122 −94 |
+| 10 | `up/10-ctl` | `da9352f` | `omadeckd` control commands | PR 11 | 6 | +1196 −150 |
+| 11 | `up/11-multi-actions` | `d52860d` | Multi and delay actions | PR 12 | 6 | +1125 −66 |
+| 12 | `up/12-media-dial` | `111cd2e` | The media dial and media keys; a test daemon | PR 14 | 8 | +2428 −66 |
+| 13 | `up/13-folder-gestures` | `5ec9143` | Hold Back for Home, Back on release, page steps from nested folders | PR 13 | 3 | +338 −49 |
+| 14 | `up/14-app-pages` | `ad6b9b3` | Pages that follow the focused app | PR 15 | 3 | +835 −27 |
+| 15 | `up/15-strip-long-press` | `26efd09` | A second action per dial on a held strip panel | PR 16 | 2 | +181 −40 |
 
 **`daily` = `up/15-strip-long-press`** (2026-10-18): the 15 PRs and nothing else. The
 capture script and the machine captures are only on `up/captures` (PR 15 + them,
-`caee9fb`), never upstream.
+`d3358e8`), never upstream.
 
 **Split (2026-10-18):** the three combined PRs went back to one feature each (each split on
 the original per-feature groups, whose fix commits were already separate). Groundwork

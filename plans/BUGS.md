@@ -1330,7 +1330,7 @@ the code; *(plausible)* needs the machine to confirm. All 32 are fixed on `fix/r
 
 #### 107. Toggle key preview keeps the On face after re-selecting the key (tab resets to Off)
 
-- **Status:** open. Found 2026-10-18, GUI check pass (item 3, [GUI-CHECKLIST.md](GUI-CHECKLIST.md) fix/review-2 Task 7). Not yet fixed.
+- **Status:** fixed 2026-10-19 on `up/07-toggle-keys`, in "Configurator: a Toggle group makes any key a toggle": a changed selection redraws the old and the new key's tiles; not yet verified on the machine. Found 2026-10-18, GUI check pass (item 3, [GUI-CHECKLIST.md](GUI-CHECKLIST.md) fix/review-2 Task 7).
 - **Branch:** `up/07-toggle-keys` (PR 8's toggle key editor).
 - **Where:** GUI, the key preview vs the `FaceTab` reset when the selected key changes (`editor.rs` / `app.rs` selection path).
 - **Repro:** select a toggle key (e.g. a key with an `[key.on]` face); the preview shows the off face and the Off tab is active. Click the **On** tab — the preview shows the on face. Select a different key, then select the toggle key again.
@@ -1339,7 +1339,7 @@ the code; *(plausible)* needs the machine to confirm. All 32 are fixed on `fix/r
 
 #### 108. Clicking a toggle key's On/Off face tab scrolls the editor to the top
 
-- **Status:** open. Found 2026-10-18, GUI check pass (item 3, fix/review-2 Task 7). Not yet fixed.
+- **Status:** fixed 2026-10-19 on `up/07-toggle-keys`, in "Configurator: a Toggle group makes any key a toggle": rebuilding the editor for the same selection keeps its scroll; not yet verified on the machine. Found 2026-10-18, GUI check pass (item 3, fix/review-2 Task 7).
 - **Branch:** `up/07-toggle-keys` (PR 8's toggle key editor).
 - **Where:** GUI, the `FaceTab` switch handler rebuilding the key editor (`editor.rs`); the
   scrollable editor area resets its position when the face's rows are swapped.
@@ -1351,7 +1351,7 @@ the code; *(plausible)* needs the machine to confirm. All 32 are fixed on `fix/r
 
 #### 109. State-command entry: the edit and check icons sit left of the hint text
 
-- **Status:** open. Found 2026-10-18, GUI check pass (item 3, fix/review-2 Task 7). Not yet fixed.
+- **Status:** fixed 2026-10-19 on `up/07-toggle-keys` ("Configurator: a Toggle group makes any key a toggle" and "Use toggle keys in the starter layout; document them"): the hint is a hint row under the entry, so the edit and ✓ icons sit at the row's end; not yet verified on the machine. Found 2026-10-18, GUI check pass (item 3, fix/review-2 Task 7).
 - **Branch:** `up/07-toggle-keys` (PR 8's toggle key editor, the state-command entry).
 - **Where:** GUI, the state-command entry row (`editor.rs`); the edit and ✓ (apply) buttons and
   the placeholder/hint text.
