@@ -208,13 +208,14 @@
     <div class="features">
       <article class="card card-wide">
         <svg class="card-icon"><use href="#i-bolt"/></svg>
-        <h3>Five kinds of action</h3>
+        <h3>Six kinds of action</h3>
         <ul class="actions">
           <li><b>Launch app</b><span>Pick from your installed apps — icon and name come along. Launched through <code>uwsm-app</code>, exactly like Omarchy does.</span></li>
           <li><b>Run script</b><span>Any executable, optionally in a terminal so you can watch it run.</span></li>
           <li><b>Play sound</b><span>Straight to PipeWire with per-key volume.</span></li>
           <li><b>Open website</b><span>One click fetches the site's icon for the key.</span></li>
           <li><b>Hyprland</b><span>Lua dispatchers or classic syntax — <code>workspace 3</code> just works on Lua-config Hyprland.</span></li>
+          <li><b>Open page</b><span>Pages and folders for more keys than your deck has. A new page comes with a Back key.</span></li>
         </ul>
       </article>
       <article class="card">
@@ -235,7 +236,7 @@
       <article class="card">
         <svg class="card-icon"><use href="#i-feather"/></svg>
         <h3>Featherweight</h3>
-        <p>A Rust daemon using ~9&nbsp;MB and 0% CPU at idle. Survives replugs and keeps your last good layout through config typos.</p>
+        <p>A Rust daemon using ~9&nbsp;MB and 0% CPU at idle. Survives replugs, keeps your last good layout through config typos, and apps you open keep running when it restarts.</p>
       </article>
       <article class="card">
         <svg class="card-icon"><use href="#i-terminal-line"/></svg>
@@ -245,7 +246,7 @@
       <article class="card">
         <svg class="card-icon"><use href="#i-box"/></svg>
         <h3>Portable</h3>
-        <p>One folder — <code>~/.config/omadeck</code> — holds the layout and every icon. Copy it to your next machine and go.</p>
+        <p>One folder — <code>~/.config/omadeck</code> — holds the layout and every icon. Copy it to your next machine and go. Backups of it are kept for you.</p>
       </article>
     </div>
   </section>
@@ -293,6 +294,8 @@
         <li>Drag keys to rearrange</li>
         <li>Press a physical key to jump to it</li>
         <li>▶ to test any action from the editor</li>
+        <li>Pages and folders, and the deck follows the page you're editing</li>
+        <li>Undo a deleted page or a cleared key</li>
         <li>Starts the daemon for you if it isn't running</li>
       </ul>
     </div>

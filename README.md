@@ -43,7 +43,8 @@ Written in Rust: a tiny background daemon drives the hardware, and a GTK4/libadw
   - Labels are rendered in your Omarchy font.
 - **Theme aware.** Key backgrounds, labels, glyphs and the press highlight come from the active Omarchy theme. Run `omarchy theme set …` and the deck re-renders instantly.
 - **Live editing.** Changes land on the hardware as you type, and the deck shows whichever page you're editing. Drag keys to rearrange them. Press a physical key to jump to it in the editor.
-- **Robust.** Reconnects after unplug/replug, and a typo in a hand-edited config keeps the last good layout on the deck. Uses about 9 MB of RAM and 0% CPU at idle.
+- **Robust.** Reconnects after unplug/replug, and a typo in a hand-edited config keeps the last good layout on the deck. Apps opened from the deck keep running when the daemon restarts or upgrades. Uses about 9 MB of RAM and 0% CPU at idle.
+- **Undo and backups.** A deleted page or cleared key can be undone, and the app keeps backups of your config.
 - **Portable.** Everything lives in `~/.config/omadeck/`, and imported icons are copied into it, so you can copy that folder to another machine.
 
 <p align="center">
@@ -124,8 +125,8 @@ On the deck, **Go back** returns to the page you came from, or Home. Renaming a 
 ### Command line
 
 ```text
-omadeckd                 run the daemon (normally via systemd)
-omadeckd list            show connected decks
+omadeckd                        run the daemon (normally via systemd)
+omadeckd list                   show connected decks
 omadeckd press 3 [PAGE]         run key 3's action (keys count from 0)
 omadeckd snapshot x.png [PAGE]  render the layout to an image
 ```
@@ -134,7 +135,7 @@ omadeckd snapshot x.png [PAGE]  render the layout to an image
 
 ## Configuration
 
-The config file is `~/.config/omadeck/config.toml`. The app edits it for you, but it's plain TOML and safe to edit by hand; the daemon reloads it as soon as you save. See [`examples/config.toml`](examples/config.toml).
+The config file is `~/.config/omadeck/config.toml`. The app edits it for you, but it's plain TOML and safe to edit by hand, even while the app is open; the daemon and the app reload it as soon as you save. If the app can't read your edit, it shows the error and leaves the file alone until you fix it. See [`examples/config.toml`](examples/config.toml).
 
 Each time the app opens, and before it deletes a page, it keeps a copy of `config.toml` in `~/.local/state/omadeck/backups` (the newest 20). Deleting a page or clearing a key can also be undone from the notice that pops up.
 
@@ -210,21 +211,23 @@ site/             project website: static HTML/CSS/JS with an interactive demo
 
 ## Troubleshooting
 
-- **"Service not running"**: `systemctl --user status omadeckd`. Logs: `journalctl --user -u omadeckd -f`.
+- **"Service not running"**: `systemctl --user status omadeckd` (press <kbd>q</kbd> to leave its pager, or add `--no-pager`). Logs: `journalctl --user -u omadeckd -f`.
 - **Deck found but can't be opened**: install the udev rule (`packaging/70-omadeck.rules` → `/etc/udev/rules.d/`), then replug the deck.
 - **Only one program can own the deck.** Quit the Elgato software or other tools such as `streamdeck-ui` first.
 
 ## Roadmap
 
-Ideas, roughly in order. Want one sooner? Open an issue or a PR; see [CONTRIBUTING](CONTRIBUTING.md).
+Ideas, roughly in order; [docs/ROADMAP.md](docs/ROADMAP.md) has the details. Want one sooner? Open an issue or a PR; see [CONTRIBUTING](CONTRIBUTING.md).
 
+- [x] **Pages and folders** (0.2.0)
+- [ ] **Release actions**: keys that act on release too, for push-to-talk dictation
+- [ ] **Templates**: ready-made pages to add in one click, starting with Omarchy Basics (your AI agent, dictation and everyday Omarchy keys); save any page as a template and share it
 - [ ] **Toggle keys** with on/off faces (mute, night light, …) that reflect real state
 - [ ] **Multi-actions**: run several actions from one key, with optional delays
 - [ ] **Stream Deck +**: dials and touch strip (volume, brightness, scrubbing)
 - [ ] **OBS** scene and recording keys via obs-websocket
 - [ ] **Live keys** that show a clock, CPU usage or the active workspace
 - [ ] **Multiple decks** with a layout per serial number
-- [ ] **Import/export** of shareable layouts
 
 ## How this was built
 
