@@ -36,7 +36,5 @@ If you'd like to see how far it's got, it's all on my fork,
 [nishantpillai5/omadeck](https://github.com/nishantpillai5/omadeck): `daily` has everything
 together, and the `up/01` … `up/15` branches are the PRs, one on top of the other.
 
-## Questions
-
-- Would you like these, and is one PR at a time, in this order, OK? I'm happy to merge or
-  split any of them.
+Would you like these, and is one PR at a time, in this order, OK? I'm happy to merge or split
+any of them.
