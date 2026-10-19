@@ -312,13 +312,13 @@ Useful pages (check they're still current when you use them):
 |--------|------|---------|
 | `master` | `upstream/master` | Pure mirror. Never commit here. |
 | `feat/*` | `upstream/master`, or the feature it depends on | One branch per PR. Small and self-contained. |
-| `daily` | `upstream/master` + every `feat/*` merged in | What I build and run. Today it is `up/15-strip-long-press` (`812f088`): the 15 upstream PRs and nothing else. Before that `up/captures`, `fix/review-3`. |
+| `daily` | `upstream/master` + every `feat/*` merged in | What I build and run. Today it is `up/15-strip-long-press` (`0bfe745`, on upstream v0.2.0): the 15 upstream PRs and nothing else. Before that `up/captures`, `fix/review-3`. |
 | `fix/bugs` | `feat/strip-backgrounds` | The 2026-10-17 bug pass (all 21 bugs closed). |
 | `fix/review` | `fix/bugs` | The 2026-10-17 review fixes, BUGS.md 22–43 (`87be396`). |
 | `pr/01-*` … `pr/16-*` | each on the previous | **Deleted from the fork 2026-10-18, superseded by `up/*`.** Not consistently stacked after the 2026-10-18 re-stack: `pr/09` and `pr/15` sit on older tips of the branch below, so `pr/09` … `pr/16` lack BUGS.md 105. **The PR series (2026-10-17).** The `feat/*` branches with every fix folded in: each fix is its own commit at the end of the feature it fixes (`Folded from <sha>` in the message). `pr/07b-groundwork` is groundwork as its own PR, before PR 8. `pr/16-strip-long-press` has exactly `fix/review-3`'s tree; `pr/07-…` equals `fix/review`'s and `pr/08-…` equals `fix/review-2`'s. Every tip passes fmt, clippy (GUI type-checked) and the core and daemon tests. The old `feat/*` and `fix/*` branches stay as they were, so the SHAs in these notes still resolve. |
-| `up/01-*` … `up/15-*` | each on the previous, from `fb9052f` | **The upstream series (2026-10-18), what gets opened.** Fifteen PRs, fixes folded into their task commits, no internal references. [UPSTREAM.md](UPSTREAM.md). |
+| `up/01-*` … `up/15-*` | each on the previous, from v0.2.0 (`5f4638b`) | **The upstream series (2026-10-18), what gets opened.** Fifteen PRs, fixes folded into their task commits, no internal references. [UPSTREAM.md](UPSTREAM.md). |
 | `up/captures` | `up/15-strip-long-press` | The capture script and the machine captures; private, never upstream. |
-| `up/work` | `fb9052f` | The linear series `tools/regroup/build.py` folds into `up/*`. |
+| `up/work` | `fb9052f` | History: the linear series the old base's `up/*` were folded from. Fixes now go on `up/*` directly. |
 | `plans` | `upstream/master` | These notes only. Never merged anywhere. |
 
 New features from PR 7 on mostly touch the same files as PRs 1–6, so base each new branch

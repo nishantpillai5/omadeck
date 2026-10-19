@@ -3,7 +3,7 @@
 # tests can't bind in the sandbox, so their failures are ignored.
 export CARGO_HOME=/tmp/claude-502/cargo-home CARGO_TARGET_DIR=/tmp/claude-502/target-regroup
 cd /Users/nishant/work/personal/omadeck/.claude/worktrees/regroup || exit 1
-for c in $(git rev-list --reverse fb9052f..up/15-strip-long-press); do
+for c in $(git rev-list --reverse upstream/master..up/15-strip-long-press); do
   git checkout -q --detach $c || exit 1
   t=$(cargo test -p omadeck-core -p omadeckd --offline --no-fail-fast 2>&1)
   fails=$(print -r -- "$t" | grep -E '^test .* FAILED$' | grep -v -E 'new_client_gets_the_replay|a_client_that_never_reads_does_not_block_publish|command_reply_over_socket')

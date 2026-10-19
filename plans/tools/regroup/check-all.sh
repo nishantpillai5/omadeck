@@ -6,7 +6,7 @@ export PKG_CONFIG=/private/tmp/claude-502/-Users-nishant-work-personal-omadeck/e
 cd /Users/nishant/work/personal/omadeck/.claude/worktrees/regroup || exit 1
 start=${1:-}
 skip=${start:+1}
-for c in $(git rev-list --reverse fb9052f..up/15-strip-long-press); do
+for c in $(git rev-list --reverse upstream/master..up/15-strip-long-press); do
   if [[ -n $skip ]]; then [[ $c == $start* ]] && skip= || continue; fi
   git checkout -q --detach $c || exit 1
   if out=$(cargo check --workspace --all-targets --offline 2>&1); then
