@@ -6,6 +6,8 @@ All notable changes to omadeck are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-10-18
+
 ### Added
 - Pages and folders. Extra pages live in `[[page]]` tables (top-level keys stay the Home page),
   with two new actions: `page` opens a page by name and `back` returns to the previous one.
@@ -55,5 +57,6 @@ The first public release.
 - CLI: `omadeckd list`, `omadeckd press N`, `omadeckd snapshot FILE.png`.
 - Installer, udev rule, desktop entry, AUR packages (`omadeck`, `omadeck-bin`) and a project website.
 
-[Unreleased]: https://github.com/thewizster/omadeck/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/thewizster/omadeck/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/thewizster/omadeck/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/thewizster/omadeck/releases/tag/v0.1.0

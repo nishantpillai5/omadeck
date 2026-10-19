@@ -1,6 +1,6 @@
 pkgbase = omadeck
 	pkgdesc = Elgato Stream Deck for Omarchy: launch apps, run scripts, play sounds and open websites
-	pkgver = 0.1.0
+	pkgver = 0.2.0
 	pkgrel = 1
 	url = https://github.com/thewizster/omadeck
 	install = omadeck.install
@@ -18,7 +18,7 @@ pkgbase = omadeck
 	optdepends = hyprland: Hyprland dispatcher actions
 	options = !debug
 	options = !lto
-	source = git+https://github.com/thewizster/omadeck.git#tag=v0.1.0
+	source = git+https://github.com/thewizster/omadeck.git#tag=v0.2.0
 	sha256sums = SKIP
 
 pkgname = omadeck

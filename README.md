@@ -56,10 +56,10 @@ Written in Rust: a tiny background daemon drives the hardware, and a GTK4/libadw
 ### Prebuilt release (recommended, no Rust needed)
 
 ```bash
-curl -LO https://github.com/thewizster/omadeck/releases/download/v0.1.0/omadeck-0.1.0-x86_64-linux.tar.gz
-curl -LO https://github.com/thewizster/omadeck/releases/download/v0.1.0/SHA256SUMS
+curl -LO https://github.com/thewizster/omadeck/releases/download/v0.2.0/omadeck-0.2.0-x86_64-linux.tar.gz
+curl -LO https://github.com/thewizster/omadeck/releases/download/v0.2.0/SHA256SUMS
 sha256sum -c SHA256SUMS
-tar xzf omadeck-0.1.0-x86_64-linux.tar.gz && cd omadeck-0.1.0-x86_64-linux
+tar xzf omadeck-0.2.0-x86_64-linux.tar.gz && cd omadeck-0.2.0-x86_64-linux
 scripts/install.sh
 ```
 

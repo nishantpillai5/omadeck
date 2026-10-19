@@ -1,6 +1,6 @@
 # Maintainer: Raymond Brady (github.com/thewizster)
 pkgname=omadeck
-pkgver=0.1.0
+pkgver=0.2.0
 pkgrel=1
 pkgdesc="Elgato Stream Deck for Omarchy: launch apps, run scripts, play sounds and open websites"
 arch=('x86_64' 'aarch64')
