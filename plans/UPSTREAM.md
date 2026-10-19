@@ -118,6 +118,10 @@ on a busy key and an ignored ctl multi are errors, not "ok"; a spun media dial s
 command per turn; a comment said once). Checked: all 78 commits type-check and pass the
 core and daemon tests; every tip passes fmt and clippy `-D warnings`.
 
+**Issue posted (2026-10-19):** [thewizster/omadeck#1](https://github.com/thewizster/omadeck/issues/1),
+"Stream Deck + support: dials and the touch strip" (from `drafts/issue-plus-support.md`).
+Waiting for the author's answer before opening PR 1.
+
 ## Still to do before PR 1
 
 1. CI on each `up/*` tip (the GUI links there).
