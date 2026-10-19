@@ -14,6 +14,14 @@ and `apps` fields; the test-font renderer gets upstream's font fields; the font-
 hook moves into the split daemon; one long-press test now creates the page it removes.
 All 78 commits type-check and pass the tests; every tip passes fmt and clippy.
 
+**Undo covers every link (2026-10-19).** Upstream's undo for a deleted page re-linked
+keys only; each PR now extends it for the links it adds, in the commit that makes them
+clearable: dial turns and presses (PR 1, "Draw the Stream Deck + touch strip"), a toggle's
+on action (PR 7, its last commit), steps inside a multi action (PR 11, "Add multi and
+delay actions"), a dial's long press (PR 15). The record is a list of places (a key, its
+on action, a dial slot, and a step); undo re-links a place only if it's still empty.
+Tests for each kind; all 78 commits type-check and pass the tests.
+
 **From now on, fix on the `up/*` chain directly** (commit on the branch of the PR, then
 rebase the ones above). `up/work` and `tools/regroup/` built the series on the old base
 and are history.
@@ -23,25 +31,25 @@ series (deleted from the fork on 2026-10-18). Base: upstream's
 
 | # | Branch | Tip | What | From | Commits | Size |
 |---|--------|-----|------|------|---------|------|
-| 1 | `up/01-plus-support` | `b60c1f4` | Stream Deck + support: dial and strip input, dial actions, the strip drawn with `$X1` | PR 1, 2, 3 | 3 | +1703 −246 |
-| 2 | `up/02-volume-dial` | `352f5eb` | The volume action; a volume dial's level on the strip | PR 4 | 1 | +1101 −80 |
-| 3 | `up/03-strip-flick` | `40d2412` | Flick the strip to change page; `page_step` | PR 5 | 1 | +328 −49 |
-| 4 | `up/04-brightness` | `214822c` | The brightness action, the state file; the daemon drains input and paints once per pass | PR 6 | 2 | +676 −81 |
-| 5 | `up/05-strip-backgrounds` | `fdd337c` | Background images on the strip and dials | PR 7 | 2 | +966 −86 |
-| 6 | `up/06-groundwork` | `ed5c881` | The watcher, the daemon split, a hub that never blocks, the state file whole | PR 7b | 12 | +2430 −1243 |
-| 7 | `up/07-toggle-keys` | `e77a9e3` | Toggle keys, busy faces, presets; Hyprland actions on a worker | PR 8 | 12 | +3753 −250 |
-| 8 | `up/08-live-keys` | `b119108` | Live keys and panels; the Hyprland event listener | PR 9 | 8 | +2136 −82 |
-| 9 | `up/09-app-volume` | `a0cd3a6` | Per-app volume | PR 10 | 9 | +2122 −94 |
-| 10 | `up/10-ctl` | `9db70dc` | `omadeckd` control commands | PR 11 | 6 | +1196 −150 |
-| 11 | `up/11-multi-actions` | `3152811` | Multi and delay actions | PR 12 | 6 | +1125 −66 |
-| 12 | `up/12-media-dial` | `a66d173` | The media dial and media keys; a test daemon | PR 14 | 8 | +2428 −66 |
-| 13 | `up/13-folder-gestures` | `4dad5cb` | Hold Back for Home, Back on release, page steps from nested folders | PR 13 | 3 | +338 −49 |
-| 14 | `up/14-app-pages` | `1ae8c29` | Pages that follow the focused app | PR 15 | 3 | +835 −27 |
-| 15 | `up/15-strip-long-press` | `0bfe745` | A second action per dial on a held strip panel | PR 16 | 2 | +181 −40 |
+| 1 | `up/01-plus-support` | `ff9719c` | Stream Deck + support: dial and strip input, dial actions, the strip drawn with `$X1` | PR 1, 2, 3 | 3 | +1703 −246 |
+| 2 | `up/02-volume-dial` | `2470092` | The volume action; a volume dial's level on the strip | PR 4 | 1 | +1101 −80 |
+| 3 | `up/03-strip-flick` | `b9e833c` | Flick the strip to change page; `page_step` | PR 5 | 1 | +328 −49 |
+| 4 | `up/04-brightness` | `fbf1873` | The brightness action, the state file; the daemon drains input and paints once per pass | PR 6 | 2 | +676 −81 |
+| 5 | `up/05-strip-backgrounds` | `d50e6cc` | Background images on the strip and dials | PR 7 | 2 | +966 −86 |
+| 6 | `up/06-groundwork` | `9955b48` | The watcher, the daemon split, a hub that never blocks, the state file whole | PR 7b | 12 | +2430 −1243 |
+| 7 | `up/07-toggle-keys` | `858a220` | Toggle keys, busy faces, presets; Hyprland actions on a worker | PR 8 | 12 | +3753 −250 |
+| 8 | `up/08-live-keys` | `3686f9c` | Live keys and panels; the Hyprland event listener | PR 9 | 8 | +2136 −82 |
+| 9 | `up/09-app-volume` | `aae5964` | Per-app volume | PR 10 | 9 | +2122 −94 |
+| 10 | `up/10-ctl` | `c0040ca` | `omadeckd` control commands | PR 11 | 6 | +1196 −150 |
+| 11 | `up/11-multi-actions` | `88c6af0` | Multi and delay actions | PR 12 | 6 | +1125 −66 |
+| 12 | `up/12-media-dial` | `552a8ab` | The media dial and media keys; a test daemon | PR 14 | 8 | +2428 −66 |
+| 13 | `up/13-folder-gestures` | `e525b65` | Hold Back for Home, Back on release, page steps from nested folders | PR 13 | 3 | +338 −49 |
+| 14 | `up/14-app-pages` | `72c24b5` | Pages that follow the focused app | PR 15 | 3 | +835 −27 |
+| 15 | `up/15-strip-long-press` | `7b2b54e` | A second action per dial on a held strip panel | PR 16 | 2 | +181 −40 |
 
 **`daily` = `up/15-strip-long-press`** (2026-10-18): the 15 PRs and nothing else. The
 capture script and the machine captures are only on `up/captures` (PR 15 + them,
-`a4a7c08`), never upstream.
+`caee9fb`), never upstream.
 
 **Split (2026-10-18):** the three combined PRs went back to one feature each (each split on
 the original per-feature groups, whose fix commits were already separate). Groundwork
