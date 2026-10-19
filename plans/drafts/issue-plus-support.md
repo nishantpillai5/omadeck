@@ -32,9 +32,11 @@ Each as its own PR, in this order:
 
 They follow the Elgato app wherever it has an answer.
 
+If you'd like to see how far it's got, it's all on my fork,
+[nishantpillai5/omadeck](https://github.com/nishantpillai5/omadeck): `daily` has everything
+together, and the `up/01` … `up/15` branches are the PRs, one on top of the other.
+
 ## Questions
 
 - Would you like these, and is one PR at a time, in this order, OK? I'm happy to merge or
   split any of them.
-- Your roadmap's next item is release actions. PR 13 makes a Back key act on release, so
-  holding it can go Home. Happy to fit it around your design, or to wait for it.
