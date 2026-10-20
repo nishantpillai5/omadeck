@@ -221,6 +221,7 @@ Ideas, roughly in order; [docs/ROADMAP.md](docs/ROADMAP.md) has the details. Wan
 
 - [x] **Pages and folders** (0.2.0)
 - [ ] **Release actions**: keys that act on release too, for push-to-talk dictation
+- [ ] **Omarchy bar widget**: deck status on the bar, one click to the app (can be turned off)
 - [ ] **Templates**: ready-made pages to add in one click, starting with Omarchy Basics (your AI agent, dictation and everyday Omarchy keys); save any page as a template and share it
 - [ ] **Toggle keys** with on/off faces (mute, night light, …) that reflect real state
 - [ ] **Multi-actions**: run several actions from one key, with optional delays

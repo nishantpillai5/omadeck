@@ -1,10 +1,25 @@
 # Roadmap
 
-Plans, roughly in order. Nothing here is promised for a particular release.
+Plans, roughly in order. Release numbers are a guide, not a promise.
 
-## 0.2.0: pages, and a stability pass
+## Released
 
-Pages and folders, plus the fixes from stress testing (see `CHANGELOG.md`).
+- **0.2.0:** pages and folders, undo and backups, and the fixes from stress testing (see
+  `CHANGELOG.md`).
+
+## 0.3.0: hold keys and the Omarchy bar
+
+- Release actions (below).
+- The Omarchy bar widget (below).
+- Forward compatibility: a key with an action type this version doesn't know is skipped with
+  a warning instead of the whole config being rejected. Templates need this, since one made
+  with a newer omadeck should still load in an older one.
+- More fixes from stress testing as time allows.
+
+## 0.4.0: templates
+
+Templates and Omarchy Basics (below). Omarchy Basics needs release actions for its Talk key,
+so templates come after 0.3.0.
 
 ## Release actions (hold keys)
 
@@ -23,6 +38,23 @@ This makes push-to-talk work, and hold-to-mute and similar keys too.
   `uwsm-app`, or the first word of a dictation gets cut off.
 - Dictation types into the focused window. A later "Talk to agent" key could focus the agent's
   window first, then start recording.
+
+## Omarchy bar widget
+
+An omadeck icon on the Omarchy bar, on by default. Its tooltip says whether the deck is
+connected and which page it shows, and clicking it opens the app.
+
+- It's an Omarchy shell plugin (`manifest.json` plus a small QML widget), the same kind as
+  Omarchy's own Dropbox and Tailscale widgets, so it follows the theme.
+- The plugin files are built into the `omadeck` app. On first run, when the Omarchy shell is
+  present, the app writes them to `~/.config/omarchy/plugins/omadeck/` and enables the widget
+  with `omarchy plugin enable`. The release tarball and the packages don't change.
+- Turn it off with "Show in Omarchy bar" in the app's settings, or with
+  `omarchy plugin disable omadeck`. The app remembers the choice and never re-enables it.
+- `scripts/uninstall.sh` removes the plugin.
+- Omarchy installs third-party plugins disabled by default, so consider asking once on first
+  run ("Add omadeck to your bar?") rather than enabling it silently.
+- Live status may need a small `omadeckd status` command for the widget to poll.
 
 ## Templates
 
