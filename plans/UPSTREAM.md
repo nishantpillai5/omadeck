@@ -11,13 +11,18 @@ to take things from the fork or ping for help. (Full thread in the issue.)
 
 **Consequence:** the `up/*` series (15 branches, restacked on v0.2.0 `5f4638b`) is **parked on
 the fork for reference** — no PRs will be opened from it. Development continues on the fork's
-`master` (= `daily` = `up/15-strip-long-press`, `812f088`). The series sits 3 commits behind
+`master` (= `daily` = `up/15-strip-long-press`, `26efd09`). The series sits 3 commits behind
 the latest `upstream/master` (`f4f27bd`) — the 0.3.0/0.4.0 roadmap, the keep-responsive fix
 (`0684db0`), and the contributions note — none of which block the fork's work. Remaining work
 is verification (the 6 open GUI checks in [GUI-CHECKLIST.md](GUI-CHECKLIST.md)), the parked
 bugs (107–109, fixed on `up/07-toggle-keys` but unverified on the machine), and new features
 on the fork. The `v0.2.0` tag points at `c770aab` (a later "Release v0.2.0" commit); the series
 is based on `5f4638b`, the earlier one.
+
+**Reset (2026-10-20):** `master` had still pointed at the old rebase (`812f088`) while `daily`
+and `up/15` had moved to the v0.2.0 re-stack; it was force-pushed to `daily`'s tip (`26efd09`).
+It is now kept in step with `daily`, and fork-only features merge into it (first: `omadeckd
+events`, [automations.md](automations.md)).
 
 ---
 

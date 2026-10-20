@@ -33,10 +33,12 @@ listed in each file.
 
 **Parked (2026-10-20): upstream declined the series** (issue #1 closed) — see
 [UPSTREAM.md](UPSTREAM.md) for the thread. The `up/*` PRs below will **not** be opened; the
-fork's `master` (= `daily` = `up/15-strip-long-press`, `812f088`) is now home. Remaining work
-is verification (the 6 open GUI checks in [GUI-CHECKLIST.md](GUI-CHECKLIST.md)), the parked
-bugs 107–109 (fixed on `up/07-toggle-keys`, unverified on the machine), and new features on
-the fork.
+fork's `master` (= `daily` = `up/15-strip-long-press`) is now home. **Reset (2026-10-20):**
+`master` was force-pushed to `daily`'s tip (`26efd09`, the v0.2.0 re-stack); it had still
+pointed at the old rebase (`812f088`) and was a day behind. Remaining work is verification
+(the 6 open GUI checks in [GUI-CHECKLIST.md](GUI-CHECKLIST.md)), the parked bugs 107–109
+(fixed on `up/07-toggle-keys`, unverified on the machine), and new features on the fork —
+first, the `omadeckd events` verb, in [automations.md](automations.md).
 
 **Regrouped (2026-10-18): the PR candidates are now the ten `up/*` branches** — see
 [UPSTREAM.md](UPSTREAM.md). The `pr/*` notes below are history.
@@ -240,6 +242,10 @@ the branch wins.
 
 ### Later, only if wanted
 
+- **External automation / reacting to the deck**: `omadeckd events` streams the daemon's
+  events as JSON lines so a script can react to key presses, dial turns and page changes.
+  First fork feature on `master`; plan in [automations.md](automations.md). (The
+  "make the deck do something" half is already done in PR 11's ctl verbs.)
 - More Elgato strip layouts: `$C1` (two bars, e.g. output and mic). (`$A1`, value only,
   comes with live keys in PR 9.)
 - Screensaver and idle dimming: dim or blank the deck when hypridle says idle or locked.
@@ -317,7 +323,7 @@ Useful pages (check they're still current when you use them):
 
 | Branch | Base | Purpose |
 |--------|------|---------|
-| `master` | `upstream/master` | Pure mirror. Never commit here. |
+| `master` | `daily` (kept in step) | **The fork's home (2026-10-20).** Was a pure mirror of `upstream/master` while the `up/*` series was live; now it holds the series' code plus fork-only features, each merged in on its own `feat/*` branch. Reset to `daily`'s tip (`26efd09`) on 2026-10-20; new features land here, then `daily` picks them up. |
 | `feat/*` | `upstream/master`, or the feature it depends on | One branch per PR. Small and self-contained. |
 | `daily` | `upstream/master` + every `feat/*` merged in | What I build and run. Today it is `up/15-strip-long-press` (`26efd09`, on upstream v0.2.0): the 15 upstream PRs and nothing else. Before that `up/captures`, `fix/review-3`. |
 | `fix/bugs` | `feat/strip-backgrounds` | The 2026-10-17 bug pass (all 21 bugs closed). |
