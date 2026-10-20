@@ -1,5 +1,25 @@
 # The upstream series (`up/*`, 2026-10-18)
 
+## Status (2026-10-20): upstream declined — the fork is now home
+
+**Issue #1 was posted 2026-10-19, declined by thewizster on 2026-10-20 02:29 UTC, and
+the user closed it at 08:43 UTC.** The author thanked the user and explained the project is
+early and every release goes through hands-on hardware QA, so a series this size couldn't be
+merged while the foundation settles. The user replied that they'd been testing on a Stream
+Deck + only, and will **develop on their own fork with no upstream PRs**, inviting thewizster
+to take things from the fork or ping for help. (Full thread in the issue.)
+
+**Consequence:** the `up/*` series (15 branches, restacked on v0.2.0 `5f4638b`) is **parked on
+the fork for reference** — no PRs will be opened from it. Development continues on the fork's
+`master` (= `daily` = `up/15-strip-long-press`, `812f088`). The series sits 3 commits behind
+the latest `upstream/master` (`f4f27bd`) — the 0.3.0/0.4.0 roadmap, the keep-responsive fix
+(`0684db0`), and the contributions note — none of which block the fork's work. Remaining work
+is verification (the 6 open GUI checks in [GUI-CHECKLIST.md](GUI-CHECKLIST.md)), the parked
+bugs (107–109, fixed on `up/07-toggle-keys` but unverified on the machine), and new features
+on the fork. The `v0.2.0` tag points at `c770aab` (a later "Release v0.2.0" commit); the series
+is based on `5f4638b`, the earlier one.
+
+---
 
 **Restacked on upstream's v0.2.0 (`5f4638b`, 2026-10-19).** Upstream merged
 `pages-and-folders` and released 0.2.0 (undo and backups, live font changes, a warning

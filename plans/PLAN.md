@@ -31,6 +31,13 @@ listed in each file.
 
 ## What's next, in order
 
+**Parked (2026-10-20): upstream declined the series** (issue #1 closed) — see
+[UPSTREAM.md](UPSTREAM.md) for the thread. The `up/*` PRs below will **not** be opened; the
+fork's `master` (= `daily` = `up/15-strip-long-press`, `812f088`) is now home. Remaining work
+is verification (the 6 open GUI checks in [GUI-CHECKLIST.md](GUI-CHECKLIST.md)), the parked
+bugs 107–109 (fixed on `up/07-toggle-keys`, unverified on the machine), and new features on
+the fork.
+
 **Regrouped (2026-10-18): the PR candidates are now the ten `up/*` branches** — see
 [UPSTREAM.md](UPSTREAM.md). The `pr/*` notes below are history.
 
