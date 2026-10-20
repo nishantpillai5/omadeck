@@ -2,6 +2,21 @@
 
 Thanks for helping! Bug reports, hardware reports and pull requests are all welcome.
 
+## What's welcome right now
+
+omadeck is young, and it's moving at a deliberate pace: every release is tested by hand on
+real hardware before it ships. To keep that bar while the core settles:
+
+- **Bug reports and hardware reports** are always welcome, and the most useful thing you can
+  send. Include your deck model and the daemon log (`journalctl --user -u omadeckd`).
+- **Small, focused fixes** (one bug, a few files) are welcome as pull requests.
+- **New features and large changes**: please open an issue first, before writing code. The
+  next releases follow [docs/ROADMAP.md](docs/ROADMAP.md), and a big change, especially to the
+  daemon, means starting the hardware testing over. A large series is likely to be declined
+  for now, however good it is.
+
+This will open up as the project matures.
+
 ## Getting set up
 
 ```bash
@@ -52,4 +67,5 @@ cargo test
 ## Good first issues
 
 Look for the [`good first issue`](https://github.com/thewizster/omadeck/labels/good%20first%20issue)
-label, or pick something from the [roadmap](README.md#roadmap).
+label. For anything on the [roadmap](README.md#roadmap), open an issue to talk it through
+before you start.

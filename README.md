@@ -217,7 +217,7 @@ site/             project website: static HTML/CSS/JS with an interactive demo
 
 ## Roadmap
 
-Ideas, roughly in order; [docs/ROADMAP.md](docs/ROADMAP.md) has the details. Want one sooner? Open an issue or a PR; see [CONTRIBUTING](CONTRIBUTING.md).
+Ideas, roughly in order; [docs/ROADMAP.md](docs/ROADMAP.md) has the details. Want one sooner? Open an issue; see [CONTRIBUTING](CONTRIBUTING.md).
 
 - [x] **Pages and folders** (0.2.0)
 - [ ] **Release actions**: keys that act on release too, for push-to-talk dictation
