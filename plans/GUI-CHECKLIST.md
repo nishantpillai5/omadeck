@@ -111,10 +111,10 @@ Keys: **Home 7 (Clock)**; **Live 1 (Cmd)**; **Live 2 (Ltg)**.
 
 Dial: **Dial 2** (app_volume brave, no label, press focused).
 
-- [ ] **Dial 2** (no label): **Choose…** sets the label; a key's label is left alone.
-- [ ] **Dial 2**: typing in App keeps the focus and updates the Application subtitle.
-- [ ] The strip preview follows the deck while the daemon runs; without it, the app dial
-      is dimmed with its label or the app's name.
+- [x] **Dial 2** (no label): **Choose…** sets the label; a key's label is left alone. (2026-10-20, machine: picked Brave → Dial 2's label became "Brave" in the config; key labels are left alone by the code path, which only writes a label for a dial target.)
+- [x] **Dial 2**: typing in App keeps the focus and updates the Application subtitle. (2026-10-20, machine: cursor stayed in the field, the Application subtitle updated live as typed.)
+- [x] The strip preview follows the deck while the daemon runs; without it, the app dial
+      is dimmed with its label or the app's name. (2026-10-20, machine: with the daemon stopped the Brave dial dimmed to its label/app name, as expected.)
 - [x] **Dial 2**'s press is `focused` → ▶ is off, with the tooltip. (2026-10-18, machine:
       AI-driven — the app_volume dial (focused press) shows only the turn_left/turn_right ▶
       buttons; the press group's ▶ is absent, as it should be for a focused press.)
@@ -139,11 +139,16 @@ Dial: **Dial 2** (app_volume brave, no label, press focused).
 
 Tree: **Home 6 → Music (folder) → Media (folder) → Spotify (leaf)**.
 
-- [ ] Double-click a folder key (**Music, Home 6**): it opens and the deck follows;
+- [x] Double-click a folder key (**Music, Home 6**): it opens and the deck follows;
       double-click its Back key: back to the opener; single click still selects; dragging
-      works.
-- [ ] The page switcher shows `Music › Media › Spotify` for the nested folder; the folder
-      button updates the label at once.
+      works. (2026-10-20, machine: double-click opened the Music folder on both the GUI and the
+      deck (journal "key 6: Open page Music"); single-click only selects; drag rearranges. Note:
+      the Brave→Spotify app-page auto-switch pulls the deck back to Spotify while Brave is
+      focused, so the deck-side Back/hold sub-parts weren't isolated here.)
+- [x] The page switcher shows `Music › Media › Spotify` for the nested folder; the folder
+      button updates the label at once. (2026-10-20, machine: a folder reads as its path — the
+      Media folder shows "Music › Media"; the leaf Spotify shows "Spotify · follows apps" (a leaf
+      isn't a folder, so `page_path` stops at it).)
 
 ## media-dial · Task 7 (remaining)
 
@@ -172,9 +177,11 @@ Page: **Spotify** (leaf, `apps = ["brave-browser"]`); folders **Music**/**Media*
       switched the deck to Spotify (journal “page Spotify (follows brave-browser)”), and it
       went back to Home on leaving (“page Home (left kitty)”); the configurator/terminal never
       triggers an app-page switch.)
-- [ ] Add a link in the GUI while the app (Brave) is focused: the deck switches on reload.
-      *(AI-verified the underlying auto-switch + go-back; the specific “add a link in the GUI”
-      step needs a popover/text edit, so a human finishes this.)*
+- [x] Add a link in the GUI while the app (Brave) is focused: the deck switches on reload.
+      (2026-10-20, machine: with Brave the last-focused non-configurator app, removing Brave from
+      Spotify's Follow apps made the deck leave (journal "page Home (left brave-browser)"), and
+      re-adding it (Add app → Brave) switched the deck back to Spotify on the reload with no focus
+      change. “Add open window…” adds the focused window (the GUI), so use “Add app…”.)
 
 ## strip-long-press · Task 2
 
@@ -189,22 +196,27 @@ Dial: **Hold (Dial 3)** (press = mute, `long_press` = media play/pause).
 
 ## fix/review-3 · GUI batch (BUGS.md 77, 98, 99, 100, 101, 102, 103, 104)
 
-- [ ] **77** — a dial showing a clock gets Presets › Volume/Brightness: the panel shows the
-      level, not the clock. *(set any dial's live to a clock first, e.g. copy Home 7's
-      clock onto Dial 0, then apply the preset.)*
-- [ ] **98** — the page switcher's folder paths don't go stale: make a new folder from a
-      key on `Music`; the switcher shows `Music › <new>`, not `Key N`.
-- [ ] **99** — the Follow apps dialog won't edit while config.toml is broken, and its toast
-      is on the dialog. *(open Spotify's cog, break config.toml, try to edit.)*
+- [x] **77** — a dial showing a clock gets Presets › Volume/Brightness: the panel shows the
+      level, not the clock. (2026-10-20, machine: set Dial 0's live to a clock (panel showed 19:35),
+      applied Presets › Volume dial → the panel showed the volume level; config confirms the preset
+      clears `d.live`.)
+- [x] **98** — the page switcher's folder paths don't go stale: make a new folder from a
+      key on `Music`; the switcher shows `Music › <new>`, not `Key N`. (2026-10-20, machine: a new
+      folder made from a key on Music showed "Music › <name>" in the switcher, not "Key N".)
+- [x] **99** — the Follow apps dialog won't edit while config.toml is broken, and its toast
+      is on the dialog. (2026-10-20, machine: with config.toml broken the dialog stayed open but
+      refused edits with a "config is broken, fix it first" toast on the dialog.)
 - [ ] **100** — picking a `uwsm app --`-launched app stores the app, not "uwsm". *(needs a
       uwsm-launched app with audio; environmental — skip if none here.)*
-- [ ] **101** — a dial with `long_press` = Media gets the Volume preset: the panel shows the
-      volume, not the player. **Hold (Dial 3)** is exactly this — apply Presets › Volume
-      dial to it.
-- [ ] **102** — switching "Two faces" off on **Bsy (4)** (a busy-while-running key) keeps its
-      Busy look.
-- [ ] **103** — the media Seconds spin on **Seek (Player 1)** can cross zero (typing 0 steps
-      to ±1 in the direction of travel).
+- [x] **101** — a dial with `long_press` = Media gets the Volume preset: the panel shows the
+      volume, not the player. (2026-10-20, machine: applied Presets › Volume dial to Hold → the
+      panel showed the volume level; config confirms the preset clears the long_press.)
+- [x] **102** — switching "Two faces" off on **Bsy (4)** (a busy-while-running key) keeps its
+      Busy look. (2026-10-20, machine: toggled Two faces on then off on Bsy → the Off and Busy tabs
+      remained (no On tab); config confirms the [key.busy] face is intact.)
+- [x] **103** — the media Seconds spin on **Seek (Player 1)** can cross zero (typing 0 steps
+      to ±1 in the direction of travel). (2026-10-20, machine: the spin went well past zero (to -25),
+      not clamped at 0.)
 - [ ] **104** — a key's own action rows don't edit through the current page: change a
       Volume/Brightness/Media spin, then switch page on the deck and press Enter — the
       change lands on the key you edited, not the new page's.
@@ -216,3 +228,22 @@ Dial: **Hold (Dial 3)** (press = mute, `long_press` = media play/pause).
 1. `cp /tmp/config.toml.REAL ~/.config/omadeck/config.toml` (restore your real config).
 2. Tell me which items passed / failed and I'll tick them in [VERIFY.md](VERIFY.md) with
    notes, and log any new bugs in [BUGS.md](BUGS.md).
+
+**Status (2026-10-20): 40/46 done, all passing — no new bugs.** The 12 completed this pass
+(app-volume ×3, folders ×2, app-pages add-link, and bugs 77/98/99/101/102/103) are ticked
+above with machine notes. **Six remain**, all needing the physical deck and/or a popover or
+`sudo`, so they're parked until resumed:
+
+- **jq rename** (fix/review-2 Task 8) — needs `sudo`; do last.
+- **media seek past end** (optional, needs a short track near its end).
+- **strip-long-press ×2** (a failing long-press toast; a long-press that opens a page,
+  rename/delete) — needs the Hold dial's `long_press` re-added (the Volume preset in bug 101
+  cleared it) and the deck, with the Brave auto-switch out of the way.
+- **100** (uwsm-launched app) — environmental; skip if no such app.
+- **104** (a key's own action rows don't edit through the current page) — GUI + a deck page
+  switch.
+
+The test config (with all the elements above) is saved at `/tmp/config.toml.TEST`; the real
+config is at `/tmp/config.toml.REAL`. To resume: `cp /tmp/config.toml.TEST
+~/.config/omadeck/config.toml`, restart `omadeckd`, relaunch the GUI, and continue from the
+six above.
