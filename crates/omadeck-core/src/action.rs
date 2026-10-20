@@ -6,6 +6,7 @@ use std::path::Path;
 use std::process::{Command, Stdio};
 use std::sync::OnceLock;
 use std::thread;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
 
@@ -182,10 +183,15 @@ fn hypr_dispatch(dispatch: &str) -> Result<()> {
     }
 }
 
+/// How long `hyprctl` gets to answer before it's given up on.
+const HYPRCTL_TIMEOUT: Duration = Duration::from_secs(2);
+
 /// Run `hyprctl dispatch …` and wait for its answer (it replies "ok" in a few ms).
 fn hyprctl_dispatch(args: &[String]) -> Result<()> {
     log::info!("exec hyprctl dispatch {}", args.join(" "));
-    let out = Command::new("hyprctl").arg("dispatch").args(args).stdin(Stdio::null()).output()?;
+    let mut cmd = Command::new("hyprctl");
+    cmd.arg("dispatch").args(args);
+    let out = output_within(cmd, HYPRCTL_TIMEOUT).context("hyprctl")?;
     let text = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
     let text = text.trim();
     if out.status.success() && (text.is_empty() || text == "ok") {
@@ -194,6 +200,22 @@ fn hyprctl_dispatch(args: &[String]) -> Result<()> {
         let msg: Vec<&str> = text.lines().map(str::trim).filter(|l| !l.is_empty()).collect();
         bail!("hyprctl: {}", if msg.is_empty() { "failed".to_string() } else { msg.join(" ") })
     }
+}
+
+/// `Command::output`, except that a command still running after `limit` is killed, so a
+/// stalled Hyprland can't hang whoever is waiting for it.
+fn output_within(mut cmd: Command, limit: Duration) -> Result<std::process::Output> {
+    let mut child = cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn()?;
+    let deadline = Instant::now() + limit;
+    while child.try_wait()?.is_none() {
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            bail!("no answer after {} s", limit.as_secs_f32());
+        }
+        thread::sleep(Duration::from_millis(5));
+    }
+    Ok(child.wait_with_output()?)
 }
 
 fn lua_str(s: &str) -> String {
@@ -237,6 +259,20 @@ mod tests {
         assert_eq!(legacy_to_lua("killactive").unwrap(), "hl.dsp.window.close()");
         assert_eq!(legacy_to_lua(r#"exec notify-send "hi""#).unwrap(), r#"hl.dsp.exec_cmd("notify-send \"hi\"")"#);
         assert_eq!(legacy_to_lua("bogus 1"), None);
+    }
+
+    #[test]
+    fn slow_commands_are_cut_off() {
+        let mut echo = Command::new("sh");
+        echo.args(["-c", "echo ok"]);
+        assert_eq!(output_within(echo, Duration::from_secs(2)).unwrap().stdout, b"ok\n");
+
+        let mut hang = Command::new("sleep");
+        hang.arg("5");
+        let start = Instant::now();
+        let err = output_within(hang, Duration::from_millis(200)).unwrap_err();
+        assert!(start.elapsed() < Duration::from_secs(1), "took {:?}", start.elapsed());
+        assert!(err.to_string().contains("no answer"), "{err}");
     }
 
     #[test]

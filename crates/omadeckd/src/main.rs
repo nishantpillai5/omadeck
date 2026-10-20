@@ -3,6 +3,7 @@
 
 mod hub;
 mod nav;
+mod worker;
 
 use std::path::Path;
 use std::sync::Arc;
@@ -19,6 +20,7 @@ use omadeck_core::{Action, Config, DeckInfo, Renderer, action, paths};
 
 use hub::Hub;
 use nav::Nav;
+use worker::Worker;
 
 const SCAN_INTERVAL: Duration = Duration::from_secs(2);
 const READ_TIMEOUT: Duration = Duration::from_millis(100);
@@ -109,6 +111,7 @@ fn run() -> Result<()> {
     }
 
     let hub = Hub::start(socket)?;
+    let worker = Worker::start().context("starting the action worker")?;
 
     // Watch the config dir and Omarchy's theme state for changes.
     std::fs::create_dir_all(paths::config_dir())?;
@@ -225,6 +228,11 @@ fn run() -> Result<()> {
             }
         }
 
+        for (i, message) in worker.failures() {
+            log::warn!("key {i}: {message}");
+            hub.publish(Event::ActionFailed { index: i, message });
+        }
+
         let Some(d) = &deck else {
             if last_scan.is_none_or(|t| t.elapsed() >= SCAN_INTERVAL) {
                 last_scan = Some(Instant::now());
@@ -252,6 +260,11 @@ fn run() -> Result<()> {
                                 Action::Page { page } if cfg.has_page(page) => Ok(nav.go(Some(page))),
                                 Action::Page { page } => Err(anyhow::anyhow!("there's no page named “{page}”")),
                                 Action::Back => Ok(nav.back()),
+                                // hyprctl waits for Hyprland's answer; the deck shouldn't.
+                                a @ Action::Hyprland { .. } => {
+                                    worker.run(i, a.clone());
+                                    Ok(false)
+                                }
                                 a => action::run(a).map(|_| false),
                             };
                             match moved {

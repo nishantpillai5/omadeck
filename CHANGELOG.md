@@ -6,6 +6,16 @@ All notable changes to omadeck are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+- A stalled Hyprland could freeze the deck: Hyprland actions waited on `hyprctl` with no time
+  limit, on the same loop that reads the keys. They now run in order on their own thread, and
+  `hyprctl` gets two seconds to answer. Thanks to
+  [@nishantpillai5](https://github.com/nishantpillai5) for spotting this.
+- A configurator window that stopped reading could hold up the deck, and once dropped it was
+  never told, so it stayed silently disconnected. Each window now has its own writer; one that
+  falls far behind is disconnected cleanly and reconnects. Also spotted by
+  [@nishantpillai5](https://github.com/nishantpillai5).
+
 ## [0.2.0] - 2026-10-18
 
 ### Added
