@@ -266,7 +266,10 @@ pub struct Renderer {
 }
 
 /// The bundled test font: a JetBrains Mono Bold subset (OFL, printable ASCII plus `–`
-/// and `…`), for [`Renderer::with_font_bytes`]. Draw `"A"` where a test needs a glyph.
+/// and `…`), for [`Renderer::with_font_bytes`]. It also carries the Nerd Font glyphs the
+/// renderer draws (the `*_GLYPH` constants), in a format 12 cmap, so glyph rendering is
+/// self-contained and never falls back to the machine's fonts (`load_font_with`). Draw
+/// `"A"` where a test needs a plain glyph. Regenerate with `scripts/make-test-font.py`.
 #[cfg(any(test, feature = "test-support"))]
 pub const TEST_FONT: &[u8] = include_bytes!("../tests/fixtures/test-font.ttf");
 
