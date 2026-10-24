@@ -14,7 +14,7 @@ use image::Rgba;
 pub use image::RgbaImage;
 use image::imageops::{self, FilterType};
 
-use crate::config::{AudioDevice, Config, DialConfig, KeyConfig, LevelSource, Live, Style};
+use crate::config::{Action, AudioDevice, Config, DialConfig, KeyConfig, LevelSource, Live, Style};
 use crate::paths::{self, FileStamp};
 use crate::theme::{Rgb, Theme};
 
@@ -208,6 +208,15 @@ const BATTERY_GLYPH: &str = "f0079"; // battery
 const CHARGING_GLYPH: &str = "f0084"; // battery-charging
 const WORKSPACE_GLYPH: &str = "f056e";
 const COMMAND_GLYPH: &str = "f018d"; // console
+const WEB_GLYPH: &str = "f059f"; // md-web
+const SOUND_GLYPH: &str = "f0387"; // md-music_note
+const MULTI_GLYPH: &str = "f0493"; // md-cog
+const CHEVRON_LEFT_GLYPH: &str = "f0141"; // md-chevron_left
+const CHEVRON_RIGHT_GLYPH: &str = "f0142"; // md-chevron_right
+/// The box a per-action slot icon is drawn into on a multi-action dial panel.
+const SLOT_ICON_PX: u32 = 32;
+/// The gap between slot icons on a multi-action dial panel.
+const SLOT_GAP_PX: u32 = 20;
 
 /// The glyph a volume dial's `$B1` panel shows when it has no icon: the mute glyph when
 /// muted, else the dial's own glyph, else a speaker (output) or a microphone (input).
@@ -724,21 +733,78 @@ impl Renderer {
             return img;
         }
 
-        let icon = match (face.icon, face.glyph.filter(|g| !g.trim().is_empty())) {
-            (Some(p), _) => self.icon(&paths::resolve(p), STRIP_ICON_PX),
-            (None, Some(g)) => self.glyph(g, (STRIP_ICON_PX as f32 * 0.86) as u32, glyph_color),
-            _ => None,
-        };
-        if let Some(icon) = icon {
-            let (x0, y0, w, h) = X1_ICON;
-            let x = x0 + (w - icon.width()) / 2;
-            let y = y0 + (h - icon.height()) / 2;
-            imageops::overlay(&mut img, &icon, x as i64, y as i64);
+        // A dial with two or more actions shows one small icon per gesture — turn
+        // left, turn right, then a press (or its long press) — as Elgato's dial panel
+        // does, so the strip says what each turn will do. One action keeps the big
+        // face icon.
+        let slots: Vec<&Action> = dial
+            .map(|d| {
+                let press = if d.press.is_none() { &d.long_press } else { &d.press };
+                [&d.turn_left, &d.turn_right, press].into_iter().filter(|a| !a.is_none()).collect()
+            })
+            .unwrap_or_default();
+        if slots.len() >= 2 {
+            let icons: Vec<RgbaImage> = slots.iter().filter_map(|a| self.action_icon(a, glyph_color)).collect();
+            let total = icons.len() as u32 * SLOT_ICON_PX + icons.len().saturating_sub(1) as u32 * SLOT_GAP_PX;
+            let mut x = PANEL_W.saturating_sub(total) / 2;
+            for icon in icons {
+                let cx = x + (SLOT_ICON_PX - icon.width()) / 2;
+                let cy = 48 + (SLOT_ICON_PX - icon.height()) / 2;
+                imageops::overlay(&mut img, &icon, cx as i64, cy as i64);
+                x += SLOT_ICON_PX + SLOT_GAP_PX;
+            }
+        } else {
+            let icon = match (face.icon, face.glyph.filter(|g| !g.trim().is_empty())) {
+                (Some(p), _) => self.icon(&paths::resolve(p), STRIP_ICON_PX),
+                (None, Some(g)) => self.glyph(g, (STRIP_ICON_PX as f32 * 0.86) as u32, glyph_color),
+                _ => None,
+            };
+            if let Some(icon) = icon {
+                let (x0, y0, w, h) = X1_ICON;
+                let x = x0 + (w - icon.width()) / 2;
+                let y = y0 + (h - icon.height()) / 2;
+                imageops::overlay(&mut img, &icon, x as i64, y as i64);
+            }
         }
         if want_label {
             self.draw_text_in(&mut img, X1_TITLE, STRIP_TITLE_PX, Align::Left, face.label, title, true);
         }
         img
+    }
+
+    /// The small icon a dial slot shows on a multi-action panel: what the action does.
+    /// An `App` (or named app volume) action resolves the app's own icon from its
+    /// command; every other kind gets a glyph for what it does.
+    fn action_icon(&mut self, action: &Action, color: Rgb) -> Option<RgbaImage> {
+        let size = (SLOT_ICON_PX as f32 * 0.9) as u32;
+        match action {
+            // An app (or a named app volume) shows the app's own icon, resolved from
+            // the command, else a generic application glyph.
+            Action::App { command } | Action::AppVolume { app: command, focused: false, .. } if !command.is_empty() => {
+                if let Some(p) = crate::audio::app_icon_for_command(command).and_then(|p| self.icon(&p, SLOT_ICON_PX)) {
+                    return Some(p);
+                }
+                self.glyph(APP_GLYPH, size, color)
+            }
+            Action::Volume { device, .. } => {
+                self.glyph(if device.is_output() { OUTPUT_GLYPH } else { INPUT_GLYPH }, size, color)
+            }
+            Action::Media { .. } => self.glyph(PLAY_GLYPH, size, color),
+            Action::Brightness { .. } => self.glyph(BRIGHTNESS_GLYPH, size, color),
+            Action::Hyprland { .. } => self.glyph(WORKSPACE_GLYPH, size, color),
+            Action::Url { .. } => self.glyph(WEB_GLYPH, size, color),
+            Action::Script { .. } => self.glyph(COMMAND_GLYPH, size, color),
+            Action::Sound { .. } => self.glyph(SOUND_GLYPH, size, color),
+            Action::Page { .. } => self.glyph(CHEVRON_RIGHT_GLYPH, size, color),
+            Action::PageStep { change } => {
+                self.glyph(if *change >= 0 { CHEVRON_RIGHT_GLYPH } else { CHEVRON_LEFT_GLYPH }, size, color)
+            }
+            Action::Back => self.glyph(CHEVRON_LEFT_GLYPH, size, color),
+            Action::Multi { .. } => self.glyph(MULTI_GLYPH, size, color),
+            // A blank app command, a focused (unresolvable) app volume, a delay or
+            // nothing: no icon.
+            Action::AppVolume { .. } | Action::App { .. } | Action::Delay { .. } | Action::None => None,
+        }
     }
 
     /// The icon for a volume dial's `$B1` panel: the user's icon if set, else
@@ -1521,6 +1587,37 @@ mod tests {
         let leftmost =
             (0..200u32).find(|x| (0..100).any(|y| img.get_pixel(*x, y)[0] > 120 && in_rect(*x, y, title))).unwrap();
         assert!((14..20).contains(&leftmost), "title starts at x = {leftmost}");
+    }
+
+    #[test]
+    fn strip_panel_multi_action_dial_shows_one_icon_per_slot() {
+        let mut r = renderer_with_font();
+        let style = test_style();
+        // Two actions: a globe (url) and a workspace (hyprland).
+        let mut cfg = Config { style: style.clone(), ..Default::default() };
+        cfg.dials.push(DialConfig {
+            label: "Browsers".into(),
+            turn_left: Action::Url { url: "https://example.org".into() },
+            turn_right: Action::Hyprland { dispatch: "workspace 2".into() },
+            ..DialConfig::new(0)
+        });
+        let multi = r.render_strip_panel(&cfg, 0, 4, DialStatus::default());
+        // One action: the same dial without a turn keeps the single big face icon.
+        let mut one = Config { style, ..Default::default() };
+        one.dials.push(DialConfig {
+            label: "Browsers".into(),
+            turn_right: Action::Hyprland { dispatch: "workspace 2".into() },
+            ..DialConfig::new(0)
+        });
+        let single = r.render_strip_panel(&one, 0, 4, DialStatus::default());
+        assert_ne!(*multi, *single, "two actions must not render like one");
+        // The row band (below the title, above the panel foot) carries two separate
+        // icon clusters with a clear gap between them.
+        let band = (40..88u32).any(|y| (0..PANEL_W).any(|x| multi.get_pixel(x, y)[0] > 120));
+        assert!(band, "no ink in the slot row");
+        let cols: Vec<bool> = (0..PANEL_W).map(|x| (40..88u32).any(|y| multi.get_pixel(x, y)[0] > 120)).collect();
+        let clusters = cols.windows(2).filter(|w| !w[0] && w[1]).count();
+        assert!(clusters >= 2, "expected two icon clusters, got {clusters}");
     }
 
     #[test]

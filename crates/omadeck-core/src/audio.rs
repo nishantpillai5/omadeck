@@ -433,6 +433,52 @@ pub fn app_icon(names: &[String]) -> Option<PathBuf> {
     found
 }
 
+/// Icon-name candidates from an `App` action's command line, most specific first: the
+/// last single-quoted token (`omarchy launch or focus chrome 'google-chrome'` →
+/// `google-chrome`), the last double-quoted one, the last bare token, then the command
+/// itself. Each is trimmed to its basename, a `.desktop` suffix dropped, and offered as
+/// written and lowercased.
+pub fn command_icon_names(command: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let push = |s: &str, out: &mut Vec<String>| {
+        let t = s.trim().trim_matches(|c| c == '\'' || c == '"');
+        let t = t.rsplit('/').next().unwrap_or("");
+        let t = t.strip_suffix(".desktop").unwrap_or(t).trim();
+        if t.is_empty() {
+            return;
+        }
+        for cand in [t, &t.to_lowercase()] {
+            if !out.iter().any(|e| e.eq_ignore_ascii_case(cand)) {
+                out.push(cand.to_string());
+            }
+        }
+    };
+    let quoted = |q: char, s: &str| -> Option<String> {
+        let end = s.rfind(q)?;
+        let start = s[..end].rfind(q)?;
+        Some(s[start + 1..end].to_string())
+    };
+    if let Some(t) = quoted('\'', command) {
+        push(&t, &mut out);
+    }
+    if let Some(t) = quoted('"', command) {
+        push(&t, &mut out);
+    }
+    if let Some(t) = command.split_whitespace().last() {
+        push(t, &mut out);
+    }
+    push(command, &mut out);
+    out
+}
+
+/// The app icon an `App` action's command points at: [`command_icon_names`] looked up
+/// like [`app_icon`] (icon theme, then each name's desktop entry `Icon=`). Misses are
+/// cached too, so a panel render costs one probe at most.
+pub fn app_icon_for_command(command: &str) -> Option<PathBuf> {
+    let names = command_icon_names(command);
+    (!names.is_empty()).then(|| app_icon(&names)).flatten()
+}
+
 /// The `wpctl` runs that apply an app volume change to its streams `ids`, in order. A
 /// change is relative per stream (tabs keep their balance) and capped at 100%; a mute
 /// sets one state for all (`mute_to`, which the caller picks). Nothing to do: none.
