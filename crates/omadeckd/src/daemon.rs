@@ -839,6 +839,16 @@ impl Daemon {
                 let held = self.deck.as_mut().and_then(|d| d.back_held.take_if(|h| h.key == i));
                 if held.is_some() {
                     let _ = self.press_key(i); // a tap: Back, through the normal press path
+                } else {
+                    // A release action (push-to-talk), if the key has one.
+                    let page = self.nav.current().map(str::to_string);
+                    if let Some(act) = self.cfg.key(page.as_deref(), i)
+                        .and_then(|k| k.release.as_ref())
+                        .filter(|a| !a.is_none())
+                        .cloned()
+                    {
+                        let _ = self.try_input(Source::Key(i), &act, 1);
+                    }
                 }
             }
             DeviceStateUpdate::EncoderTwist(i, delta) => {
