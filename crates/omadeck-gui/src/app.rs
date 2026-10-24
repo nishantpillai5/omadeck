@@ -105,10 +105,11 @@ impl ActionTarget {
     /// `Direction` has none.
     pub fn dial_slot(&self) -> Option<(u8, Direction)> {
         match self {
-            ActionTarget::Key(_) | ActionTarget::KeyOn(_) | ActionTarget::KeyRelease(_)
-            | ActionTarget::DialLongPress(_) | ActionTarget::Step(..) => {
-                None
-            }
+            ActionTarget::Key(_)
+            | ActionTarget::KeyOn(_)
+            | ActionTarget::KeyRelease(_)
+            | ActionTarget::DialLongPress(_)
+            | ActionTarget::Step(..) => None,
             ActionTarget::DialTurnLeft(i) => Some((*i, Direction::Left)),
             ActionTarget::DialTurnRight(i) => Some((*i, Direction::Right)),
             ActionTarget::DialPress(i) => Some((*i, Direction::Press)),
@@ -1145,7 +1146,7 @@ impl App {
             }),
             ActionTarget::KeyRelease(k) => {
                 cfg.page(k.page()).map(|keys| keys.get(k.index).and_then(|kc| kc.release.clone()).unwrap_or_default())
-            },
+            }
             ActionTarget::DialTurnLeft(i) => Some(dial_action(&cfg, *i, Direction::Left)),
             ActionTarget::DialTurnRight(i) => Some(dial_action(&cfg, *i, Direction::Right)),
             ActionTarget::DialPress(i) => Some(dial_action(&cfg, *i, Direction::Press)),

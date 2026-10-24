@@ -8,7 +8,6 @@ use std::sync::OnceLock;
 use std::thread;
 use std::time::Duration;
 
-
 use anyhow::{Context, Result, bail};
 
 use crate::audio;

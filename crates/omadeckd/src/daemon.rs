@@ -842,7 +842,9 @@ impl Daemon {
                 } else {
                     // A release action (push-to-talk), if the key has one.
                     let page = self.nav.current().map(str::to_string);
-                    if let Some(act) = self.cfg.key(page.as_deref(), i)
+                    if let Some(act) = self
+                        .cfg
+                        .key(page.as_deref(), i)
                         .and_then(|k| k.release.as_ref())
                         .filter(|a| !a.is_none())
                         .cloned()
