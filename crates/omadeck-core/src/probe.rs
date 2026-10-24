@@ -405,7 +405,7 @@ pub fn watched_probes(cfg: &Config, page: Option<&str>, n_dials: usize, n_keys: 
         }
     };
     for i in 0..n_dials {
-        let dial = cfg.dial(i as u8);
+        let dial = cfg.dial(page, i as u8);
         match dial.and_then(DialConfig::level_source) {
             Some(LevelSource::Volume(dev)) => add(Probe::Volume(dev)),
             Some(LevelSource::App) => {
@@ -643,6 +643,32 @@ change = 5
         // The other page watches its own keys, not the home page's.
         assert_eq!(watched_probes(&cfg, Some("Other"), 4, 32), vec![Probe::Volume(AudioDevice::Output), cmd("false")]);
         assert_eq!(watched_probes(&cfg, Some("Other"), 0, 32), vec![cmd("false")], "no dials, no dial probes");
+    }
+
+    #[test]
+    fn watched_probes_follow_the_pages_own_dials() {
+        let cfg = Config::parse(
+            r#"
+[[dial]]
+index = 0
+[dial.turn_right]
+type = "volume"
+change = 5
+
+[[page]]
+name = "Media"
+[[page.dial]]
+index = 0
+[page.dial.press]
+type = "brightness"
+change = 5
+"#,
+        )
+        .unwrap();
+        // Home watches the volume dial; the Media page watches no volume (its dial is
+        // brightness, which needs no probe).
+        assert_eq!(watched_probes(&cfg, None, 4, 32), vec![Probe::Volume(AudioDevice::Output)]);
+        assert_eq!(watched_probes(&cfg, Some("Media"), 4, 32), vec![]);
     }
 
     #[test]

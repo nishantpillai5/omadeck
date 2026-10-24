@@ -7,6 +7,12 @@ All notable changes to omadeck are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- Dials are part of pages, as the keys are: `[[page.dial]]` tables give a page its own
+  touch strip. A page with any dials owns the whole strip (its dials show, the rest of the
+  panels go blank); a page with none shows the home page's dials, so existing pages keep
+  their volume and friends. Turning or pressing a dial runs the current page's dial, and
+  switching pages or folders repaints the strip. The configurator edits and previews the
+  page you have selected.
 - Stream Deck +: press and hold a dial's panel on the touch strip to run its
   `long_press` action (Elgato's "long touch"). The configurator's dial editor has a
   **Long press on the strip** group.

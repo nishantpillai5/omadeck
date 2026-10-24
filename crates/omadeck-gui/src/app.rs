@@ -47,8 +47,8 @@ fn back_key() -> KeyConfig {
 }
 
 /// The action in dial `i`'s slot `dir` (`None` for a dial that isn't configured).
-fn dial_action(cfg: &Config, i: u8, dir: Direction) -> Action {
-    cfg.dial(i).map(|d| d.action(dir).clone()).unwrap_or_default()
+fn dial_action(cfg: &Config, page: Option<&str>, i: u8, dir: Direction) -> Action {
+    cfg.dial(page, i).map(|d| d.action(dir).clone()).unwrap_or_default()
 }
 
 /// A key on a particular page. Work that finishes later (fetching an icon, a picker)
@@ -899,10 +899,15 @@ impl App {
                     }
                     DialStatus { pressed: false, panel }
                 }
-                None => probe::dial_status(cfg.dial(i), &values, false),
+                None => probe::dial_status(cfg.dial(self.current_page().as_deref(), i), &values, false),
             })
             .collect();
-        let img = self.renderer.borrow_mut().render_strip(&cfg, &status, (width as u32, width as u32 * h / w));
+        let img = self.renderer.borrow_mut().render_strip(
+            &cfg,
+            self.current_page().as_deref(),
+            &status,
+            (width as u32, width as u32 * h / w),
+        );
         self.strip.set_paintable(Some(&media::texture(img)));
     }
 
@@ -925,10 +930,13 @@ impl App {
         let dials = self.dials.borrow();
         let Some((button, label)) = dials.get(i as usize) else { return };
         let cfg = self.config.borrow();
-        let name =
-            cfg.dial(i).map(|d| d.label.clone()).filter(|l| !l.is_empty()).unwrap_or_else(|| format!("Dial {}", i + 1));
+        let name = cfg
+            .dial(self.current_page().as_deref(), i)
+            .map(|d| d.label.clone())
+            .filter(|l| !l.is_empty())
+            .unwrap_or_else(|| format!("Dial {}", i + 1));
         label.set_text(&name);
-        let tip = match cfg.dial(i).filter(|d| !d.is_blank()) {
+        let tip = match cfg.dial(self.current_page().as_deref(), i).filter(|d| !d.is_blank()) {
             Some(d) if !d.long_press.is_none() => {
                 format!("{} — press: {} · hold: {}", name, d.press.summary(), d.long_press.summary())
             }
@@ -1126,7 +1134,7 @@ impl App {
         if self.locked.borrow().is_some() {
             return;
         }
-        f(self.config.borrow_mut().dial_mut(i));
+        f(self.config.borrow_mut().dial_mut(self.current_page().as_deref(), i));
         self.refresh_dial(i);
         self.refresh_strip();
         self.schedule_save();
@@ -1135,6 +1143,8 @@ impl App {
     /// The action `at` names; `None` if its page has gone.
     pub fn action_at(&self, at: &ActionTarget) -> Option<Action> {
         let cfg = self.config.borrow();
+        let page = self.current_page();
+        let page = page.as_deref();
         // One arm per target, no wildcard: a new `ActionTarget` variant doesn't compile
         // until it is handled here.
         match at {
@@ -1147,10 +1157,12 @@ impl App {
             ActionTarget::KeyRelease(k) => {
                 cfg.page(k.page()).map(|keys| keys.get(k.index).and_then(|kc| kc.release.clone()).unwrap_or_default())
             }
-            ActionTarget::DialTurnLeft(i) => Some(dial_action(&cfg, *i, Direction::Left)),
-            ActionTarget::DialTurnRight(i) => Some(dial_action(&cfg, *i, Direction::Right)),
-            ActionTarget::DialPress(i) => Some(dial_action(&cfg, *i, Direction::Press)),
-            ActionTarget::DialLongPress(i) => Some(cfg.dial(*i).map(|d| d.long_press.clone()).unwrap_or_default()),
+            ActionTarget::DialTurnLeft(i) => Some(dial_action(&cfg, page, *i, Direction::Left)),
+            ActionTarget::DialTurnRight(i) => Some(dial_action(&cfg, page, *i, Direction::Right)),
+            ActionTarget::DialPress(i) => Some(dial_action(&cfg, page, *i, Direction::Press)),
+            ActionTarget::DialLongPress(i) => {
+                Some(cfg.dial(page, *i).map(|d| d.long_press.clone()).unwrap_or_default())
+            }
             // A step that isn't there (removed, or the parent is no longer a multi) reads
             // as Nothing.
             ActionTarget::Step(of, n) => Some(match self.action_at(of)? {
@@ -1216,7 +1228,7 @@ impl App {
     }
 
     pub fn clear_dial(self: &Rc<Self>, i: u8) {
-        self.config.borrow_mut().clear_dial(i);
+        self.config.borrow_mut().clear_dial(self.current_page().as_deref(), i);
         self.refresh_dial(i);
         self.refresh_strip();
         self.schedule_save();
@@ -1382,8 +1394,11 @@ impl App {
         *self.page.borrow_mut() = page.clone();
         if changed {
             self.sync_page_list();
-            // Keys are per page, so a key's editor closes; dials aren't, so theirs stays.
-            if matches!(self.selected.get(), Some(Selection::Key(_))) {
+            // Keys and dials are both per page: a key's editor closes, and a dial's
+            // editor rebuilds for the page's own dial at that index.
+            if let Some(Selection::Dial(i)) = self.selected.get() {
+                self.select(Some(Selection::Dial(i)));
+            } else if matches!(self.selected.get(), Some(Selection::Key(_))) {
                 self.select(None);
             }
             self.refresh_all();

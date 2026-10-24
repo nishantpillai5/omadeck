@@ -363,11 +363,11 @@ fn run_multi_here(steps: &[Action]) -> bool {
 /// Turn or press dial `index` here, with no daemon.
 fn dial_locally(index: u8, dir: Direction, steps: u8) -> i32 {
     let cfg = load_config();
-    let mut act = cfg.dial(index).map(|d| d.action(dir).clone()).unwrap_or_default();
+    let mut act = cfg.dial(None, index).map(|d| d.action(dir).clone()).unwrap_or_default();
     // A media action with no player follows the dial's panel, as in the daemon
     // (`probe::media_target`; nothing is watched here, so it goes to that player as named).
     if let Action::Media { player, .. } = &mut act {
-        let wanted = probe::media_wanted(player.as_deref(), cfg.dial(index)).map(str::to_string);
+        let wanted = probe::media_wanted(player.as_deref(), cfg.dial(None, index)).map(str::to_string);
         *player = wanted;
     }
     let which = match dir {
@@ -439,8 +439,8 @@ fn snapshot(out: &Path, page: Option<&str>) -> Result<()> {
         // Brightness dials show the brightness the deck runs at; volume dials show a dash,
         // as their level is live and only the running daemon reads it.
         let values = Values { brightness: State::load().start_brightness(cfg.brightness), ..Values::default() };
-        let status: Vec<_> = (0..info.dials).map(|i| probe::dial_status(cfg.dial(i), &values, false)).collect();
-        let strip = renderer.render_strip(&cfg, &status, (w, w * sh / sw));
+        let status: Vec<_> = (0..info.dials).map(|i| probe::dial_status(cfg.dial(page, i), &values, false)).collect();
+        let strip = renderer.render_strip(&cfg, page, &status, (w, w * sh / sw));
         image::imageops::overlay(&mut canvas, &strip, 0, y as i64);
         y += strip_h;
     }
@@ -448,7 +448,7 @@ fn snapshot(out: &Path, page: Option<&str>) -> Result<()> {
         for i in 0..info.dials {
             // The panel's average colour (the backdrop's tone), so a background image
             // tints the knob instead of a corner pixel deciding.
-            let tone = renderer.panel_backdrop(&cfg, i, info.dials as u32).tone;
+            let tone = renderer.panel_backdrop(&cfg, page, i, info.dials as u32).tone;
             let col = image::Rgba([tone.0, tone.1, tone.2, 255]);
             let cx = gap + (i as u32) * (size + gap) + size / 2;
             draw_circle(&mut canvas, cx, y + dial_r, dial_r, col);

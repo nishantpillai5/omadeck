@@ -92,7 +92,13 @@ mod tests {
     fn cfg(pages: &[&str]) -> Config {
         let pages = pages
             .iter()
-            .map(|n| Page { name: n.to_string(), keys: Keys::default(), folder: false, apps: Vec::new() })
+            .map(|n| Page {
+                name: n.to_string(),
+                keys: Keys::default(),
+                dials: Vec::new(),
+                folder: false,
+                apps: Vec::new(),
+            })
             .collect();
         Config { pages, ..Config::default() }
     }

@@ -450,7 +450,8 @@ fn appearance_rows(app: &Rc<App>, group: &adw::PreferencesGroup, i: u8, tab: Fac
 }
 
 pub fn build_dial(app: &Rc<App>, i: u8) -> gtk::Widget {
-    let dial = app.config.borrow().dial(i).cloned().unwrap_or_else(|| DialConfig::new(i));
+    let dial =
+        app.config.borrow().dial(app.current_page().as_deref(), i).cloned().unwrap_or_else(|| DialConfig::new(i));
     let page = adw::PreferencesPage::new();
 
     // --- dial -----------------------------------------------------------------------------
@@ -863,7 +864,8 @@ impl ActionSlot {
                 a.set_action_at(at, Action::App { command });
             }),
             on_new_page: Rc::new(move |a| {
-                let label = a.config.borrow().dial(i).map(|d| d.label.clone()).unwrap_or_default();
+                let label =
+                    a.config.borrow().dial(a.current_page().as_deref(), i).map(|d| d.label.clone()).unwrap_or_default();
                 a.add_page(if label.trim().is_empty() { "Page" } else { label.as_str() }, true)
             }),
             on_favicon: None,
@@ -1711,7 +1713,11 @@ fn action_rows(app: &Rc<App>, group: &adw::PreferencesGroup, slot: &ActionSlot) 
                         // A dial with no label is named after the app; key labels are
                         // left alone.
                         if let Some((i, _)) = at.dial_slot() {
-                            let unlabelled = a2.config.borrow().dial(i).is_none_or(|d| d.label.trim().is_empty());
+                            let unlabelled = a2
+                                .config
+                                .borrow()
+                                .dial(a2.current_page().as_deref(), i)
+                                .is_none_or(|d| d.label.trim().is_empty());
                             if unlabelled {
                                 a2.edit_dial(i, |d| d.label = name.clone());
                             }

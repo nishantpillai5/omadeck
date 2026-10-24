@@ -68,6 +68,10 @@ pub struct Page {
     pub name: String,
     #[serde(default, rename = "key", skip_serializing_if = "Keys::is_empty")]
     pub keys: Keys,
+    /// The dials this page shows on the touch strip. A page with any dials owns the
+    /// whole strip; a page with none shows the home page's dials.
+    #[serde(default, rename = "dial", skip_serializing_if = "Vec::is_empty")]
+    pub dials: Vec<DialConfig>,
     /// Skipped by flicks and `page_step`.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub folder: bool,
@@ -1414,6 +1418,10 @@ impl Config {
         }
         clean.dials.retain(|d| !d.is_blank());
         clean.dials.sort_by_key(|d| d.index);
+        for p in &mut clean.pages {
+            p.dials.retain(|d| !d.is_blank());
+            p.dials.sort_by_key(|d| d.index);
+        }
         let body = format!(
             "# omadeck configuration - edit by hand or with the `omadeck` app.\n\n{}",
             toml::to_string_pretty(&clean)?
@@ -1511,7 +1519,13 @@ impl Config {
     /// **+** makes normal pages, "New page" on an Open-page action makes folders.
     pub fn add_page(&mut self, base: &str, folder: bool, first: KeyConfig) -> String {
         let name = self.unique_page_name(base);
-        self.pages.push(Page { name: name.clone(), keys: Keys(vec![first]), folder, apps: Vec::new() });
+        self.pages.push(Page {
+            name: name.clone(),
+            keys: Keys(vec![first]),
+            dials: Vec::new(),
+            folder,
+            apps: Vec::new(),
+        });
         name
     }
 
@@ -1572,7 +1586,8 @@ impl Config {
     /// `DialConfig::actions`, so a new place an action can live is added there once.
     pub fn all_actions(&self) -> Vec<&Action> {
         let keys = self.keys.iter().chain(self.pages.iter().flat_map(|p| p.keys.iter()));
-        keys.flat_map(KeyConfig::actions).chain(self.dials.iter().flat_map(DialConfig::actions)).collect()
+        let dials = self.dials.iter().chain(self.pages.iter().flat_map(|p| p.dials.iter()));
+        keys.flat_map(KeyConfig::actions).chain(dials.flat_map(DialConfig::actions)).collect()
     }
 
     /// `all_actions`, mutably: `f` sees each one in the same order.
@@ -1580,7 +1595,7 @@ impl Config {
         for k in self.keys.0.iter_mut().chain(self.pages.iter_mut().flat_map(|p| p.keys.0.iter_mut())) {
             k.actions_mut(f);
         }
-        for d in &mut self.dials {
+        for d in self.dials.iter_mut().chain(self.pages.iter_mut().flat_map(|p| p.dials.iter_mut())) {
             d.actions_mut(f);
         }
     }
@@ -1622,11 +1637,16 @@ impl Config {
                 unlink(&mut face.action, name, Link::Key { page: at, index: k.index, on: true }, &mut links);
             }
         }
-        for d in &mut self.dials {
+        for (at, d) in self
+            .dials
+            .iter_mut()
+            .map(|d| (None, d))
+            .chain(self.pages.iter_mut().flat_map(|p| p.dials.iter_mut().map(|d| (Some(p.name.clone()), d))))
+        {
             let index = d.index;
             let slots = [&mut d.turn_left, &mut d.turn_right, &mut d.press, &mut d.long_press];
             for (slot, a) in slots.into_iter().enumerate() {
-                unlink(a, name, Link::Dial { index, slot: slot as u8 }, &mut links);
+                unlink(a, name, Link::Dial { page: at.clone(), index, slot: slot as u8 }, &mut links);
             }
         }
         Some(RemovedPage { pos, page, links })
@@ -1663,8 +1683,12 @@ impl Config {
                 let k = self.page_mut(page.as_deref())?.0.iter_mut().find(|k| k.index == *index)?;
                 if *on { k.on.as_mut().map(|face| &mut face.action) } else { Some(&mut k.action) }
             }
-            Link::Dial { index, slot } => {
-                let d = self.dials.iter_mut().find(|d| d.index == *index)?;
+            Link::Dial { page, index, slot } => {
+                let dials = match page.as_deref() {
+                    None => Some(&mut self.dials),
+                    Some(name) => self.pages.iter_mut().find(|p| p.name == name).map(|p| &mut p.dials),
+                }?;
+                let d = dials.iter_mut().find(|d| d.index == *index)?;
                 match slot {
                     0 => Some(&mut d.turn_left),
                     1 => Some(&mut d.turn_right),
@@ -1685,22 +1709,53 @@ impl Config {
                 .is_none_or(|keys| keys.iter().any(|k| matches!(k.action, Action::Back | Action::Page { .. })))
     }
 
-    pub fn dial(&self, index: u8) -> Option<&DialConfig> {
-        self.dials.iter().find(|d| d.index == index)
-    }
-
-    /// Get a dial for editing, creating it if needed.
-    pub fn dial_mut(&mut self, index: u8) -> &mut DialConfig {
-        if let Some(pos) = self.dials.iter().position(|d| d.index == index) {
-            &mut self.dials[pos]
-        } else {
-            self.dials.push(DialConfig::new(index));
-            self.dials.last_mut().unwrap()
+    /// The dials the strip shows on `page`: the page's own if it has any, else the home
+    /// page's. A page without dials keeps the strip it found (volume and friends stay).
+    pub fn dials(&self, page: Option<&str>) -> &[DialConfig] {
+        match page {
+            None => &self.dials,
+            Some(name) => self
+                .pages
+                .iter()
+                .find(|p| p.name == name)
+                .filter(|p| !p.dials.is_empty())
+                .map(|p| &p.dials)
+                .unwrap_or(&self.dials),
         }
     }
 
-    pub fn clear_dial(&mut self, index: u8) {
-        self.dials.retain(|d| d.index != index);
+    /// The dial at `index` on `page` (see [`Config::dials`]).
+    pub fn dial(&self, page: Option<&str>, index: u8) -> Option<&DialConfig> {
+        self.dials(page).iter().find(|d| d.index == index)
+    }
+
+    /// Get a dial on `page` for editing, creating it if needed. An unknown page edits
+    /// the home page's dials.
+    pub fn dial_mut(&mut self, page: Option<&str>, index: u8) -> &mut DialConfig {
+        let dials = match page {
+            None => &mut self.dials,
+            Some(name) => match self.pages.iter_mut().find(|p| p.name == name) {
+                Some(p) => &mut p.dials,
+                None => &mut self.dials,
+            },
+        };
+        if let Some(pos) = dials.iter().position(|d| d.index == index) {
+            &mut dials[pos]
+        } else {
+            dials.push(DialConfig::new(index));
+            dials.last_mut().unwrap()
+        }
+    }
+
+    pub fn clear_dial(&mut self, page: Option<&str>, index: u8) {
+        let dials = match page {
+            None => &mut self.dials,
+            Some(name) => match self.pages.iter_mut().find(|p| p.name == name) {
+                Some(p) => &mut p.dials,
+                None => &mut self.dials,
+            },
+        };
+        dials.retain(|d| d.index != index);
     }
 }
 
@@ -1718,8 +1773,9 @@ pub struct RemovedPage {
 enum Link {
     /// A key's action, or its on face's (`on`), on `page` (`None`: Home).
     Key { page: Option<String>, index: u8, on: bool },
-    /// A dial's turn left (0), turn right (1), press (2) or long press (3).
-    Dial { index: u8, slot: u8 },
+    /// A dial's turn left (0), turn right (1), press (2) or long press (3), on `page`
+    /// (`None`: Home).
+    Dial { page: Option<String>, index: u8, slot: u8 },
 }
 
 /// Clear `a` if it opens the page `name` (for a multi action, each step that does),
@@ -2043,11 +2099,18 @@ slow = true
         c.keys.get_mut(3).action = Action::Sound { file: "~/a.wav".into(), volume: Some(0.5) };
         c.keys.get_mut(4).action = Action::Script { path: "x.sh".into(), terminal: true };
         c.keys.get_mut(5).action = Action::Page { page: "Media".into() };
-        let mut media = Page { name: "Media".into(), keys: Keys::default(), folder: false, apps: Vec::new() };
+        let mut media =
+            Page { name: "Media".into(), keys: Keys::default(), dials: Vec::new(), folder: false, apps: Vec::new() };
         media.keys.get_mut(0).action = Action::Back;
         media.keys.get_mut(1).label = "Play".into();
         c.pages.push(media);
-        c.pages.push(Page { name: "Empty".into(), keys: Keys::default(), folder: false, apps: Vec::new() });
+        c.pages.push(Page {
+            name: "Empty".into(),
+            keys: Keys::default(),
+            dials: Vec::new(),
+            folder: false,
+            apps: Vec::new(),
+        });
         let s = toml::to_string_pretty(&c).unwrap();
         let back: Config = toml::from_str(&s).unwrap();
         assert_eq!(c, back);
@@ -2056,9 +2119,27 @@ slow = true
     #[test]
     fn step_page() {
         let mut c = Config::default();
-        c.pages.push(Page { name: "A".into(), keys: Keys::default(), folder: false, apps: Vec::new() });
-        c.pages.push(Page { name: "F".into(), keys: Keys::default(), folder: true, apps: Vec::new() });
-        c.pages.push(Page { name: "B".into(), keys: Keys::default(), folder: false, apps: Vec::new() });
+        c.pages.push(Page {
+            name: "A".into(),
+            keys: Keys::default(),
+            dials: Vec::new(),
+            folder: false,
+            apps: Vec::new(),
+        });
+        c.pages.push(Page {
+            name: "F".into(),
+            keys: Keys::default(),
+            dials: Vec::new(),
+            folder: true,
+            apps: Vec::new(),
+        });
+        c.pages.push(Page {
+            name: "B".into(),
+            keys: Keys::default(),
+            dials: Vec::new(),
+            folder: false,
+            apps: Vec::new(),
+        });
 
         // Home, A, B: folders are skipped.
         assert_eq!(c.step_page(None, 1), Some(Some("A".into())));
@@ -2076,7 +2157,13 @@ slow = true
         // Nothing to step through: Home only, or Home with only folders.
         assert_eq!(Config::default().step_page(None, 1), None);
         let only_folders = Config {
-            pages: vec![Page { name: "F".into(), keys: Keys::default(), folder: true, apps: Vec::new() }],
+            pages: vec![Page {
+                name: "F".into(),
+                keys: Keys::default(),
+                dials: Vec::new(),
+                folder: true,
+                apps: Vec::new(),
+            }],
             ..Config::default()
         };
         assert_eq!(only_folders.step_page(None, 1), None);
@@ -2116,9 +2203,90 @@ slow = true
     }
 
     #[test]
+    fn page_dials_override_home_and_absent_pages_inherit() {
+        let mut c = Config::default();
+        c.dial_mut(None, 0).label = "Volume".into();
+        c.dial_mut(None, 1).label = "Browser".into();
+        c.pages.push(Page {
+            name: "Media".into(),
+            keys: Keys::default(),
+            dials: vec![DialConfig { label: "Seek".into(), ..DialConfig::new(0) }],
+            folder: false,
+            apps: Vec::new(),
+        });
+        c.pages.push(Page {
+            name: "Empty".into(),
+            keys: Keys::default(),
+            dials: Vec::new(),
+            folder: false,
+            apps: Vec::new(),
+        });
+
+        // Home shows its own dials.
+        assert_eq!(c.dial(None, 0).unwrap().label, "Volume");
+        // A page with dials owns the strip: its dial 0, and no dial 1.
+        assert_eq!(c.dial(Some("Media"), 0).unwrap().label, "Seek");
+        assert!(c.dial(Some("Media"), 1).is_none());
+        // A page without dials shows the home dials.
+        assert_eq!(c.dial(Some("Empty"), 0).unwrap().label, "Volume");
+        assert_eq!(c.dial(Some("Empty"), 1).unwrap().label, "Browser");
+    }
+
+    #[test]
+    fn page_dials_toml_roundtrip() {
+        let toml = r#"
+[[dial]]
+index = 0
+label = "Volume"
+
+[[page]]
+name = "Media"
+
+[[page.dial]]
+index = 0
+label = "Seek"
+"#;
+        let c: Config = toml::from_str(toml).unwrap();
+        assert_eq!(c.dial(None, 0).unwrap().label, "Volume");
+        assert_eq!(c.dial(Some("Media"), 0).unwrap().label, "Seek");
+        let out = toml::to_string_pretty(&c).unwrap();
+        let back: Config = toml::from_str(&out).unwrap();
+        assert_eq!(back.dial(Some("Media"), 0).unwrap().label, "Seek");
+    }
+
+    #[test]
+    fn page_dial_mut_creates_on_the_page() {
+        let mut c = Config::default();
+        c.dial_mut(None, 0).label = "Home".into();
+        c.pages.push(Page {
+            name: "P".into(),
+            keys: Keys::default(),
+            dials: Vec::new(),
+            folder: false,
+            apps: Vec::new(),
+        });
+        c.dial_mut(Some("P"), 0).label = "Page dial".into();
+        assert_eq!(c.dial(None, 0).unwrap().label, "Home", "home dial untouched");
+        assert_eq!(c.dial(Some("P"), 0).unwrap().label, "Page dial");
+        assert_eq!(c.pages[0].dials.len(), 1);
+        // clear_dial on the page leaves home alone; a page left with no dials of its own
+        // inherits the home dials again.
+        c.clear_dial(Some("P"), 0);
+        assert!(c.pages[0].dials.is_empty());
+        assert_eq!(c.dial(Some("P"), 0).unwrap().label, "Home", "back to the home dials");
+        assert_eq!(c.dial(None, 0).unwrap().label, "Home");
+    }
+
+    #[test]
     fn pages() {
         let mut c = Config::default();
-        c.pages.push(Page { name: "Media".into(), keys: Keys::default(), folder: false, apps: Vec::new() });
+        c.pages.push(Page {
+            name: "Media".into(),
+            keys: Keys::default(),
+            dials: Vec::new(),
+            folder: false,
+            apps: Vec::new(),
+        });
         c.keys.get_mut(0).action = Action::Page { page: "Media".into() };
         c.page_mut(Some("Media")).unwrap().get_mut(2).action = Action::Page { page: "Media".into() };
         assert_eq!(c.links_to("Media"), 2);
@@ -2148,10 +2316,10 @@ slow = true
         c.dials.push(DialConfig { turn_left: Action::Page { page: "Media".into() }, ..DialConfig::new(1) });
         assert_eq!(c.links_to("Media"), 2);
         c.rename_page("Media", "Music");
-        assert_eq!(c.dial(0).unwrap().press, Action::Page { page: "Music".into() });
-        assert_eq!(c.dial(1).unwrap().turn_left, Action::Page { page: "Music".into() });
+        assert_eq!(c.dial(None, 0).unwrap().press, Action::Page { page: "Music".into() });
+        assert_eq!(c.dial(None, 1).unwrap().turn_left, Action::Page { page: "Music".into() });
         c.remove_page("Music");
-        assert_eq!(c.dial(0).unwrap().press, Action::None);
+        assert_eq!(c.dial(None, 0).unwrap().press, Action::None);
         assert_eq!(c.links_to("Music"), 0);
     }
 
@@ -2239,7 +2407,7 @@ slow = true
     #[test]
     fn multi_on_dial_press_roundtrip() {
         let mut c = Config::default();
-        c.dial_mut(2).press = Action::Multi { steps: meeting_steps() };
+        c.dial_mut(None, 2).press = Action::Multi { steps: meeting_steps() };
         let s = toml::to_string_pretty(&c).unwrap();
         assert!(s.contains("[[dial.press.steps]]"), "{s}");
         let back: Config = toml::from_str(&s).unwrap();
@@ -2349,13 +2517,19 @@ slow = true
     #[test]
     fn rename_page_follows_long_press() {
         let mut c = Config::default();
-        c.pages.push(Page { name: "A".into(), keys: Keys::default(), folder: false, apps: Vec::new() });
-        c.dial_mut(2).long_press = Action::Page { page: "A".into() };
+        c.pages.push(Page {
+            name: "A".into(),
+            keys: Keys::default(),
+            dials: Vec::new(),
+            folder: false,
+            apps: Vec::new(),
+        });
+        c.dial_mut(None, 2).long_press = Action::Page { page: "A".into() };
         c.rename_page("A", "B");
-        assert_eq!(c.dial(2).unwrap().long_press, Action::Page { page: "B".into() });
+        assert_eq!(c.dial(None, 2).unwrap().long_press, Action::Page { page: "B".into() });
         assert_eq!(c.links_to("B"), 1);
         c.remove_page("B");
-        assert_eq!(c.dial(2).unwrap().long_press, Action::None);
+        assert_eq!(c.dial(None, 2).unwrap().long_press, Action::None);
     }
 
     #[test]
@@ -2369,7 +2543,7 @@ slow = true
     #[test]
     fn app_volume_roundtrip() {
         let mut c = Config::default();
-        let d = c.dial_mut(1);
+        let d = c.dial_mut(None, 1);
         d.turn_right = Action::AppVolume { app: "spotify".into(), focused: false, change: 5, mute: false };
         d.press = Action::AppVolume { app: String::new(), focused: true, change: 0, mute: true };
         let s = toml::to_string_pretty(&c).unwrap();
@@ -2378,8 +2552,8 @@ slow = true
         assert!(!s.contains("focused = false"), "defaults are left out: {s}");
         assert!(!s.contains("change = 0"), "{s}");
         assert_eq!(toml::from_str::<Config>(&s).unwrap(), c);
-        assert_eq!(c.dial(1).unwrap().level_source(), Some(LevelSource::App));
-        assert_eq!(c.dial(1).unwrap().app_query(), Some(AppQuery::Named("spotify".into())));
+        assert_eq!(c.dial(None, 1).unwrap().level_source(), Some(LevelSource::App));
+        assert_eq!(c.dial(None, 1).unwrap().app_query(), Some(AppQuery::Named("spotify".into())));
     }
 
     #[test]
@@ -2494,6 +2668,7 @@ slow = true
         let page = |name: &str, folder: bool, apps: &[&str]| Page {
             name: name.into(),
             keys: Keys::default(),
+            dials: Vec::new(),
             folder,
             apps: apps.iter().map(|a| a.to_string()).collect(),
         };
@@ -2519,7 +2694,13 @@ slow = true
         let mut c = Config::default();
         c.keys.get_mut(4).label = "b".into();
         c.keys.get_mut(1).label = "a".into();
-        c.pages.push(Page { name: "P".into(), keys: Keys::default(), folder: false, apps: Vec::new() });
+        c.pages.push(Page {
+            name: "P".into(),
+            keys: Keys::default(),
+            dials: Vec::new(),
+            folder: false,
+            apps: Vec::new(),
+        });
         c.page_mut(Some("P")).unwrap().get_mut(3);
         c.save_to(&path).unwrap();
         let back = Config::load_from(&path).unwrap();
@@ -2532,7 +2713,13 @@ slow = true
     fn undo_page_delete() {
         let mut c = Config::default();
         for n in ["A", "B", "C"] {
-            c.pages.push(Page { name: n.into(), keys: Keys::default(), folder: false, apps: Vec::new() });
+            c.pages.push(Page {
+                name: n.into(),
+                keys: Keys::default(),
+                dials: Vec::new(),
+                folder: false,
+                apps: Vec::new(),
+            });
         }
         c.keys.get_mut(0).action = Action::Page { page: "B".into() };
         c.page_mut(Some("A")).unwrap().get_mut(2).action = Action::Page { page: "B".into() };
@@ -2557,14 +2744,14 @@ slow = true
     #[test]
     fn undo_page_delete_relinks_dials() {
         let mut c = Config::parse("[[page]]\nname = \"B\"\n").unwrap();
-        c.dial_mut(1).press = Action::Page { page: "B".into() };
-        c.dial_mut(2).turn_right = Action::Page { page: "B".into() };
+        c.dial_mut(None, 1).press = Action::Page { page: "B".into() };
+        c.dial_mut(None, 2).turn_right = Action::Page { page: "B".into() };
         let removed = c.remove_page("B").unwrap();
         assert_eq!(c.links_to("B"), 0);
-        c.dial_mut(2).turn_right = Action::Back;
+        c.dial_mut(None, 2).turn_right = Action::Back;
         assert!(c.restore_page(removed));
-        assert_eq!(c.dial(1).unwrap().press, Action::Page { page: "B".into() }, "re-linked");
-        assert_eq!(c.dial(2).unwrap().turn_right, Action::Back, "given another job since: left alone");
+        assert_eq!(c.dial(None, 1).unwrap().press, Action::Page { page: "B".into() }, "re-linked");
+        assert_eq!(c.dial(None, 2).unwrap().turn_right, Action::Back, "given another job since: left alone");
     }
 
     #[test]
@@ -2591,17 +2778,23 @@ slow = true
     #[test]
     fn undo_page_delete_relinks_long_press() {
         let mut c = Config::parse("[[page]]\nname = \"B\"\n").unwrap();
-        c.dial_mut(0).long_press = Action::Page { page: "B".into() };
+        c.dial_mut(None, 0).long_press = Action::Page { page: "B".into() };
         let removed = c.remove_page("B").unwrap();
-        assert_eq!(c.dial(0).unwrap().long_press, Action::None);
+        assert_eq!(c.dial(None, 0).unwrap().long_press, Action::None);
         assert!(c.restore_page(removed));
-        assert_eq!(c.dial(0).unwrap().long_press, Action::Page { page: "B".into() });
+        assert_eq!(c.dial(None, 0).unwrap().long_press, Action::Page { page: "B".into() });
     }
 
     #[test]
     fn way_out() {
         let mut c = Config::default();
-        c.pages.push(Page { name: "P".into(), keys: Keys::default(), folder: false, apps: Vec::new() });
+        c.pages.push(Page {
+            name: "P".into(),
+            keys: Keys::default(),
+            dials: Vec::new(),
+            folder: false,
+            apps: Vec::new(),
+        });
         assert!(c.has_way_out(None));
         assert!(!c.has_way_out(Some("P")));
         c.page_mut(Some("P")).unwrap().get_mut(3).action = Action::Page { page: "P".into() };
@@ -2653,7 +2846,7 @@ slow = true
     #[test]
     fn dials_roundtrip() {
         let mut c = Config::default();
-        let d = c.dial_mut(0);
+        let d = c.dial_mut(None, 0);
         d.label = "Workspace".into();
         d.turn_left = Action::Hyprland { dispatch: "workspace e-1".into() };
         d.turn_right = Action::Hyprland { dispatch: "workspace e+1".into() };
@@ -2667,7 +2860,7 @@ slow = true
     #[test]
     fn dial_with_only_press_saves_minimally() {
         let mut c = Config::default();
-        c.dial_mut(2).press = Action::App { command: "walker".into() };
+        c.dial_mut(None, 2).press = Action::App { command: "walker".into() };
         let s = toml::to_string_pretty(&c).unwrap();
         assert!(!s.contains("turn_left"));
         assert!(!s.contains("turn_right"));
@@ -2677,7 +2870,7 @@ slow = true
     #[test]
     fn volume_action_roundtrip_and_defaults() {
         let mut c = Config::default();
-        let d = c.dial_mut(0);
+        let d = c.dial_mut(None, 0);
         d.label = "Volume".into();
         d.turn_left = Action::Volume { device: AudioDevice::Output, change: -5, mute: false };
         d.turn_right = Action::Volume { device: AudioDevice::Output, change: 5, mute: false };
@@ -2695,7 +2888,7 @@ slow = true
     #[test]
     fn volume_input_device_is_saved() {
         let mut c = Config::default();
-        c.dial_mut(1).press = Action::Volume { device: AudioDevice::Input, change: 0, mute: true };
+        c.dial_mut(None, 1).press = Action::Volume { device: AudioDevice::Input, change: 0, mute: true };
         let s = toml::to_string_pretty(&c).unwrap();
         assert!(s.contains("device = \"input\""));
         let back: Config = toml::from_str(&s).unwrap();
@@ -2972,7 +3165,7 @@ command = "next"
 player = "spotify"
 "#;
         let cfg = Config::parse(src).unwrap();
-        let d = cfg.dial(2).unwrap();
+        let d = cfg.dial(None, 2).unwrap();
         assert_eq!(d.turn_left, Action::Media { command: MediaCommand::PlayPause, seek: -5, player: None });
         assert_eq!(d.press, Action::Media { command: MediaCommand::PlayPause, seek: 0, player: None });
         assert_eq!(d.level_source(), Some(LevelSource::Player));

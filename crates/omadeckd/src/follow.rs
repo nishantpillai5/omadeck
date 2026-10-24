@@ -51,8 +51,13 @@ mod tests {
     use omadeck_core::{Keys, Page};
 
     fn cfg() -> Config {
-        let page =
-            |name: &str, folder: bool| Page { name: name.into(), keys: Keys::default(), folder, apps: Vec::new() };
+        let page = |name: &str, folder: bool| Page {
+            name: name.into(),
+            keys: Keys::default(),
+            dials: Vec::new(),
+            folder,
+            apps: Vec::new(),
+        };
         let pages = vec![page("Work", false), page("Music", false), page("Chat", false), page("F", true)];
         Config { pages, ..Config::default() }
     }

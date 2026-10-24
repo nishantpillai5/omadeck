@@ -98,9 +98,14 @@ impl Deck {
     }
 
     /// Mark the panels whose dial `pred` picks for repainting at the end of the pass.
-    pub fn dirty_where(&mut self, cfg: &Config, pred: impl Fn(Option<&omadeck_core::DialConfig>) -> bool) {
+    pub fn dirty_where(
+        &mut self,
+        cfg: &Config,
+        page: Option<&str>,
+        pred: impl Fn(Option<&omadeck_core::DialConfig>) -> bool,
+    ) {
         for i in 0..self.info.dials {
-            if pred(cfg.dial(i)) {
+            if pred(cfg.dial(page, i)) {
                 self.dirty_panels[i as usize] = true;
             }
         }
@@ -187,8 +192,8 @@ pub fn open(hid: &mut HidApi) -> Option<Deck> {
 
 /// What panel `i` shows now. A media panel is advanced to the wall clock here, at
 /// painting (`dial_status` stays pure, so `flush` only publishes real changes).
-pub fn panel_status(d: &Deck, cfg: &Config, values: &Values, i: u8, now: Instant) -> DialStatus {
-    let mut st = probe::dial_status(cfg.dial(i), values, d.pressed(i, now));
+pub fn panel_status(d: &Deck, cfg: &Config, page: Option<&str>, values: &Values, i: u8, now: Instant) -> DialStatus {
+    let mut st = probe::dial_status(cfg.dial(page, i), values, d.pressed(i, now));
     if let Some(m) = &mut st.panel.media {
         *m = m.at(player::now_ms());
     }
@@ -216,7 +221,7 @@ pub fn paint_all(
     if d.info.strip.is_some() {
         let now = Instant::now();
         for i in 0..d.info.dials {
-            write_panel(d, cfg, renderer, values, i, now)?;
+            write_panel(d, cfg, page, renderer, values, i, now)?;
         }
     }
     d.dirty_panels.fill(false);
@@ -246,7 +251,7 @@ pub fn flush_dirty(
     if dirty_panels {
         for i in 0..d.info.dials {
             if d.dirty_panels[i as usize]
-                && let Err(e) = write_panel(d, cfg, renderer, values, i, now)
+                && let Err(e) = write_panel(d, cfg, page, renderer, values, i, now)
             {
                 log::warn!("paint dial {i}: {e}");
             }
@@ -276,9 +281,17 @@ pub fn paint_key(d: &Deck, cfg: &Config, page: Option<&str>, renderer: &mut Rend
 }
 
 /// Queue one 200×100 dial panel for the next `flush`.
-fn write_panel(d: &Deck, cfg: &Config, renderer: &mut Renderer, values: &Values, i: u8, now: Instant) -> Result<()> {
-    let st = panel_status(d, cfg, values, i, now);
-    let panel = renderer.render_strip_panel(cfg, i, d.info.dials as u32, st);
+fn write_panel(
+    d: &Deck,
+    cfg: &Config,
+    page: Option<&str>,
+    renderer: &mut Renderer,
+    values: &Values,
+    i: u8,
+    now: Instant,
+) -> Result<()> {
+    let st = panel_status(d, cfg, page, values, i, now);
+    let panel = renderer.render_strip_panel(cfg, page, i, d.info.dials as u32, st);
     let rect = ImageRect::from_image(image::DynamicImage::ImageRgba8(panel))?;
     d.dev.write_lcd(i as u16 * PANEL_W as u16, 0, &rect)?;
     Ok(())

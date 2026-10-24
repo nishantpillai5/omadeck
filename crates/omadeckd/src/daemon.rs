@@ -495,10 +495,11 @@ impl Daemon {
                     return Reply::error(format!("no dial {index}; this deck has {n} dials"));
                 }
                 let steps = steps.clamp(1, 8);
-                let summary = self.cfg.dial(index).map(|d| d.action(dir).summary()).unwrap_or_else(|| {
-                    // No `[[dial]]` for it: what an empty slot says.
-                    Action::None.summary()
-                });
+                let summary =
+                    self.cfg.dial(self.nav.current(), index).map(|d| d.action(dir).summary()).unwrap_or_else(|| {
+                        // No `[[dial]]` for it: what an empty slot says.
+                        Action::None.summary()
+                    });
                 let (res, what) = match dir {
                     Direction::Left => (self.turn_dial(index, -(steps as i8), false), "left"),
                     Direction::Right => (self.turn_dial(index, steps as i8, false), "right"),
@@ -664,7 +665,7 @@ impl Daemon {
     /// alike.
     fn mark_probe(&mut self, probe: &Probe) {
         if let Some(d) = &mut self.deck {
-            d.dirty_where(&self.cfg, |dial| probe::shows(dial, probe));
+            d.dirty_where(&self.cfg, self.nav.current(), |dial| probe::shows(dial, probe));
         }
         let page = self.nav.current().map(str::to_string);
         let n = self.key_count();
@@ -774,7 +775,9 @@ impl Daemon {
         if self.media_due.is_some_and(|t| now >= t) {
             self.media_due = None;
             if let Some(d) = &mut self.deck {
-                d.dirty_where(&self.cfg, |dial| dial.and_then(DialConfig::level_source) == Some(LevelSource::Player));
+                d.dirty_where(&self.cfg, self.nav.current(), |dial| {
+                    dial.and_then(DialConfig::level_source) == Some(LevelSource::Player)
+                });
             }
         }
         if let Some(h) = self.deck.as_mut().and_then(|d| d.back_held.take_if(|h| now >= h.deadline())) {
@@ -860,7 +863,7 @@ impl Daemon {
                 log::info!("dial {i} pressed");
                 self.hub.publish(Event::DialDown { index: i });
                 self.set_dial_pressed(i, true);
-                let act = self.cfg.dial(i).map(|d| d.press.clone()).unwrap_or_default();
+                let act = self.cfg.dial(self.nav.current(), i).map(|d| d.press.clone()).unwrap_or_default();
                 if !act.is_none() {
                     self.run_input(Source::Press(i), &act, 1);
                 }
@@ -919,7 +922,7 @@ impl Daemon {
         if publish {
             self.hub.publish(Event::DialTurn { index: i, delta });
         }
-        let Some(dial) = self.cfg.dial(i) else { return Ok(()) };
+        let Some(dial) = self.cfg.dial(self.nav.current(), i) else { return Ok(()) };
         let act = if delta >= 0 { dial.turn_right.clone() } else { dial.turn_left.clone() };
         if act.is_none() {
             return Ok(());
@@ -950,8 +953,11 @@ impl Daemon {
             d.mark_dirty(i);
         }
         // Cloned out of the config before `try_input` takes `&mut self`.
-        let act =
-            self.cfg.dial(i).map(|d| if long { d.long_press_action() } else { &d.press }.clone()).unwrap_or_default();
+        let act = self
+            .cfg
+            .dial(self.nav.current(), i)
+            .map(|d| if long { d.long_press_action() } else { &d.press }.clone())
+            .unwrap_or_default();
         if act.is_none() {
             return Ok(());
         }
@@ -1248,7 +1254,9 @@ impl Daemon {
             Action::Media { command, seek, player } => {
                 // The targeting rule is `probe::media_target`'s doc.
                 let dial = match src {
-                    Source::Turn(i) | Source::Press(i) | Source::Tap(i) | Source::LongTap(i) => self.cfg.dial(i),
+                    Source::Turn(i) | Source::Press(i) | Source::Tap(i) | Source::LongTap(i) => {
+                        self.cfg.dial(self.nav.current(), i)
+                    }
                     _ => None,
                 };
                 let wanted = probe::media_wanted(player.as_deref(), dial).map(str::to_string);
@@ -1324,7 +1332,9 @@ impl Daemon {
         let d = self.deck.as_ref()?;
         let wall = player::now_ms();
         (0..d.info.dials)
-            .filter_map(|i| probe::dial_status(self.cfg.dial(i), &self.rt.values, false).panel.media)
+            .filter_map(|i| {
+                probe::dial_status(self.cfg.dial(self.nav.current(), i), &self.rt.values, false).panel.media
+            })
             .filter_map(|m| ms_to_next_second(&m, wall))
             .min()
             .map(|ms| now + Duration::from_millis(ms))
@@ -1346,7 +1356,7 @@ impl Daemon {
             if let Err(e) = d.dev.set_brightness(next) {
                 log::warn!("set_brightness: {e}");
             }
-            d.dirty_where(&self.cfg, |dial| {
+            d.dirty_where(&self.cfg, self.nav.current(), |dial| {
                 matches!(dial.and_then(|dc| dc.level_source()), Some(LevelSource::Brightness))
             });
         }
@@ -1395,7 +1405,7 @@ impl Daemon {
         let Some(d) = &mut self.deck else { return };
         deck::flush_dirty(d, &self.cfg, self.nav.current(), &mut self.renderer, &self.rt.values, &keys);
         for i in 0..d.info.dials {
-            let status = probe::dial_status(self.cfg.dial(i), &self.rt.values, false).panel;
+            let status = probe::dial_status(self.cfg.dial(self.nav.current(), i), &self.rt.values, false).panel;
             if self.published.get(&i) != Some(&status) {
                 self.published.insert(i, status.clone());
                 self.hub.publish(Event::DialStatus { index: i, status });
@@ -1478,22 +1488,22 @@ fn config_probes(cfg: &Config, n_dials: usize) -> Vec<Probe> {
             out.push(p);
         }
     };
-    for i in 0..n_dials {
-        let dial = cfg.dial(i as u8);
-        match dial.and_then(DialConfig::level_source) {
+    for dial in cfg.dials.iter().chain(cfg.pages.iter().flat_map(|p| p.dials.iter())) {
+        if dial.index as usize >= n_dials {
+            continue;
+        }
+        match dial.level_source() {
             Some(LevelSource::Volume(dev)) => add(Probe::Volume(dev)),
             Some(LevelSource::App) => {
-                if let Some(q) = dial.and_then(DialConfig::app_query) {
+                if let Some(q) = dial.app_query() {
                     add(Probe::AppVolume(q));
                 }
             }
             // A reload keeps the track instead of blanking the panel.
-            Some(LevelSource::Player) => {
-                add(Probe::Player(dial.and_then(DialConfig::media_player).map(str::to_string)))
-            }
+            Some(LevelSource::Player) => add(Probe::Player(dial.media_player().map(str::to_string))),
             Some(LevelSource::Brightness) | None => {}
         }
-        if let Some(l) = dial.and_then(|d| d.live.as_ref()) {
+        if let Some(l) = dial.live.as_ref() {
             add(l.probe());
         }
     }
