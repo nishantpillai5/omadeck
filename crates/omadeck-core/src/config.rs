@@ -201,6 +201,10 @@ pub struct KeyConfig {
     pub busy_while_running: bool,
     #[serde(default)]
     pub action: Action,
+    /// An action run when the key is released (push-to-talk). Unset: a release does
+    /// nothing beyond the press's action.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub release: Option<Action>,
     /// A second face shown while the key is on, and where on/off comes from.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub on: Option<OnFace>,
@@ -387,6 +391,7 @@ impl KeyConfig {
             label_color: None,
             busy_while_running: false,
             action: Action::None,
+            release: None,
             on: None,
             busy: None,
             live: None,
@@ -402,6 +407,7 @@ impl KeyConfig {
             && self.label_color.is_none()
             && !self.busy_while_running
             && self.action == Action::None
+            && self.release.is_none()
             && self.on.is_none()
             && self.busy.is_none()
             && self.live.is_none()
@@ -443,10 +449,14 @@ impl KeyConfig {
         }
     }
 
-    /// Every action this key owns, nested ones included: `action`, then `on.action`.
+    /// Every action this key owns, nested ones included: `action`, `release`, then
+    /// `on.action`.
     pub fn actions(&self) -> Vec<&Action> {
         let mut out = Vec::new();
         self.action.walk(&mut |a| out.push(a));
+        if let Some(release) = &self.release {
+            release.walk(&mut |a| out.push(a));
+        }
         if let Some(on) = &self.on {
             on.action.walk(&mut |a| out.push(a));
         }
@@ -456,6 +466,9 @@ impl KeyConfig {
     /// `actions`, mutably: `f` sees each one in the same order.
     pub fn actions_mut(&mut self, f: &mut dyn FnMut(&mut Action)) {
         self.action.walk_mut(f);
+        if let Some(release) = &mut self.release {
+            release.walk_mut(f);
+        }
         if let Some(on) = &mut self.on {
             on.action.walk_mut(f);
         }

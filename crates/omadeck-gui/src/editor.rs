@@ -104,6 +104,33 @@ pub fn build_key(app: &Rc<App>, i: u8) -> gtk::Widget {
     group.set_header_suffix(Some(&buttons));
 
     action_editor(app, &group, "When pressed", &slot);
+    // Push-to-talk: an action run when the key is released, through the key's page like
+    // its own slot. A "Nothing" release is saved as no release at all.
+    let release_at = ActionTarget::KeyRelease(key_at.clone());
+    let release_slot = ActionSlot {
+        target: release_at.clone(),
+        dir: None,
+        get: Rc::new({
+            let at = release_at.clone();
+            move |a| a.action_at(&at).unwrap_or_default()
+        }),
+        set: Rc::new({
+            let at = release_at.clone();
+            move |a, act| {
+                a.set_action_at(&at, act);
+            }
+        }),
+        own_page: app.current_page(),
+        // Only the release action changes: the key's label and icon belong to its press.
+        on_app_picked: Rc::new(|a, at, command, _, _| {
+            a.set_action_at(at, Action::App { command });
+        }),
+        // A new page for the release only: it doesn't restyle the key as a folder.
+        on_new_page: Rc::new(|a| a.add_page("Page", true)),
+        on_favicon: None,
+        kinds: Action::KEY_KINDS,
+    };
+    action_editor(app, &group, "When released", &release_slot);
     if key.action.is_trackable() {
         let busy = adw::SwitchRow::builder()
             .title("Busy while running")

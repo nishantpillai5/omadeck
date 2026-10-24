@@ -80,6 +80,8 @@ pub enum ActionTarget {
     Key(KeyRef),
     /// A toggle key's on action (its `on.action`).
     KeyOn(KeyRef),
+    /// A key's release action (push-to-talk, its `release`).
+    KeyRelease(KeyRef),
     DialTurnLeft(u8),
     DialTurnRight(u8),
     DialPress(u8),
@@ -103,7 +105,8 @@ impl ActionTarget {
     /// `Direction` has none.
     pub fn dial_slot(&self) -> Option<(u8, Direction)> {
         match self {
-            ActionTarget::Key(_) | ActionTarget::KeyOn(_) | ActionTarget::DialLongPress(_) | ActionTarget::Step(..) => {
+            ActionTarget::Key(_) | ActionTarget::KeyOn(_) | ActionTarget::KeyRelease(_)
+            | ActionTarget::DialLongPress(_) | ActionTarget::Step(..) => {
                 None
             }
             ActionTarget::DialTurnLeft(i) => Some((*i, Direction::Left)),
@@ -1140,6 +1143,9 @@ impl App {
             ActionTarget::KeyOn(k) => cfg.page(k.page()).map(|keys| {
                 keys.get(k.index).and_then(|kc| kc.on.as_ref().map(|f| f.action.clone())).unwrap_or_default()
             }),
+            ActionTarget::KeyRelease(k) => {
+                cfg.page(k.page()).map(|keys| keys.get(k.index).and_then(|kc| kc.release.clone()).unwrap_or_default())
+            },
             ActionTarget::DialTurnLeft(i) => Some(dial_action(&cfg, *i, Direction::Left)),
             ActionTarget::DialTurnRight(i) => Some(dial_action(&cfg, *i, Direction::Right)),
             ActionTarget::DialPress(i) => Some(dial_action(&cfg, *i, Direction::Press)),
@@ -1168,6 +1174,10 @@ impl App {
                             on.action = act;
                         }
                     })
+            }
+            ActionTarget::KeyRelease(k) => {
+                // A "Nothing" release is no release at all: don't keep an empty one.
+                self.edit_ref(k, |kc| kc.release = (!act.is_none()).then_some(act))
             }
             ActionTarget::DialTurnLeft(i) => self.set_dial_action(*i, Direction::Left, act),
             ActionTarget::DialTurnRight(i) => self.set_dial_action(*i, Direction::Right, act),
