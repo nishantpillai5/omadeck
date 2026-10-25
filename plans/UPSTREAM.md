@@ -24,6 +24,13 @@ and `up/15` had moved to the v0.2.0 re-stack; it was force-pushed to `daily`'s t
 It is now kept in step with `daily`, and fork-only features merge into it (first: `omadeckd
 events`, [automations.md](automations.md)).
 
+**Fork-only fixes stay fork-only (2026-10-26).** Changes made for the user's own machine
+and deck setup are committed to the fork's `master` and **never proposed upstream — and
+never recommended for it**. First under this rule: the daemon re-reading a dial's live
+value right after its own turn or strip tap (`0bb62ee`), which made the Prompts page's
+audio-source dial track its turns. If a fork-only fix later looks upstream-worthy, the
+decision is the user's to make, on their say-so only.
+
 ---
 
 **Restacked on upstream's v0.2.0 (`5f4638b`, 2026-10-19).** Upstream merged
