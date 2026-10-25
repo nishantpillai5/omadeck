@@ -1219,6 +1219,9 @@ pub struct DialConfig {
     /// Runs when the dial is pressed down.
     #[serde(default, skip_serializing_if = "Action::is_none")]
     pub press: Action,
+    /// Runs when the dial is released (push-to-talk). Unset: a release does nothing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub release: Option<Action>,
     /// Runs when the dial's strip panel is pressed and held (Elgato's "long touch").
     /// Unset: a long press does what a tap does (runs `press`).
     #[serde(default, skip_serializing_if = "Action::is_none")]
@@ -1242,6 +1245,7 @@ impl DialConfig {
             turn_left: Action::None,
             turn_right: Action::None,
             press: Action::None,
+            release: None,
             long_press: Action::None,
             live: None,
         }
@@ -1259,6 +1263,7 @@ impl DialConfig {
             && self.turn_left.is_none()
             && self.turn_right.is_none()
             && self.press.is_none()
+            && self.release.is_none()
             && self.long_press.is_none()
             && self.live.is_none()
     }

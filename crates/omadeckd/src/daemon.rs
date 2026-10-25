@@ -872,6 +872,16 @@ impl Daemon {
                 log::info!("dial {i} released");
                 self.hub.publish(Event::DialUp { index: i });
                 self.set_dial_pressed(i, false);
+                // A release action (push-to-talk), if the dial has one.
+                if let Some(act) = self
+                    .cfg
+                    .dial(self.nav.current(), i)
+                    .and_then(|d| d.release.as_ref())
+                    .filter(|a| !a.is_none())
+                    .cloned()
+                {
+                    let _ = self.try_input(Source::Press(i), &act, 1);
+                }
             }
             DeviceStateUpdate::TouchScreenPress(x, y) => {
                 log::info!("strip tap at ({x}, {y})");

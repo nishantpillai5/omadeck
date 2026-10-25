@@ -7,6 +7,8 @@ All notable changes to omadeck are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- Dials have a `release` action, as keys do: it runs when the dial is let go, so a dial
+  can push-to-talk — `press` starts, `release` commits.
 - Dials are part of pages, as the keys are: `[[page.dial]]` tables give a page its own
   touch strip. A page with any dials owns the whole strip (its dials show, the rest of the
   panels go blank); a page with none shows the home page's dials, so existing pages keep
