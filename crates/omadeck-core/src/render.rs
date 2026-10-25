@@ -760,7 +760,24 @@ impl Renderer {
             })
             .unwrap_or_default();
         if slots.len() >= 2 {
-            let icons: Vec<RgbaImage> = slots.iter().filter_map(|a| self.action_icon(a, glyph_color)).collect();
+            let d = dial.expect("two or more slots always come from a dial");
+            let size = (SLOT_ICON_PX as f32 * 0.9) as u32;
+            let icons: Vec<RgbaImage> = slots
+                .iter()
+                .enumerate()
+                .filter_map(|(i, a)| {
+                    // A configured slot glyph wins over the action's own icon.
+                    let override_glyph = match i {
+                        0 => d.turn_left_glyph.as_deref(),
+                        1 => d.turn_right_glyph.as_deref(),
+                        _ => d.press_glyph.as_deref(),
+                    }
+                    .filter(|g| !g.trim().is_empty());
+                    override_glyph
+                        .and_then(|g| self.glyph(g, size, glyph_color))
+                        .or_else(|| self.action_icon(a, glyph_color))
+                })
+                .collect();
             let total = icons.len() as u32 * SLOT_ICON_PX + icons.len().saturating_sub(1) as u32 * SLOT_GAP_PX;
             let mut x = PANEL_W.saturating_sub(total) / 2;
             for icon in icons {

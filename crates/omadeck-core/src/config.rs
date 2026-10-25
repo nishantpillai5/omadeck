@@ -1222,6 +1222,14 @@ pub struct DialConfig {
     /// Runs when the dial is released (push-to-talk). Unset: a release does nothing.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub release: Option<Action>,
+    /// Glyph overrides for the multi-action panel's slot icons, in turn left, turn
+    /// right, press order: a Nerd Font symbol drawn instead of the action's own icon.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turn_left_glyph: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turn_right_glyph: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub press_glyph: Option<String>,
     /// Runs when the dial's strip panel is pressed and held (Elgato's "long touch").
     /// Unset: a long press does what a tap does (runs `press`).
     #[serde(default, skip_serializing_if = "Action::is_none")]
@@ -1246,6 +1254,9 @@ impl DialConfig {
             turn_right: Action::None,
             press: Action::None,
             release: None,
+            turn_left_glyph: None,
+            turn_right_glyph: None,
+            press_glyph: None,
             long_press: Action::None,
             live: None,
         }
