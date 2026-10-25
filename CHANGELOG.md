@@ -13,6 +13,9 @@ All notable changes to omadeck are documented here. The format follows
   their volume and friends. Turning or pressing a dial runs the current page's dial, and
   switching pages or folders repaints the strip. The configurator edits and previews the
   page you have selected.
+- Turning or pressing a dial with a live value re-reads it at once, as a live command key
+  already did on press: the panel shows what the turn or press changed instead of waiting
+  for the next interval.
 - Stream Deck +: press and hold a dial's panel on the touch strip to run its
   `long_press` action (Elgato's "long touch"). The configurator's dial editor has a
   **Long press on the strip** group.

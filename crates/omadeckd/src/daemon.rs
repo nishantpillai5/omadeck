@@ -927,7 +927,16 @@ impl Daemon {
         if act.is_none() {
             return Ok(());
         }
-        self.try_input(Source::Turn(i), &act, delta.unsigned_abs().min(8))
+        // Cloned out like `press_key`: `try_input` takes `&mut self`.
+        let live = dial.live.clone();
+        let ran = self.try_input(Source::Turn(i), &act, delta.unsigned_abs().min(8));
+        // A live dial shows what the turn changed at once, like a live command key.
+        if ran.is_ok()
+            && let Some(p @ Probe::Output { .. }) = live.as_ref().map(Live::probe)
+        {
+            let _ = self.watcher.cmd.send(WatchCmd::Refresh(p));
+        }
+        ran
     }
 
     /// A tap or long press on the strip: the dial under `x`, then `tap_dial`, as in the
@@ -953,15 +962,22 @@ impl Daemon {
             d.mark_dirty(i);
         }
         // Cloned out of the config before `try_input` takes `&mut self`.
-        let act = self
+        let (act, live) = self
             .cfg
             .dial(self.nav.current(), i)
-            .map(|d| if long { d.long_press_action() } else { &d.press }.clone())
+            .map(|d| ((if long { d.long_press_action() } else { &d.press }).clone(), d.live.clone()))
             .unwrap_or_default();
         if act.is_none() {
             return Ok(());
         }
-        self.try_input(if long { Source::LongTap(i) } else { Source::Tap(i) }, &act, 1)
+        let ran = self.try_input(if long { Source::LongTap(i) } else { Source::Tap(i) }, &act, 1);
+        // A live dial shows what the press changed at once, like a live command key.
+        if ran.is_ok()
+            && let Some(p @ Probe::Output { .. }) = live.as_ref().map(Live::probe)
+        {
+            let _ = self.watcher.cmd.send(WatchCmd::Refresh(p));
+        }
+        ran
     }
 
     /// A hardware press or release ends a ctl press's flash on that key.
