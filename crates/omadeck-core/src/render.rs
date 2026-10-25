@@ -215,8 +215,6 @@ const CHEVRON_LEFT_GLYPH: &str = "f0141"; // md-chevron_left
 const CHEVRON_RIGHT_GLYPH: &str = "f0142"; // md-chevron_right
 /// The box a per-action slot icon is drawn into on a multi-action dial panel.
 const SLOT_ICON_PX: u32 = 32;
-/// The gap between slot icons on a multi-action dial panel.
-const SLOT_GAP_PX: u32 = 20;
 
 /// The glyph a volume dial's `$B1` panel shows when it has no icon: the mute glyph when
 /// muted, else the dial's own glyph, else a speaker (output) or a microphone (input).
@@ -749,42 +747,54 @@ impl Renderer {
             return img;
         }
 
-        // A dial with two or more actions shows one small icon per gesture — turn
-        // left, a press (or its long press), then turn right — so the strip says
-        // what each gesture will do, the press centred between the turns. One
-        // action keeps the big face icon.
-        let slots: Vec<&Action> = dial
+        // A dial with two or more gestures shows one small icon per gesture: turn
+        // left on the left, turn right on the right, and the press centred between
+        // them — a long press stacked under the press when the dial has both, so
+        // the strip says what each gesture will do. One action keeps the big face
+        // icon.
+        let gestures = dial
             .map(|d| {
-                let press = if d.press.is_none() { &d.long_press } else { &d.press };
-                [&d.turn_left, press, &d.turn_right].into_iter().filter(|a| !a.is_none()).collect()
+                [&d.turn_left, &d.press, &d.long_press, &d.turn_right].into_iter().filter(|a| !a.is_none()).count()
             })
-            .unwrap_or_default();
-        if slots.len() >= 2 {
-            let d = dial.expect("two or more slots always come from a dial");
+            .unwrap_or(0);
+        if gestures >= 2 {
+            let d = dial.expect("two or more gestures always come from a dial");
             let size = (SLOT_ICON_PX as f32 * 0.9) as u32;
-            let icons: Vec<RgbaImage> = slots
-                .iter()
-                .enumerate()
-                .filter_map(|(i, a)| {
-                    // A configured slot glyph wins over the action's own icon.
-                    let override_glyph = match i {
-                        0 => d.turn_left_glyph.as_deref(),
-                        1 => d.press_glyph.as_deref(),
-                        _ => d.turn_right_glyph.as_deref(),
-                    }
-                    .filter(|g| !g.trim().is_empty());
-                    override_glyph
-                        .and_then(|g| self.glyph(g, size, glyph_color))
-                        .or_else(|| self.action_icon(a, glyph_color))
-                })
-                .collect();
-            let total = icons.len() as u32 * SLOT_ICON_PX + icons.len().saturating_sub(1) as u32 * SLOT_GAP_PX;
-            let mut x = PANEL_W.saturating_sub(total) / 2;
-            for icon in icons {
-                let cx = x + (SLOT_ICON_PX - icon.width()) / 2;
-                let cy = 48 + (SLOT_ICON_PX - icon.height()) / 2;
-                imageops::overlay(&mut img, &icon, cx as i64, cy as i64);
-                x += SLOT_ICON_PX + SLOT_GAP_PX;
+            // One slot: a configured glyph wins over the action's own icon.
+            let mut slot = |action: &Action, override_glyph: &Option<String>| {
+                override_glyph
+                    .as_deref()
+                    .filter(|g| !g.trim().is_empty())
+                    .and_then(|g| self.glyph(g, size, glyph_color))
+                    .or_else(|| self.action_icon(action, glyph_color))
+            };
+            // 32 px boxes centred at x 40/100/160, y 64; the stacked pair centres
+            // on the same point with an 8 px gap.
+            let (x_left, x_center, x_right) = (24u32, 84u32, 144u32);
+            let (y_mid, y_top, y_bottom) = (48u32, 28u32, 68u32);
+            let mut draw = |icon: Option<RgbaImage>, x: u32, y: u32| {
+                if let Some(icon) = icon {
+                    let cx = x + (SLOT_ICON_PX - icon.width()) / 2;
+                    let cy = y + (SLOT_ICON_PX - icon.height()) / 2;
+                    imageops::overlay(&mut img, &icon, cx as i64, cy as i64);
+                }
+            };
+            if !d.turn_left.is_none() {
+                draw(slot(&d.turn_left, &d.turn_left_glyph), x_left, y_mid);
+            }
+            // The top slot is the press, or the long press when there is no press;
+            // the long press stacks under a press, not beside it.
+            let stacked = !d.press.is_none() && !d.long_press.is_none();
+            let (top, top_glyph) =
+                if d.press.is_none() { (&d.long_press, &d.long_press_glyph) } else { (&d.press, &d.press_glyph) };
+            if !top.is_none() {
+                draw(slot(top, top_glyph), x_center, if stacked { y_top } else { y_mid });
+            }
+            if stacked {
+                draw(slot(&d.long_press, &d.long_press_glyph), x_center, y_bottom);
+            }
+            if !d.turn_right.is_none() {
+                draw(slot(&d.turn_right, &d.turn_right_glyph), x_right, y_mid);
             }
         } else {
             let icon = match (face.icon, face.glyph.filter(|g| !g.trim().is_empty())) {

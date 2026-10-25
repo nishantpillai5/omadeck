@@ -7,9 +7,12 @@ All notable changes to omadeck are documented here. The format follows
 ## [Unreleased]
 
 ### Added
-- Multi-action dial panels take per-slot glyph overrides (`turn_left_glyph`,
-  `turn_right_glyph`, `press_glyph`): a Nerd Font symbol drawn in the slot instead of
-  the action's own icon, e.g. chevrons and a microphone for a window/dictation dial.
+- Multi-action dial panels stack the press and long press: turn left on the left, turn
+  right on the right, the press centred between them and a long press stacked under it
+  (a dial with only a long press shows it centred). Each slot takes a glyph override
+  (`turn_left_glyph`, `press_glyph`, `long_press_glyph`, `turn_right_glyph`): a Nerd
+  Font symbol drawn instead of the action's own icon, e.g. chevrons flanking a
+  microphone over a close cross for a window/dictation dial.
 - Dials have a `release` action, as keys do: it runs when the dial is let go, so a dial
   can push-to-talk — `press` starts, `release` commits.
 - Dials are part of pages, as the keys are: `[[page.dial]]` tables give a page its own
