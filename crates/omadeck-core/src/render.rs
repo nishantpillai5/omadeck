@@ -750,13 +750,13 @@ impl Renderer {
         }
 
         // A dial with two or more actions shows one small icon per gesture — turn
-        // left, turn right, then a press (or its long press) — as Elgato's dial panel
-        // does, so the strip says what each turn will do. One action keeps the big
-        // face icon.
+        // left, a press (or its long press), then turn right — so the strip says
+        // what each gesture will do, the press centred between the turns. One
+        // action keeps the big face icon.
         let slots: Vec<&Action> = dial
             .map(|d| {
                 let press = if d.press.is_none() { &d.long_press } else { &d.press };
-                [&d.turn_left, &d.turn_right, press].into_iter().filter(|a| !a.is_none()).collect()
+                [&d.turn_left, press, &d.turn_right].into_iter().filter(|a| !a.is_none()).collect()
             })
             .unwrap_or_default();
         if slots.len() >= 2 {
@@ -769,8 +769,8 @@ impl Renderer {
                     // A configured slot glyph wins over the action's own icon.
                     let override_glyph = match i {
                         0 => d.turn_left_glyph.as_deref(),
-                        1 => d.turn_right_glyph.as_deref(),
-                        _ => d.press_glyph.as_deref(),
+                        1 => d.press_glyph.as_deref(),
+                        _ => d.turn_right_glyph.as_deref(),
                     }
                     .filter(|g| !g.trim().is_empty());
                     override_glyph

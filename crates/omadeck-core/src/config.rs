@@ -1222,8 +1222,8 @@ pub struct DialConfig {
     /// Runs when the dial is released (push-to-talk). Unset: a release does nothing.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub release: Option<Action>,
-    /// Glyph overrides for the multi-action panel's slot icons, in turn left, turn
-    /// right, press order: a Nerd Font symbol drawn instead of the action's own icon.
+    /// Glyph overrides for the multi-action panel's slot icons, in turn left, press,
+    /// turn right order: a Nerd Font symbol drawn instead of the action's own icon.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub turn_left_glyph: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
