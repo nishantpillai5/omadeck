@@ -1720,9 +1720,14 @@ impl Config {
         }
     }
 
-    /// Whether the deck can leave `page`: it needs a Back key or a key that opens a page.
-    /// Home never needs one.
+    /// Whether the deck can leave `page`. Home never needs a way out. A flick gets out
+    /// of every page — folders included, it steps from the page the folders hang off —
+    /// except on a deck where Home is the only steppable page (folders only): there a
+    /// folder needs a Back key or a key that opens a page.
     pub fn has_way_out(&self, page: Option<&str>) -> bool {
+        if self.steppable_pages().len() >= 2 {
+            return true;
+        }
         page.is_none()
             || self
                 .page(page)
@@ -2815,10 +2820,23 @@ label = "Seek"
             folder: false,
             apps: Vec::new(),
         });
+        // With a normal page, a flick gets out of every page, folders included.
         assert!(c.has_way_out(None));
-        assert!(!c.has_way_out(Some("P")));
-        c.page_mut(Some("P")).unwrap().get_mut(3).action = Action::Page { page: "P".into() };
         assert!(c.has_way_out(Some("P")));
+
+        // Home plus folders only: the flick steps nowhere, so a folder needs a Back
+        // key (or a key that opens a page).
+        let mut f = Config::default();
+        f.pages.push(Page {
+            name: "F".into(),
+            keys: Keys::default(),
+            dials: Vec::new(),
+            folder: true,
+            apps: Vec::new(),
+        });
+        assert!(!f.has_way_out(Some("F")));
+        f.page_mut(Some("F")).unwrap().get_mut(3).action = Action::Back;
+        assert!(f.has_way_out(Some("F")));
     }
 
     #[test]

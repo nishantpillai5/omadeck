@@ -7,6 +7,13 @@ All notable changes to omadeck are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- Multi-action dial panels centre the columns that are present, so a dial with two
+  gestures shows them side by side instead of leaving a hole where a missing third would
+  be.
+- The “No Back key” warning only shows for a real dead end: a flick gets out of every
+  page, folders included (it steps from the page the folders hang off), so the warning
+  now fires only on a deck where Home is the only regular page and a folder there has no
+  Back key or page-opening key.
 - Multi-action dial panels stack the press and long press: turn left on the left, turn
   right on the right, the press centred between them and a long press stacked under it
   (a dial with only a long press shows it centred). Each slot takes a glyph override
