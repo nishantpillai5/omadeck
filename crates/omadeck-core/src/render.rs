@@ -768,9 +768,28 @@ impl Renderer {
                     .and_then(|g| self.glyph(g, size, glyph_color))
                     .or_else(|| self.action_icon(action, glyph_color))
             };
-            // 32 px boxes centred at x 40/100/160, y 64; the stacked pair centres
-            // on the same point with an 8 px gap.
-            let (x_left, x_center, x_right) = (24u32, 84u32, 144u32);
+            // The top slot is the press, or the long press when there is no press;
+            // the long press stacks under a press, not beside it.
+            let stacked = !d.press.is_none() && !d.long_press.is_none();
+            let (top, top_glyph) =
+                if d.press.is_none() { (&d.long_press, &d.long_press_glyph) } else { (&d.press, &d.press_glyph) };
+            // Present columns only, centred as a group, so a dial with just two
+            // gestures doesn't leave a hole where the missing one would be. Presence
+            // is the action being set, not the icon resolving, so a failed lookup
+            // can't shift the layout.
+            let has_left = !d.turn_left.is_none();
+            let has_right = !d.turn_right.is_none();
+            let has_center = !top.is_none() || stacked;
+            let left = has_left.then(|| slot(&d.turn_left, &d.turn_left_glyph)).flatten();
+            let top_icon = (!top.is_none()).then(|| slot(top, top_glyph)).flatten();
+            let bottom_icon = stacked.then(|| slot(&d.long_press, &d.long_press_glyph)).flatten();
+            let right = has_right.then(|| slot(&d.turn_right, &d.turn_right_glyph)).flatten();
+            let gap = 24u32;
+            let columns = [has_left, has_center, has_right].iter().filter(|b| **b).count() as u32;
+            let total = columns * SLOT_ICON_PX + columns.saturating_sub(1) * gap;
+            let mut x = PANEL_W.saturating_sub(total) / 2;
+            // 32 px boxes centred on y 64; the stacked pair centres on the same
+            // point with an 8 px gap.
             let (y_mid, y_top, y_bottom) = (48u32, 28u32, 68u32);
             let mut draw = |icon: Option<RgbaImage>, x: u32, y: u32| {
                 if let Some(icon) = icon {
@@ -779,22 +798,17 @@ impl Renderer {
                     imageops::overlay(&mut img, &icon, cx as i64, cy as i64);
                 }
             };
-            if !d.turn_left.is_none() {
-                draw(slot(&d.turn_left, &d.turn_left_glyph), x_left, y_mid);
+            if has_left {
+                draw(left, x, y_mid);
+                x += SLOT_ICON_PX + gap;
             }
-            // The top slot is the press, or the long press when there is no press;
-            // the long press stacks under a press, not beside it.
-            let stacked = !d.press.is_none() && !d.long_press.is_none();
-            let (top, top_glyph) =
-                if d.press.is_none() { (&d.long_press, &d.long_press_glyph) } else { (&d.press, &d.press_glyph) };
-            if !top.is_none() {
-                draw(slot(top, top_glyph), x_center, if stacked { y_top } else { y_mid });
+            if has_center {
+                draw(top_icon, x, if stacked { y_top } else { y_mid });
+                draw(bottom_icon, x, y_bottom);
+                x += SLOT_ICON_PX + gap;
             }
-            if stacked {
-                draw(slot(&d.long_press, &d.long_press_glyph), x_center, y_bottom);
-            }
-            if !d.turn_right.is_none() {
-                draw(slot(&d.turn_right, &d.turn_right_glyph), x_right, y_mid);
+            if has_right {
+                draw(right, x, y_mid);
             }
         } else {
             let icon = match (face.icon, face.glyph.filter(|g| !g.trim().is_empty())) {
